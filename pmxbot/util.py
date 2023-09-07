@@ -80,13 +80,13 @@ def urban_lookup(word):
     found.
     """
     url = "http://api.urbandictionary.com/v0/define"
-    params = dict(term=word)
-    resp = requests.get(url, params=params)
+    params = dict({'term':word})
+    resp = requests.get(url, params=params, timeout=5)
     resp.raise_for_status()
     res = resp.json()
     if not res['list']:
         return
-    return res['list'][0]['definition']
+    return res['list'][0]['definition'].rstrip()
 
 
 def lookup_acronym(acronym, limit=3):

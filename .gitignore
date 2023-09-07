@@ -8,3 +8,8 @@ pmxbot.sqlite
 .tox/
 .cache/
 .pytest_cache/
+bin
+lib
+lib64
+.vscode
+pyvenv.cfg
