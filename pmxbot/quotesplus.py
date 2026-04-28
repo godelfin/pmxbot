@@ -215,9 +215,9 @@ def quote_command(lib, rest):
         return f'{lib} added!'
     if rest.startswith('del: ') or rest.startswith('del '):
         _, _, lookup = rest.partition(' ')
-        QuotesPlus.store.delete(lookup)
+        QuotesPlus.store.delete(lib, lookup)
         return f'Deleted the sole {lib} that matched'
-    quot, i, num = QuotesPlus.store.lookup(rest)
+    quot, i, num = QuotesPlus.store.lookup(lib, rest)
     if not quot:
         return
     return f'({i}/{num}): {quot}'
