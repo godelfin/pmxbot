@@ -13,3 +13,5 @@ lib
 lib64
 .vscode
 pyvenv.cfg
+.venv/
+.zed

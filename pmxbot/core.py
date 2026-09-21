@@ -625,6 +625,11 @@ def _load_library_extensions():
         except Exception:
             log.exception("Error initializing plugin %s." % ep)
 
+    from .quotes import Quotes
+
+    if hasattr(Quotes, 'store'):
+        Quotes.register_commands()
+
 
 @functools.lru_cache
 def _load_filters():

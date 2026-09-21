@@ -34,3 +34,13 @@ TCP keepalive: 30 seconds
 
 # set a rate limit on outgoing messages in messages per second
 message rate limit: 2.5
+
+# Optional command-to-library mapping, applied when the bot starts.
+# !quote and !q always use the pmx library.
+# quote_libraries:
+#     album: album
+#     band: band
+#     music: song
+#     robjob: robjob
+#     food: food
+#     tagline: tagline

@@ -215,3 +215,35 @@ Available as part of the Tidelift Subscription.
 This project and the maintainers of thousands of other packages are working with Tidelift to deliver one enterprise subscription that covers all of the open source you use.
 
 `Learn more <https://tidelift.com/subscription/pkg/pypi-pmxbot?utm_source=pypi-pmxbot&utm_medium=referral&utm_campaign=github>`_.
+
+Quote libraries
+==============
+
+``!quote`` and ``!q`` use the default ``pmx`` quote library. To add commands
+for other libraries, configure a command-to-library mapping in YAML::
+
+    quote_libraries:
+        album: album
+        band: band
+        music: song
+        robjob: robjob
+        food: food
+        tagline: tagline
+
+Restart the bot after changing this mapping. Keys are command names without
+``!``; values are library names stored in the existing quotes database. Multiple
+commands may use the same library. Command names are case-insensitive; library
+names retain their case. No additional commands are enabled by default.
+
+For example, ``!music add: Blue Monday`` adds to the ``song`` library,
+``!music`` returns a random entry, and ``!music Blue`` searches that library.
+``!music Blue 2`` selects its second matching entry. ``!music del: Blue``
+deletes only when exactly one entry matches; ``!music del: Blue 2`` deletes
+the second matching entry. Both ``add`` and ``del`` also work without colons.
+Empty additions and invalid or ambiguous deletions leave the library unchanged.
+
+Configured commands appear in command help. Invalid entries and names that
+conflict with existing commands (including ``quote`` and ``q``) are skipped
+with an error in the startup log. Libraries need no separate creation step;
+the first addition creates their first entry. Existing quote data needs no
+migration. SQLite and MongoDB support the same library commands.
