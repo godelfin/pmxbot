@@ -2,6 +2,7 @@ import random
 import warnings
 import itertools
 import logging
+import urllib.parse
 
 import requests
 import bs4
@@ -91,10 +92,24 @@ def urban_lookup(word):
 
 def lookup_acronym(acronym, limit=3):
     acronym = acronym.strip().upper().replace('.', '')
-    html = http.open('http://www.acronymfinder.com/%s.html' % acronym).text
-    soup = bs4.BeautifulSoup(html, 'html.parser')
-    nodes = soup.findAll(name='td', attrs={'class': 'result-list__body__meaning'})
-    return [node.text for node in itertools.islice(nodes, limit)]
+    url = f'https://www.acronymfinder.com/{urllib.parse.quote(acronym)}.html'
+
+    response = requests.get(
+        url,
+        headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:156.0) Gecko/20100101 Firefox/156.0',
+            'Accept': 'text/html',
+        },
+        timeout=10,
+    )
+    response.raise_for_status()
+
+    soup = bs4.BeautifulSoup(response.text, 'html.parser')
+    nodes = soup.find_all(
+        name='td',
+        attrs={'class': 'result-list__body__meaning'},
+    )
+    return [node.get_text() for node in itertools.islice(nodes, limit)]
 
 
 @jaraco.functools.once
