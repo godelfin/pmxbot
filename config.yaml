@@ -44,3 +44,7 @@ message rate limit: 2.5
 #     robjob: robjob
 #     food: food
 #     tagline: tagline
+
+# Secret keywords; unset variables leave Silent Mode off.
+silent_mode_disable_command: !env SILENT_MODE_DISABLE_CMD
+silent_mode_enable_command: !env SILENT_MODE_ENABLE_CMD

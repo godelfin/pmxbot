@@ -72,6 +72,31 @@ Configuration
 Configuration is based on very easy YAML files. Check out config.yaml in the
 source tree for an example.
 
+Silent mode
+-----------
+
+Configure secret command keywords using environment variables::
+
+    silent_mode_disable_command: !env SILENT_MODE_DISABLE_CMD
+    silent_mode_enable_command: !env SILENT_MODE_ENABLE_CMD
+
+Set those environment variables before starting the bot. If the disable
+keyword is ``sleep-secret``, send ``!sleep-secret`` to suppress bot output;
+send ``!`` followed by the enable keyword to restore output. Keywords are
+case-sensitive and must match the entire message (surrounding whitespace is
+ignored). You can send these controls privately to the bot. Neither control
+produces a reply, appears in help, or is passed to the bot's message logger.
+The values are redacted from startup configuration logging.
+
+Silent mode starts off on every restart. A missing, unset, null, or empty
+disable keyword leaves it off and provides no disable command. An empty
+enable keyword provides no enable command; configure both to allow toggling
+without restarting. Mode applies to the whole bot across all channels and
+private replies, including scheduled output. Incoming messages continue to
+be logged and commands still run, including their side effects. Suppressed
+replies are discarded rather than queued or logged as sent messages. IRC
+connection traffic and private logging notices continue normally.
+
 Usage
 =====
 

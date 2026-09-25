@@ -197,7 +197,7 @@ class LoggingCommandBot(core.Bot, irc.bot.SingleServerIRCBot):
         time.sleep(1)
         connection.join(channel)
         time.sleep(1)
-        connection.privmsg(channel, "You summoned me, master %s?" % nick)
+        self.out(channel, "You summoned me, master %s?" % nick)
 
 
 class SilentCommandBot(LoggingCommandBot):

@@ -427,7 +427,11 @@ class Bot(metaclass=abc.ABCMeta):
     The abstract interface for the bot.
     """
 
+    silent = False
+
     def out(self, channel, s, log=True):
+        if self.silent:
+            return
         try:
             sent = self.allow(channel, s) and self.transmit(channel, s)
         except Exception:
@@ -480,6 +484,9 @@ class Bot(metaclass=abc.ABCMeta):
     def handle_action(self, channel, nick, msg):
         "Core message parser and dispatcher"
 
+        if self._handle_silent_control(msg):
+            return
+
         messages = ()
         for handler in Handler.find_matching(msg, channel):
             exception_handler = functools.partial(
@@ -496,6 +503,20 @@ class Bot(metaclass=abc.ABCMeta):
             if not handler.allow_chain:
                 break
         self._handle_output(channel, messages)
+
+    def _handle_silent_control(self, message):
+        """Consume secret controls before logging or other message handlers."""
+        for key, silent in (
+            ("silent_mode_disable_command", True),
+            ("silent_mode_enable_command", False),
+        ):
+            keyword = pmxbot.config.get(key)
+            if not isinstance(keyword, str) or not keyword.strip():
+                continue
+            if message.strip() == "!" + keyword.strip().lstrip("!"):
+                self.silent = silent
+                return True
+        return False
 
     def init_schedule(self, scheduler):
         for handler in Scheduled._registry:
@@ -585,7 +606,16 @@ def initialize(config):
     channels = config.log_channels + config.other_channels
 
     log.info('Running with config')
-    log.info(pprint.pformat(config))
+    log.info(
+        pprint.pformat(
+            {
+                key: "<redacted>"
+                if key in ("silent_mode_disable_command", "silent_mode_enable_command")
+                else value
+                for key, value in config.items()
+            }
+        )
+    )
 
     host = config.get('server_host', 'localhost')
     port = config.get('server_port', 6667)
