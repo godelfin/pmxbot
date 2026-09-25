@@ -87,7 +87,7 @@ def urban_lookup(word):
     res = resp.json()
     if not res['list']:
         return
-    return res['list'][0]['definition'].rstrip()
+    return res['list'][0]['definition'].replace('\n', ' ').replace('\r', ' ').rstrip()
 
 
 def lookup_acronym(acronym, limit=3):
