@@ -17,6 +17,8 @@ except (ImportError, SyntaxError):
 import pmxbot.phrases
 from . import http
 
+import re
+
 
 log = logging.getLogger(__name__)
 
@@ -75,20 +77,53 @@ def lookup(word):
 lookup.provider = 'Wordnik'  # type: ignore
 
 
+def _limit_to_sentence(text, minimum=400, maximum=450):
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    if len(text) <= maximum:
+        return text
+
+    # Include common closing quotes/brackets after sentence punctuation.
+    endings = list(re.finditer(
+        r'[.!?](?:["\')\]]?)(?=\s|$)',
+        text,
+    ))
+
+    valid_endings = [
+        match.end()
+        for match in endings
+        if match.end() <= maximum
+    ]
+
+    if not valid_endings:
+        # No complete sentence fits within the maximum.
+        return text[:maximum].rsplit(' ', 1)[0].rstrip()
+
+    # Prefer an ending in the requested 400–450 range.
+    preferred = [
+        ending for ending in valid_endings
+        if ending >= minimum
+    ]
+
+    return text[max(preferred or valid_endings)]
+
+
 def urban_lookup(word):
     """
-    Return a Urban Dictionary definition for a word or None if no result was
+    Return an Urban Dictionary definition for a word or None if no result was
     found.
     """
     url = "http://api.urbandictionary.com/v0/define"
-    params = dict({'term':word})
+    params = {'term': word}
     resp = requests.get(url, params=params, timeout=5)
     resp.raise_for_status()
     res = resp.json()
+
     if not res['list']:
         return
-    return res['list'][0]['definition'].replace('\n', ' ').replace('\r', ' ').rstrip()
 
+    definition = res['list'][0]['definition']
+    return _limit_to_sentence(definition)
 
 def lookup_acronym(acronym, limit=3):
     acronym = acronym.strip().upper().replace('.', '')
