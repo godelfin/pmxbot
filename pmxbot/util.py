@@ -105,7 +105,7 @@ def _limit_to_sentence(text, minimum=400, maximum=450):
         if ending >= minimum
     ]
 
-    return text[max(preferred or valid_endings)]
+    return text[:max(preferred or valid_endings)]
 
 
 def urban_lookup(word):
