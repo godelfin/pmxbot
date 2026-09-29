@@ -12,7 +12,11 @@ import pmxbot
 from pmxbot import core, images, quotes
 
 PNG = b'\x89PNG\r\n\x1a\nimage bytes'
-URL = 'https://i.ibb.co/example/image.png'
+URL = 'https://images.example.com/image.png'
+
+
+def hosted_url(cache, prompt):
+    return f"{cache.r2['public_url'].rstrip('/')}/{cache.cache_key(prompt)}.png"
 
 
 @pytest.fixture
@@ -99,7 +103,11 @@ def config(tmp_path, monkeypatch):
         'images_enabled': True,
         'images_directory': str(tmp_path / 'images'),
         'openai_api_key': 'openai-secret',
-        'imgbb_api_key': 'imgbb-secret',
+        'r2_endpoint_url': 'https://account.r2.cloudflarestorage.com',
+        'r2_access_key_id': 'r2-access-secret',
+        'r2_secret_access_key': 'r2-secret',
+        'r2_bucket': 'bot-images',
+        'r2_public_url': 'https://images.example.com',
     }
     monkeypatch.setattr(pmxbot, 'config', config, raising=False)
     return config
@@ -113,14 +121,17 @@ def post(monkeypatch):
         'usage': {'total_tokens': 42},
         'data': [{'b64_json': base64.b64encode(PNG).decode()}],
     }
-    upload = Mock()
-    upload.json.return_value = {
-        'success': True,
-        'data': {'url': URL, 'delete_url': 'https://ibb.co/delete'},
-    }
-    post = Mock(side_effect=[generation, upload])
+    post = Mock(return_value=generation)
     monkeypatch.setattr(images.requests, 'post', post)
     return post
+
+
+@pytest.fixture(autouse=True)
+def r2(monkeypatch):
+    client = Mock()
+    client.put_object.return_value = {'ETag': 'image-etag'}
+    monkeypatch.setattr(images.boto3, 'client', Mock(return_value=client))
+    return client
 
 
 def read_row(cache):
@@ -131,7 +142,9 @@ def read_row(cache):
 
 def test_generate_persist_and_reuse(config, post):
     cache = images.ImageCache(config)
-    assert cache.get('  A CAFÉ\tcat ', 'alice', '#test') == URL
+    assert cache.get('  A CAFÉ\tcat ', 'alice', '#test') == hosted_url(
+        cache, 'a café cat'
+    )
     row = read_row(cache)
     assert Path(row['local_filename']).read_bytes() == PNG
     assert row['normalized_prompt'] == 'a café cat'
@@ -139,16 +152,18 @@ def test_generate_persist_and_reuse(config, post):
     assert row['channel'] == '#test'
     assert json.loads(row['generation_metadata_json'])['usage']['total_tokens'] == 42
     assert 'b64_json' not in row['generation_metadata_json']
-    assert json.loads(row['host_metadata_json'])['delete_url']
+    assert row['host'] == 'r2'
+    assert json.loads(row['host_metadata_json'])['etag'] == 'image-etag'
     request = post.call_args_list[0].kwargs
     assert request['json']['prompt'] == '  A CAFÉ\tcat '
     assert request['json']['output_format'] == 'png'
     assert request['headers']['Authorization'] == 'Bearer openai-secret'
-    assert post.call_args_list[1].kwargs['data']['key'] == 'imgbb-secret'
     # A new instance simulates a restart; credentials are not needed for a hit.
-    config.update(openai_api_key='', imgbb_api_key='')
-    assert images.ImageCache(config).get('a cafe\u0301 CAT') == URL
-    assert post.call_count == 2
+    config.update(openai_api_key='', r2_access_key_id='', r2_secret_access_key='')
+    assert images.ImageCache(config).get('a cafe\u0301 CAT') == hosted_url(
+        cache, 'a café cat'
+    )
+    assert post.call_count == 1
     assert read_row(cache)['hit_count'] == 1
 
 
@@ -173,9 +188,9 @@ def test_cache_uses_main_database(config, post):
         main.db.execute('CREATE TABLE existing_data (value TEXT)')
         main.db.execute("INSERT INTO existing_data VALUES ('keep me')")
         cache = images.ImageCache(config)
-        assert cache.get('cat') == URL
+        assert cache.get('cat') == hosted_url(cache, 'cat')
         assert main.db.execute('SELECT hosted_url FROM image_cache').fetchone() == (
-            URL,
+            hosted_url(cache, 'cat'),
         )
         assert main.db.execute('SELECT value FROM existing_data').fetchone() == (
             'keep me',
@@ -204,29 +219,33 @@ def test_unsupported_database_reports_error(config, post, uri):
     post.assert_not_called()
 
 
-def test_upload_failure_retries_only_upload(config, post):
-    generation, upload = list(post.side_effect)
-    post.side_effect = [generation, requests.Timeout('secret'), upload]
+def test_upload_failure_retries_only_upload(config, post, r2):
+    r2.put_object.side_effect = [
+        images.ClientError(
+            {'Error': {'Code': 'AccessDenied', 'Message': 'secret'}}, 'PutObject'
+        ),
+        {'ETag': 'ok'},
+    ]
     cache = images.ImageCache(config)
     with pytest.raises(images.ImageError, match='saved locally'):
         cache.get('cat')
     assert read_row(cache)['hosted_url'] is None
     assert read_row(cache)['last_error']
-    assert cache.get('CAT') == URL
-    assert post.call_count == 3
-    assert post.call_args_list[2].args[0] == 'https://api.imgbb.com/1/upload'
+    assert 'secret' not in read_row(cache)['last_error']
+    assert cache.get('CAT') == hosted_url(cache, 'cat')
+    assert post.call_count == 1
+    assert r2.put_object.call_count == 2
     assert read_row(cache)['last_error'] is None
 
 
-def test_missing_local_file_regenerates_pending_upload(config, post):
-    generation, upload = list(post.side_effect)
-    post.side_effect = [generation, requests.Timeout(), generation, upload]
+def test_missing_local_file_regenerates_pending_upload(config, post, r2):
+    r2.put_object.side_effect = [images.BotoCoreError(), {'ETag': 'ok'}]
     cache = images.ImageCache(config)
     with pytest.raises(images.ImageError):
         cache.get('cat')
     Path(read_row(cache)['local_filename']).unlink()
-    assert cache.get('cat') == URL
-    assert post.call_count == 4
+    assert cache.get('cat') == hosted_url(cache, 'cat')
+    assert post.call_count == 2
 
 
 @pytest.mark.parametrize(
@@ -250,9 +269,9 @@ def test_invalid_generation_does_not_upload(config, post, data):
 
 
 def test_missing_credentials_prevents_generation(config, post, monkeypatch):
-    config['imgbb_api_key'] = ''
-    monkeypatch.delenv('IMGBB_API_KEY', raising=False)
-    with pytest.raises(images.ImageError, match='IMGBB_API_KEY'):
+    config['r2_secret_access_key'] = ''
+    monkeypatch.delenv('R2_SECRET_ACCESS_KEY', raising=False)
+    with pytest.raises(images.ImageError, match='R2_SECRET_ACCESS_KEY'):
         images.ImageCache(config).get('cat')
     post.assert_not_called()
 
@@ -264,18 +283,91 @@ def test_provider_error_is_sanitized(config, post):
     assert 'secret' not in str(caught.value)
 
 
-def test_invalid_upload_preserves_local_file(config, post):
-    generation, upload = list(post.side_effect)
-    upload.json.return_value = {
-        'success': True,
-        'data': {'url': 'https://ibb.co/\r\ninject'},
-    }
-    post.side_effect = [generation, upload]
+def test_r2_upload_parameters(config, post, r2):
     cache = images.ImageCache(config)
+    received = []
+
+    def upload(**kwargs):
+        received.append(kwargs['Body'].read())
+        return {'ETag': 'etag'}
+
+    r2.put_object.side_effect = upload
+    cache.get('cat')
+    assert received == [PNG]
+    args = r2.put_object.call_args.kwargs
+    assert args['Bucket'] == 'bot-images'
+    assert args['Key'] == cache.cache_key('cat') + '.png'
+    assert args['ContentType'] == 'image/png'
+    client_args = images.boto3.client.call_args.kwargs
+    assert client_args['region_name'] == 'auto'
+    assert client_args['endpoint_url'] == config['r2_endpoint_url']
+    assert client_args['aws_access_key_id'] == 'r2-access-secret'
+    assert client_args['aws_secret_access_key'] == 'r2-secret'
+    assert client_args['config'].signature_version == 's3v4'
+    r2.close.assert_called_once()
+
+
+def test_imgbb_entry_migrates_without_regeneration(config, post, r2):
+    cache = images.ImageCache(config)
+    cache.get('cat')
+    with sqlite3.connect(str(cache.database)) as db:
+        db.execute(
+            "UPDATE image_cache SET host = 'imgbb', hosted_url = 'https://i.ibb.co/old.png', host_metadata_json = '{}' "
+        )
+    r2.put_object.side_effect = images.BotoCoreError()
     with pytest.raises(images.ImageError, match='saved locally'):
         cache.get('cat')
-    assert Path(read_row(cache)['local_filename']).is_file()
-    assert read_row(cache)['hosted_url'] is None
+    assert read_row(cache)['host'] == 'imgbb'
+    assert read_row(cache)['hosted_url'] == 'https://i.ibb.co/old.png'
+    r2.put_object.side_effect = None
+    assert cache.get('cat') == hosted_url(cache, 'cat')
+    assert read_row(cache)['host'] == 'r2'
+    assert post.call_count == 1
+    assert r2.put_object.call_count == 3
+
+
+@pytest.mark.parametrize(
+    'setting,value',
+    [
+        ('r2_bucket', 'another-bucket'),
+        ('r2_endpoint_url', 'https://another.r2.cloudflarestorage.com'),
+    ],
+)
+def test_changed_r2_destination_reuploads_local_image(config, post, r2, setting, value):
+    images.ImageCache(config).get('cat')
+    config[setting] = value
+    cache = images.ImageCache(config)
+    assert cache.get('cat') == hosted_url(cache, 'cat')
+    assert post.call_count == 1
+    assert r2.put_object.call_count == 2
+
+
+def test_changed_public_url_reuses_object(config, post, r2):
+    images.ImageCache(config).get('cat')
+    config['r2_public_url'] = 'https://new.example.com/'
+    cache = images.ImageCache(config)
+    url = cache.get('cat')
+    assert url == hosted_url(cache, 'cat')
+    assert read_row(cache)['hosted_url'] == url
+    assert post.call_count == 1
+    assert r2.put_object.call_count == 1
+
+
+@pytest.mark.parametrize('name', ['r2_endpoint_url', 'r2_public_url'])
+@pytest.mark.parametrize(
+    'url',
+    [
+        'http://images.example.com',
+        'https://example.com/\r\ninject',
+        'https://user:secret@example.com',
+        'https://example.com?secret=x',
+    ],
+)
+def test_invalid_r2_url_prevents_generation(config, post, name, url):
+    config[name] = url
+    with pytest.raises(images.ImageError, match='HTTPS URL'):
+        images.ImageCache(config).get('cat')
+    post.assert_not_called()
 
 
 def test_command_runs_in_background_and_delivers_result(config, monkeypatch):
@@ -322,7 +414,8 @@ def test_keys_redacted_at_startup(config, monkeypatch, caplog):
     with caplog.at_level('INFO'):
         core.initialize(config)
     assert 'openai-secret' not in caplog.text
-    assert 'imgbb-secret' not in caplog.text
+    assert 'r2-access-secret' not in caplog.text
+    assert 'r2-secret' not in caplog.text
     assert '<redacted>' in caplog.text
 
 

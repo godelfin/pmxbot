@@ -1,4 +1,4 @@
-"""OpenAI image generation with a persistent local cache and ImgBB hosting."""
+"""OpenAI image generation with a persistent local cache and Cloudflare R2 hosting."""
 
 import base64
 import binascii
@@ -14,9 +14,12 @@ import unicodedata
 from collections.abc import Mapping
 from contextlib import closing
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
+import boto3
 import requests
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 import pmxbot
 
@@ -74,7 +77,43 @@ class ImageCache:
         self.openai_key = config.get('openai_api_key') or os.environ.get(
             'OPENAI_API_KEY'
         )
-        self.imgbb_key = config.get('imgbb_api_key') or os.environ.get('IMGBB_API_KEY')
+        self.r2 = {
+            name: config.get('r2_' + name) or os.environ.get('R2_' + name.upper(), '')
+            for name in (
+                'endpoint_url',
+                'access_key_id',
+                'secret_access_key',
+                'bucket',
+                'public_url',
+            )
+        }
+
+    def destination(self, key):
+        for name in ('endpoint_url', 'bucket', 'public_url'):
+            if not self.r2[name]:
+                raise ImageError(
+                    f'Configure R2_{name.upper()} before generating images.'
+                )
+        for name in ('endpoint_url', 'public_url'):
+            url = self.r2[name]
+            parsed = urlsplit(url)
+            if (
+                parsed.scheme != 'https'
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.query
+                or parsed.fragment
+                or any(char.isspace() for char in url)
+            ):
+                raise ImageError(
+                    f'R2_{name.upper()} must be an HTTPS URL without credentials, query, or fragment.'
+                )
+        return {
+            'endpoint_url': self.r2['endpoint_url'].rstrip('/'),
+            'bucket': self.r2['bucket'],
+            'key': f'{key}.png',
+        }
 
     def cache_key(self, prompt):
         value = dict(self.settings, prompt=normalize_prompt(prompt), version=1)
@@ -91,7 +130,7 @@ class ImageCache:
                 cache_key TEXT PRIMARY KEY, prompt TEXT NOT NULL,
                 normalized_prompt TEXT NOT NULL, settings_json TEXT NOT NULL,
                 local_filename TEXT NOT NULL, hosted_url TEXT,
-                host TEXT NOT NULL DEFAULT 'imgbb', host_metadata_json TEXT,
+                host TEXT NOT NULL DEFAULT 'r2', host_metadata_json TEXT,
                 generation_metadata_json TEXT NOT NULL, requested_by TEXT,
                 channel TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 uploaded_at TEXT, last_accessed_at TEXT,
@@ -107,19 +146,32 @@ class ImageCache:
         if not normalize_prompt(prompt):
             raise ImageError('Usage: !image <prompt>')
         key = self.cache_key(prompt)
+        destination = self.destination(key)
+        url = self.r2['public_url'].rstrip('/') + '/' + quote(destination['key'])
         with closing(self.connect()) as db:
             row = db.execute(
                 'SELECT * FROM image_cache WHERE cache_key = ?', (key,)
             ).fetchone()
-            if row and row['hosted_url']:
+            metadata = json.loads(row['host_metadata_json'] or '{}') if row else {}
+            if (
+                row
+                and row['host'] == 'r2'
+                and row['hosted_url']
+                and all(
+                    metadata.get(name) == value for name, value in destination.items()
+                )
+            ):
                 db.execute(
                     '''UPDATE image_cache SET hit_count = hit_count + 1,
-                    last_accessed_at = CURRENT_TIMESTAMP WHERE cache_key = ?''',
-                    (key,),
+                    hosted_url = ?, last_accessed_at = CURRENT_TIMESTAMP WHERE cache_key = ?''',
+                    (url, key),
                 )
-                return row['hosted_url']
-            if not self.imgbb_key:
-                raise ImageError('Configure IMGBB_API_KEY before generating images.')
+                return url
+            for name in ('access_key_id', 'secret_access_key'):
+                if not self.r2[name]:
+                    raise ImageError(
+                        f'Configure R2_{name.upper()} before generating images.'
+                    )
             filename = (
                 Path(row['local_filename']) if row else self.directory / f'{key}.png'
             )
@@ -134,8 +186,8 @@ class ImageCache:
                 db.execute(
                     '''INSERT OR REPLACE INTO image_cache
                     (cache_key, prompt, normalized_prompt, settings_json,
-                     local_filename, generation_metadata_json, requested_by, channel)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                     local_filename, generation_metadata_json, requested_by, channel, host)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'r2')''',
                     (
                         key,
                         prompt,
@@ -148,7 +200,7 @@ class ImageCache:
                     ),
                 )
             try:
-                hosted_url, metadata = self.upload(filename)
+                metadata = self.upload(filename, destination)
             except ImageError as exc:
                 db.execute(
                     'UPDATE image_cache SET last_error = ? WHERE cache_key = ?',
@@ -158,12 +210,12 @@ class ImageCache:
                     'Image saved locally, but upload failed. Repeat the prompt to retry.'
                 ) from None
             db.execute(
-                '''UPDATE image_cache SET hosted_url = ?, host_metadata_json = ?,
+                '''UPDATE image_cache SET hosted_url = ?, host_metadata_json = ?, host = 'r2',
                 uploaded_at = CURRENT_TIMESTAMP, last_accessed_at = CURRENT_TIMESTAMP,
                 last_error = NULL WHERE cache_key = ?''',
-                (hosted_url, json.dumps(metadata), key),
+                (url, json.dumps(metadata), key),
             )
-            return hosted_url
+            return url
 
     def generate(self, prompt):
         data = post_json(
@@ -199,29 +251,35 @@ class ImageCache:
             if temporary and temporary.exists():
                 temporary.unlink()
 
-    def upload(self, filename):
-        with filename.open('rb') as stream:
-            data = post_json(
-                'https://api.imgbb.com/1/upload',
-                'ImgBB',
-                data={'key': self.imgbb_key, 'name': filename.stem},
-                files={'image': (filename.name, stream, 'image/png')},
-                timeout=(10, 60),
-            )
+    def upload(self, filename, destination):
         try:
-            metadata = data['data']
-            url = metadata['url']
-            parsed = urlsplit(url)
-            if (
-                data.get('success') is not True
-                or parsed.scheme != 'https'
-                or not parsed.netloc
-                or any(char.isspace() for char in url)
-            ):
-                raise ValueError('Invalid hosted URL')
-            return url, metadata
-        except (KeyError, TypeError, ValueError, AttributeError):
-            raise ImageError('ImgBB returned no valid hosted URL.') from None
+            with closing(
+                boto3.client(
+                    's3',
+                    endpoint_url=destination['endpoint_url'],
+                    region_name='auto',
+                    aws_access_key_id=self.r2['access_key_id'],
+                    aws_secret_access_key=self.r2['secret_access_key'],
+                    config=Config(
+                        signature_version='s3v4',
+                        connect_timeout=10,
+                        read_timeout=60,
+                        retries={'mode': 'standard', 'total_max_attempts': 3},
+                        s3={'addressing_style': 'path'},
+                    ),
+                )
+            ) as client, filename.open('rb') as stream:
+                result = client.put_object(
+                    Bucket=destination['bucket'],
+                    Key=destination['key'],
+                    Body=stream,
+                    ContentType='image/png',
+                )
+            return dict(destination, etag=result.get('ETag'))
+        except (BotoCoreError, ClientError, OSError):
+            raise ImageError(
+                'Cloudflare R2 upload failed; please try again later.'
+            ) from None
 
 
 def _generate(cache, prompt, channel, nick):

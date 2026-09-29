@@ -49,13 +49,18 @@ message rate limit: 2.5
 silent_mode_disable_command: !env SILENT_MODE_DISABLE_CMD
 silent_mode_enable_command: !env SILENT_MODE_ENABLE_CMD
 
-# !image <prompt> (alias !imagine): OpenAI generation and ImgBB hosting.
+# !image <prompt> (alias !imagine): OpenAI generation and Cloudflare R2 hosting.
 images_enabled: false
 openai_api_key: !env OPENAI_API_KEY
-imgbb_api_key: !env IMGBB_API_KEY
+# R2 S3 endpoint, e.g. https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+r2_endpoint_url: !env R2_ENDPOINT_URL
+r2_access_key_id: !env R2_ACCESS_KEY_ID
+r2_secret_access_key: !env R2_SECRET_ACCESS_KEY
+r2_bucket: !env R2_BUCKET
+# Public bucket custom domain (or r2.dev URL for development), not the S3 endpoint.
+r2_public_url: !env R2_PUBLIC_URL
 images_directory: images
-# Defaults to cache.sqlite inside images_directory, independently of database.
-# images_database: /path/to/image-cache.sqlite
+# Image cache metadata uses the main SQLite database configured above.
 images_model: gpt-image-1
 images_size: 1024x1024
 images_quality: low

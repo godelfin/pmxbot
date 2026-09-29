@@ -104,17 +104,36 @@ Enable ``!image <prompt>`` (alias ``!imagine``) with::
 
     images_enabled: true
     openai_api_key: !env OPENAI_API_KEY
-    imgbb_api_key: !env IMGBB_API_KEY
+    r2_endpoint_url: !env R2_ENDPOINT_URL
+    r2_access_key_id: !env R2_ACCESS_KEY_ID
+    r2_secret_access_key: !env R2_SECRET_ACCESS_KEY
+    r2_bucket: !env R2_BUCKET
+    r2_public_url: !env R2_PUBLIC_URL
     images_directory: images
     images_model: gpt-image-1
     images_size: 1024x1024
     images_quality: low
 
-Set ``OPENAI_API_KEY`` and ``IMGBB_API_KEY`` in the bot's environment and
-restart it. Obtain an ImgBB key at https://api.imgbb.com/.
-OpenAI generation is billed to your API account; images are uploaded to
-ImgBB and the hosted link is returned to the requesting channel or private
-conversation. API keys are redacted from startup configuration logs.
+Set ``OPENAI_API_KEY`` and the five ``R2_*`` environment variables above,
+then restart the bot. Install updated dependencies with ``pip install -e .``.
+Create an R2 bucket and an R2 S3 access key with Object Read & Write permissions
+scoped to that bucket. Set ``R2_ENDPOINT_URL`` to the S3 API endpoint shown by
+Cloudflare, usually ``https://<ACCOUNT_ID>.r2.cloudflarestorage.com`` (use the
+jurisdiction-specific endpoint if applicable). Set ``R2_BUCKET`` to the bucket
+name, and use the Access Key ID and Secret Access Key for the credentials,
+not a Cloudflare bearer API token. See `Cloudflare's boto3 guide
+<https://developers.cloudflare.com/r2/examples/aws/boto3/>`_.
+
+Connect a public custom domain to the bucket and set ``R2_PUBLIC_URL`` to its
+HTTPS base URL, such as ``https://images.example.com``. For development, you
+can enable and use the bucket's public ``r2.dev`` URL. The public URL is
+separate from the authenticated S3 endpoint; the bot does not enable public
+access or create buckets. See `R2 public buckets
+<https://developers.cloudflare.com/r2/buckets/public-buckets/>`_.
+
+OpenAI generation is billed to your API account; images are uploaded to R2
+and the public link is returned to the requesting channel or private
+conversation. Credentials are redacted from startup configuration logs.
 The implementation follows the `OpenAI Images API
 <https://developers.openai.com/api/docs/guides/image-generation>`_.
 Use a GPT Image model supporting PNG output; model, size, and quality are
@@ -136,9 +155,18 @@ preserved. The original prompt is sent to OpenAI. Equivalent prompts reuse
 the hosted URL across restarts without API calls; different generation
 settings create separate entries. The table stores the original and normalized
 prompts, absolute local filename, hosted URL, generation and host metadata
-(including ImgBB's deletion link), requester, channel, timestamps, hit count,
-and last upload error. Keep the database private because it contains deletion
-links. Uploads have no requested expiration.
+(R2 endpoint, bucket, object key, and ETag), requester, channel, timestamps,
+hit count, and last upload error. R2 objects use the cache key plus ``.png``
+as their name, have ``image/png`` content type, and no requested expiration.
+Public URLs do not use expiring signatures. Keep the database private because
+it contains prompts and requester information.
+
+Existing ImgBB cache entries are moved to R2 when next requested, by uploading
+the saved local image and updating the same SQLite row after a successful
+upload. No new OpenAI call is needed if the local file exists; a missing file
+is regenerated. Old ImgBB uploads are not deleted. Changing the R2 bucket or
+endpoint similarly reuploads saved images on demand. Changing only the public
+base URL updates cached links without uploading or generating again.
 
 If uploading fails, the saved image and cache row remain. Repeat the same
 prompt to retry only the upload. If that pending image file is missing, the
