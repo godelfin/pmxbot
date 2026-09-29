@@ -18,6 +18,7 @@ URL = 'https://i.ibb.co/example/image.png'
 @pytest.fixture
 def config(tmp_path, monkeypatch):
     config = {
+        'database': f'sqlite:{tmp_path / "pmxbot.sqlite"}',
         'images_enabled': True,
         'images_directory': str(tmp_path / 'images'),
         'openai_api_key': 'openai-secret',
@@ -85,6 +86,45 @@ def test_settings_change_cache_key(config):
             images.ImageCache(dict(config, **{setting: value})).cache_key('cat')
             != original
         )
+
+
+def test_cache_uses_main_database(config, post):
+    from pmxbot.storage import SQLiteStorage
+
+    main = SQLiteStorage(config['database'])
+    try:
+        main.db.execute('CREATE TABLE existing_data (value TEXT)')
+        main.db.execute("INSERT INTO existing_data VALUES ('keep me')")
+        cache = images.ImageCache(config)
+        assert cache.get('cat') == URL
+        assert main.db.execute('SELECT hosted_url FROM image_cache').fetchone() == (
+            URL,
+        )
+        assert main.db.execute('SELECT value FROM existing_data').fetchone() == (
+            'keep me',
+        )
+        assert not (cache.directory / 'cache.sqlite').exists()
+    finally:
+        main.close()
+
+
+@pytest.mark.parametrize('uri', ['sqlite:main.sqlite', 'main.sqlite'])
+def test_database_path_matches_main_storage(config, tmp_path, monkeypatch, uri):
+    monkeypatch.chdir(tmp_path)
+    config['database'] = uri
+    assert images.ImageCache(config).database == tmp_path / 'main.sqlite'
+    del config['database']
+    assert images.ImageCache(config).database == tmp_path / 'pmxbot.sqlite'
+
+
+@pytest.mark.parametrize(
+    'uri', ['mongodb://localhost/pmxbot', 'sqlite::memory:', 'sqlite:']
+)
+def test_unsupported_database_reports_error(config, post, uri):
+    config['database'] = uri
+    assert 'SQLite main bot database' in images.image('cat', '#test', 'alice')
+    assert not images._busy.locked()
+    post.assert_not_called()
 
 
 def test_upload_failure_retries_only_upload(config, post):

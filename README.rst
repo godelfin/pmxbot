@@ -122,11 +122,13 @@ passed to the API. Requests run in a background worker, one at a time;
 additional requests receive a busy response instead of being queued.
 
 PNG files are saved atomically under ``images_directory`` (relative to the
-bot's working directory, or an absolute path). ``images_database`` optionally
-sets a separate SQLite filename; by default it is ``cache.sqlite`` inside
-that directory. This cache is independent of the bot's main database, even
-when the main database uses MongoDB. Directories and the ``image_cache`` table
-are created on the first request.
+bot's working directory, or an absolute path). The ``image_cache`` table uses
+the bot's main ``database`` setting (default: ``sqlite:pmxbot.sqlite``), alongside
+logs, quotes, and karma. Image caching requires a persistent SQLite main
+database; MongoDB is not supported for this feature. The worker opens its own
+connection to the same database file. Directories and the ``image_cache`` table
+are created on the first request. ``images_directory`` controls only image
+files, not the database location.
 
 Cache keys hash the Unicode NFKC-normalized, case-folded prompt with collapsed
 whitespace, plus the model, size, quality, and output format. Punctuation is

@@ -50,11 +50,19 @@ class ImageCache:
         self.directory = (
             Path(config.get('images_directory', 'images')).expanduser().resolve()
         )
-        self.database = (
-            Path(config.get('images_database') or self.directory / 'cache.sqlite')
-            .expanduser()
-            .resolve()
-        )
+        database_uri = config.get('database', 'sqlite:pmxbot.sqlite')
+        parsed = urlsplit(database_uri)
+        if parsed.scheme != 'sqlite' and not (
+            not parsed.scheme and database_uri.endswith('.sqlite')
+        ):
+            raise ImageError('Image caching requires a SQLite main bot database.')
+        if not parsed.path or parsed.path == ':memory:':
+            raise ImageError(
+                'Image caching requires a persistent SQLite main bot database.'
+            )
+        # Match SQLiteStorage's URI path handling; only the connection is separate,
+        # because the image worker cannot use the IRC thread's SQLite connection.
+        self.database = Path(parsed.path).resolve()
         self.settings = {
             'model': config.get('images_model', 'gpt-image-1'),
             'size': config.get('images_size', '1024x1024'),
@@ -240,6 +248,9 @@ def image(rest, channel, nick):
         threading.Thread(
             target=_generate, args=(cache, rest, channel, nick), daemon=True
         ).start()
+    except ImageError as exc:
+        _busy.release()
+        return str(exc)
     except Exception:  # noqa: BLE001 - release the worker slot on startup failure
         _busy.release()
         return 'Could not start image request; check the image configuration.'
