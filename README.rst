@@ -150,8 +150,9 @@ per cache; simultaneous processes sharing a cache are not coordinated.
 ``!music`` selects a random band and album from the quote libraries and uses
 the same image generation, cache, and upload flow as ``!imagine``. Its prompt
 is ``an album cover for the band [band]. the name of the album is [album]``.
-It replies ``Looking up or generating your album cover...`` and then sends
-the hosted URL when ready. Empty libraries produce a message asking for an
+It immediately replies ``Looking up or generating your album cover... Band:
+[band]; Album: [album]`` and then sends the hosted URL when ready.
+Empty libraries produce a message asking for an
 entry instead of starting image generation.
 
 By default it reads the ``band`` and ``album`` libraries. It respects custom

@@ -270,7 +270,11 @@ def music(channel, nick):
         f"the name of the album is {selected['album']}"
     )
     return _start_image(
-        prompt, channel, nick, 'Looking up or generating your album cover...'
+        prompt,
+        channel,
+        nick,
+        f"Looking up or generating your album cover... "
+        f"Band: {selected['band']}; Album: {selected['album']}",
     )
 
 

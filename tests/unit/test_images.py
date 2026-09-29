@@ -46,7 +46,8 @@ def test_music_prompt_and_shared_worker(config, music_store, monkeypatch, mapped
     try:
         assert (
             images.music('#test', 'alice')
-            == 'Looking up or generating your album cover...'
+            == 'Looking up or generating your album cover... '
+            'Band: Second Band; Album: First Album'
         )
         thread.return_value.start.assert_called_once_with()
         kwargs = thread.call_args.kwargs
