@@ -609,9 +609,17 @@ def initialize(config):
     log.info(
         pprint.pformat(
             {
-                key: "<redacted>"
-                if key in ("silent_mode_disable_command", "silent_mode_enable_command")
-                else value
+                key: (
+                    "<redacted>"
+                    if key
+                    in (
+                        "silent_mode_disable_command",
+                        "silent_mode_enable_command",
+                        "openai_api_key",
+                        "imgbb_api_key",
+                    )
+                    else value
+                )
                 for key, value in config.items()
             }
         )

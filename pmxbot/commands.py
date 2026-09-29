@@ -23,6 +23,7 @@ from . import karma
 from . import logging
 from . import phrases
 from . import http
+from . import images  # noqa: F401 - register image commands and result delivery
 
 
 def plaintext(html):

@@ -97,6 +97,71 @@ be logged and commands still run, including their side effects. Suppressed
 replies are discarded rather than queued or logged as sent messages. IRC
 connection traffic and private logging notices continue normally.
 
+Image generation
+----------------
+
+Enable ``!image <prompt>`` (alias ``!imagine``) with::
+
+    images_enabled: true
+    openai_api_key: !env OPENAI_API_KEY
+    imgbb_api_key: !env IMGBB_API_KEY
+    images_directory: images
+    images_model: gpt-image-1
+    images_size: 1024x1024
+    images_quality: low
+
+Set ``OPENAI_API_KEY`` and ``IMGBB_API_KEY`` in the bot's environment and
+restart it. Obtain an ImgBB key at https://api.imgbb.com/.
+OpenAI generation is billed to your API account; images are uploaded to
+ImgBB and the hosted link is returned to the requesting channel or private
+conversation. API keys are redacted from startup configuration logs.
+The implementation follows the `OpenAI Images API
+<https://developers.openai.com/api/docs/guides/image-generation>`_.
+Use a GPT Image model supporting PNG output; model, size, and quality are
+passed to the API. Requests run in a background worker, one at a time;
+additional requests receive a busy response instead of being queued.
+
+PNG files are saved atomically under ``images_directory`` (relative to the
+bot's working directory, or an absolute path). The ``image_cache`` table uses
+the bot's main ``database`` setting (default: ``sqlite:pmxbot.sqlite``), alongside
+logs, quotes, and karma. Image caching requires a persistent SQLite main
+database; MongoDB is not supported for this feature. The worker opens its own
+connection to the same database file. Directories and the ``image_cache`` table
+are created on the first request. ``images_directory`` controls only image
+files, not the database location.
+
+Cache keys hash the Unicode NFKC-normalized, case-folded prompt with collapsed
+whitespace, plus the model, size, quality, and output format. Punctuation is
+preserved. The original prompt is sent to OpenAI. Equivalent prompts reuse
+the hosted URL across restarts without API calls; different generation
+settings create separate entries. The table stores the original and normalized
+prompts, absolute local filename, hosted URL, generation and host metadata
+(including ImgBB's deletion link), requester, channel, timestamps, hit count,
+and last upload error. Keep the database private because it contains deletion
+links. Uploads have no requested expiration.
+
+If uploading fails, the saved image and cache row remain. Repeat the same
+prompt to retry only the upload. If that pending image file is missing, the
+bot regenerates it. Cached hosted URLs are not checked for expiration or
+external deletion; delete the corresponding SQLite row to generate a new
+image. Files and rows are retained until manually removed. Use one bot process
+per cache; simultaneous processes sharing a cache are not coordinated.
+
+``!music`` selects a random band and album from the quote libraries and uses
+the same image generation, cache, and upload flow as ``!imagine``. Its prompt
+is ``an album cover for the band [band]. the name of the album is [album]``.
+It immediately replies ``Looking up or generating your album cover... Band:
+[band]; Album: [album]`` and then sends the hosted URL when ready.
+Empty libraries produce a message asking for an
+entry instead of starting image generation.
+
+By default it reads the ``band`` and ``album`` libraries. It respects custom
+``band`` and ``album`` mappings in ``quote_libraries``. Enable those commands
+with ``band: band`` and ``album: album`` under ``quote_libraries``, then populate
+them with ``!band add: <band name>`` and ``!album add: <album title>``.
+``music`` is a built-in command; use another name such as ``tunes`` for a
+song quote library.
+
 Usage
 =====
 
@@ -212,11 +277,11 @@ As Slack provides an IRC interface, it's easy to configure pmxbot for use
 in Slack. Here's how:
 
 0. Install with ``pmxbot[irc]``.
-1. `Enable the IRC Gateway <https://slack.zendesk.com/hc/en-us/articles/201727913-Connecting-to-Slack-over-IRC-and-XMPP>`.
+1. `Enable the IRC Gateway <https://slack.zendesk.com/hc/en-us/articles/201727913-Connecting-to-Slack-over-IRC-and-XMPP>`_.
 2. Create an e-mail for the bot.
 3. Create the account for the bot in Slack and activate its account.
 4. Log into Slack using that new account and `get the IRC gateway
-   password <https://my.slack.com/account/gateways>` for that
+   password <https://my.slack.com/account/gateways>`_ for that
    account.
 5. Configure the pmxbot as you would for an IRC server, but use these
    settings for the connection:
@@ -250,7 +315,7 @@ for other libraries, configure a command-to-library mapping in YAML::
     quote_libraries:
         album: album
         band: band
-        music: song
+        tunes: song
         robjob: robjob
         food: food
         tagline: tagline
@@ -260,10 +325,10 @@ Restart the bot after changing this mapping. Keys are command names without
 commands may use the same library. Command names are case-insensitive; library
 names retain their case. No additional commands are enabled by default.
 
-For example, ``!music add: Blue Monday`` adds to the ``song`` library,
-``!music`` returns a random entry, and ``!music Blue`` searches that library.
-``!music Blue 2`` selects its second matching entry. ``!music del: Blue``
-deletes only when exactly one entry matches; ``!music del: Blue 2`` deletes
+For example, ``!tunes add: Blue Monday`` adds to the ``song`` library,
+``!tunes`` returns a random entry, and ``!tunes Blue`` searches that library.
+``!tunes Blue 2`` selects its second matching entry. ``!tunes del: Blue``
+deletes only when exactly one entry matches; ``!tunes del: Blue 2`` deletes
 the second matching entry. Both ``add`` and ``del`` also work without colons.
 Empty additions and invalid or ambiguous deletions leave the library unchanged.
 
