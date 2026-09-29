@@ -11,6 +11,7 @@ import sqlite3
 import tempfile
 import threading
 import unicodedata
+from collections.abc import Mapping
 from contextlib import closing
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -19,6 +20,7 @@ import requests
 
 import pmxbot
 
+from . import quotes
 from .core import SwitchChannel, command, execdelay
 
 log = logging.getLogger(__name__)
@@ -239,6 +241,41 @@ def image(rest, channel, nick):
     "Generate and cache an image: !image <prompt>."
     if not normalize_prompt(rest):
         return 'Usage: !image <prompt>'
+    return _start_image(rest, channel, nick, 'Looking up or generating your image…')
+
+
+@command()
+def music(channel, nick):
+    "Generate an album cover from a random band and album in the quote libraries."
+    if not pmxbot.config.get('images_enabled', False):
+        return 'Image generation is disabled; configure images_enabled to enable it.'
+    configured = pmxbot.config.get('quote_libraries', {})
+    libraries = (
+        {
+            name.lower(): library
+            for name, library in configured.items()
+            if isinstance(name, str) and isinstance(library, str) and library.strip()
+        }
+        if isinstance(configured, Mapping)
+        else {}
+    )
+    selected = {}
+    for name in ('band', 'album'):
+        value, _, _ = quotes.Quotes.store.lookup(library=libraries.get(name, name))
+        if not value:
+            return f'No {name} entries found. Add one with !{name} add: <text>.'
+        selected[name] = value
+    prompt = (
+        f"an album cover for the band {selected['band']}. "
+        f"the name of the album is {selected['album']}"
+    )
+    return _start_image(
+        prompt, channel, nick, 'Looking up or generating your album cover...'
+    )
+
+
+def _start_image(rest, channel, nick, acknowledgement):
+    "Start the shared image worker with a command-specific acknowledgement."
     if not pmxbot.config.get('images_enabled', False):
         return 'Image generation is disabled; configure images_enabled to enable it.'
     if not _busy.acquire(blocking=False):
@@ -254,7 +291,7 @@ def image(rest, channel, nick):
     except Exception:  # noqa: BLE001 - release the worker slot on startup failure
         _busy.release()
         return 'Could not start image request; check the image configuration.'
-    return 'Looking up or generating your image…'
+    return acknowledgement
 
 
 @execdelay('image results', None, 1, repeat=True)

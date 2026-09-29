@@ -40,7 +40,7 @@ message rate limit: 2.5
 # quote_libraries:
 #     album: album
 #     band: band
-#     music: song
+#     tunes: song
 #     robjob: robjob
 #     food: food
 #     tagline: tagline

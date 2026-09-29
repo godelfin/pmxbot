@@ -9,10 +9,86 @@ import pytest
 import requests
 
 import pmxbot
-from pmxbot import core, images
+from pmxbot import core, images, quotes
 
 PNG = b'\x89PNG\r\n\x1a\nimage bytes'
 URL = 'https://i.ibb.co/example/image.png'
+
+
+@pytest.fixture
+def music_store(config, monkeypatch):
+    store = quotes.SQLiteQuotes(config['database'])
+    monkeypatch.setattr(quotes.Quotes, 'store', store, raising=False)
+    yield store
+    store.close()
+
+
+@pytest.mark.parametrize('mapped', [False, True])
+def test_music_prompt_and_shared_worker(config, music_store, monkeypatch, mapped):
+    if mapped:
+        config['quote_libraries'] = {'Band': 'artists', 'album': 'records'}
+    band_library, album_library = (
+        ('artists', 'records') if mapped else ('band', 'album')
+    )
+    music_store.db.executemany(
+        'INSERT INTO quotes (library, quote) VALUES (?, ?)',
+        [
+            (band_library, 'First Band'),
+            (band_library, 'Second Band'),
+            (album_library, 'First Album'),
+            (album_library, 'Second Album'),
+        ],
+    )
+    choose = Mock(side_effect=[1, 0])
+    monkeypatch.setattr(quotes.random, 'randrange', choose)
+    thread = Mock()
+    monkeypatch.setattr(images.threading, 'Thread', thread)
+    try:
+        assert (
+            images.music('#test', 'alice')
+            == 'Looking up or generating your album cover...'
+        )
+        thread.return_value.start.assert_called_once_with()
+        kwargs = thread.call_args.kwargs
+        assert kwargs['target'] is images._generate
+        cache, prompt, channel, nick = kwargs['args']
+        assert isinstance(cache, images.ImageCache)
+        assert (
+            prompt
+            == 'an album cover for the band Second Band. the name of the album is First Album'
+        )
+        assert (channel, nick) == ('#test', 'alice')
+        assert choose.call_count == 2
+        assert 'already running' in images.image('cat', '#test', 'bob')
+    finally:
+        images._busy.release()
+
+
+@pytest.mark.parametrize('missing', ['band', 'album'])
+def test_music_empty_library(config, music_store, monkeypatch, missing):
+    if missing == 'album':
+        music_store.db.execute(
+            "INSERT INTO quotes (library, quote) VALUES ('band', 'A Band')"
+        )
+    start = Mock()
+    monkeypatch.setattr(images, '_start_image', start)
+    assert (
+        images.music('#test', 'alice')
+        == f'No {missing} entries found. Add one with !{missing} add: <text>.'
+    )
+    start.assert_not_called()
+
+
+def test_music_disabled(config, monkeypatch):
+    config['images_enabled'] = False
+    start = Mock()
+    monkeypatch.setattr(images, '_start_image', start)
+    assert 'disabled' in images.music('#test', 'alice')
+    start.assert_not_called()
+
+
+def test_music_registered():
+    assert next(core.Handler.find_matching('!music', '#test')).func is images.music
 
 
 @pytest.fixture

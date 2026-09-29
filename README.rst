@@ -147,6 +147,20 @@ external deletion; delete the corresponding SQLite row to generate a new
 image. Files and rows are retained until manually removed. Use one bot process
 per cache; simultaneous processes sharing a cache are not coordinated.
 
+``!music`` selects a random band and album from the quote libraries and uses
+the same image generation, cache, and upload flow as ``!imagine``. Its prompt
+is ``an album cover for the band [band]. the name of the album is [album]``.
+It replies ``Looking up or generating your album cover...`` and then sends
+the hosted URL when ready. Empty libraries produce a message asking for an
+entry instead of starting image generation.
+
+By default it reads the ``band`` and ``album`` libraries. It respects custom
+``band`` and ``album`` mappings in ``quote_libraries``. Enable those commands
+with ``band: band`` and ``album: album`` under ``quote_libraries``, then populate
+them with ``!band add: <band name>`` and ``!album add: <album title>``.
+``music`` is a built-in command; use another name such as ``tunes`` for a
+song quote library.
+
 Usage
 =====
 
@@ -300,7 +314,7 @@ for other libraries, configure a command-to-library mapping in YAML::
     quote_libraries:
         album: album
         band: band
-        music: song
+        tunes: song
         robjob: robjob
         food: food
         tagline: tagline
@@ -310,10 +324,10 @@ Restart the bot after changing this mapping. Keys are command names without
 commands may use the same library. Command names are case-insensitive; library
 names retain their case. No additional commands are enabled by default.
 
-For example, ``!music add: Blue Monday`` adds to the ``song`` library,
-``!music`` returns a random entry, and ``!music Blue`` searches that library.
-``!music Blue 2`` selects its second matching entry. ``!music del: Blue``
-deletes only when exactly one entry matches; ``!music del: Blue 2`` deletes
+For example, ``!tunes add: Blue Monday`` adds to the ``song`` library,
+``!tunes`` returns a random entry, and ``!tunes Blue`` searches that library.
+``!tunes Blue 2`` selects its second matching entry. ``!tunes del: Blue``
+deletes only when exactly one entry matches; ``!tunes del: Blue 2`` deletes
 the second matching entry. Both ``add`` and ``del`` also work without colons.
 Empty additions and invalid or ambiguous deletions leave the library unchanged.
 
