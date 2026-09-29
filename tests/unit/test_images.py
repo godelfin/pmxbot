@@ -28,7 +28,10 @@ def music_store(config, monkeypatch):
 
 
 @pytest.mark.parametrize('mapped', [False, True])
-def test_music_prompt_and_shared_worker(config, music_store, monkeypatch, mapped):
+@pytest.mark.parametrize('genre', ['Jazz', 'Fusion', 'Anime'])
+def test_music_prompt_and_shared_worker(
+    config, music_store, monkeypatch, mapped, genre
+):
     if mapped:
         config['quote_libraries'] = {'Band': 'artists', 'album': 'records'}
     band_library, album_library = (
@@ -45,13 +48,24 @@ def test_music_prompt_and_shared_worker(config, music_store, monkeypatch, mapped
     )
     choose = Mock(side_effect=[1, 0])
     monkeypatch.setattr(quotes.random, 'randrange', choose)
+    monkeypatch.setattr(images.albums, 'formats', {'Vinyl'})
+    monkeypatch.setattr(images.albums, 'format_desc', {'Remastered'})
+    monkeypatch.setattr(images.albums, 'genres', {'Jazz': ['Fusion'], 'Anime': []})
+    choices = []
+
+    def select(options):
+        choices.append(options)
+        return genre if genre in options else options[0]
+
+    monkeypatch.setattr(images.random, 'choice', select)
     thread = Mock()
     monkeypatch.setattr(images.threading, 'Thread', thread)
     try:
         assert (
             images.music('#test', 'alice')
             == 'Looking up or generating your album cover... '
-            'Band: Second Band; Album: First Album'
+            'Band: Second Band; Album: First Album; '
+            f'Format: Vinyl; Description: Remastered; Genre: {genre}'
         )
         thread.return_value.start.assert_called_once_with()
         kwargs = thread.call_args.kwargs
@@ -60,8 +74,10 @@ def test_music_prompt_and_shared_worker(config, music_store, monkeypatch, mapped
         assert isinstance(cache, images.ImageCache)
         assert (
             prompt
-            == 'an album cover for the band Second Band. the name of the album is First Album'
+            == 'an album cover for the band Second Band. the name of the album is First Album. '
+            f'this is the Vinyl, Remastered edition. the genre of music is {genre}.'
         )
+        assert set(choices[-1]) == {'Jazz', 'Fusion', 'Anime'}
         assert (channel, nick) == ('#test', 'alice')
         assert choose.call_count == 2
         assert 'already running' in images.image('cat', '#test', 'bob')

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import queue
+import random
 import sqlite3
 import tempfile
 import threading
@@ -23,7 +24,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 import pmxbot
 
-from . import quotes
+from . import albums, quotes
 from .core import SwitchChannel, command, execdelay
 
 log = logging.getLogger(__name__)
@@ -323,16 +324,24 @@ def music(channel, nick):
         if not value:
             return f'No {name} entries found. Add one with !{name} add: <text>.'
         selected[name] = value
+    album_format = random.choice(tuple(albums.formats))
+    format_description = random.choice(tuple(albums.format_desc))
+    genres = set(albums.genres)
+    genres.update(genre for children in albums.genres.values() for genre in children)
+    genre = random.choice(sorted(genres))
     prompt = (
         f"an album cover for the band {selected['band']}. "
-        f"the name of the album is {selected['album']}"
+        f"the name of the album is {selected['album']}. "
+        f"this is the {album_format}, {format_description} edition. "
+        f"the genre of music is {genre}."
     )
     return _start_image(
         prompt,
         channel,
         nick,
         f"Looking up or generating your album cover... "
-        f"Band: {selected['band']}; Album: {selected['album']}",
+        f"Band: {selected['band']}; Album: {selected['album']}; "
+        f"Format: {album_format}; Description: {format_description}; Genre: {genre}",
     )
 
 
