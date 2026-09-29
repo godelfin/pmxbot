@@ -277,11 +277,11 @@ As Slack provides an IRC interface, it's easy to configure pmxbot for use
 in Slack. Here's how:
 
 0. Install with ``pmxbot[irc]``.
-1. `Enable the IRC Gateway <https://slack.zendesk.com/hc/en-us/articles/201727913-Connecting-to-Slack-over-IRC-and-XMPP>`.
+1. `Enable the IRC Gateway <https://slack.zendesk.com/hc/en-us/articles/201727913-Connecting-to-Slack-over-IRC-and-XMPP>`_.
 2. Create an e-mail for the bot.
 3. Create the account for the bot in Slack and activate its account.
 4. Log into Slack using that new account and `get the IRC gateway
-   password <https://my.slack.com/account/gateways>` for that
+   password <https://my.slack.com/account/gateways>`_ for that
    account.
 5. Configure the pmxbot as you would for an IRC server, but use these
    settings for the connection:
