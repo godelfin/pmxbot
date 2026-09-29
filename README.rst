@@ -97,6 +97,54 @@ be logged and commands still run, including their side effects. Suppressed
 replies are discarded rather than queued or logged as sent messages. IRC
 connection traffic and private logging notices continue normally.
 
+Image generation
+----------------
+
+Enable ``!image <prompt>`` (alias ``!imagine``) with::
+
+    images_enabled: true
+    openai_api_key: !env OPENAI_API_KEY
+    imgbb_api_key: !env IMGBB_API_KEY
+    images_directory: images
+    images_model: gpt-image-1
+    images_size: 1024x1024
+    images_quality: low
+
+Set ``OPENAI_API_KEY`` and ``IMGBB_API_KEY`` in the bot's environment and
+restart it. Obtain an ImgBB key at https://api.imgbb.com/.
+OpenAI generation is billed to your API account; images are uploaded to
+ImgBB and the hosted link is returned to the requesting channel or private
+conversation. API keys are redacted from startup configuration logs.
+The implementation follows the `OpenAI Images API
+<https://developers.openai.com/api/docs/guides/image-generation>`_.
+Use a GPT Image model supporting PNG output; model, size, and quality are
+passed to the API. Requests run in a background worker, one at a time;
+additional requests receive a busy response instead of being queued.
+
+PNG files are saved atomically under ``images_directory`` (relative to the
+bot's working directory, or an absolute path). ``images_database`` optionally
+sets a separate SQLite filename; by default it is ``cache.sqlite`` inside
+that directory. This cache is independent of the bot's main database, even
+when the main database uses MongoDB. Directories and the ``image_cache`` table
+are created on the first request.
+
+Cache keys hash the Unicode NFKC-normalized, case-folded prompt with collapsed
+whitespace, plus the model, size, quality, and output format. Punctuation is
+preserved. The original prompt is sent to OpenAI. Equivalent prompts reuse
+the hosted URL across restarts without API calls; different generation
+settings create separate entries. The table stores the original and normalized
+prompts, absolute local filename, hosted URL, generation and host metadata
+(including ImgBB's deletion link), requester, channel, timestamps, hit count,
+and last upload error. Keep the database private because it contains deletion
+links. Uploads have no requested expiration.
+
+If uploading fails, the saved image and cache row remain. Repeat the same
+prompt to retry only the upload. If that pending image file is missing, the
+bot regenerates it. Cached hosted URLs are not checked for expiration or
+external deletion; delete the corresponding SQLite row to generate a new
+image. Files and rows are retained until manually removed. Use one bot process
+per cache; simultaneous processes sharing a cache are not coordinated.
+
 Usage
 =====
 

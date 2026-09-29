@@ -48,3 +48,14 @@ message rate limit: 2.5
 # Secret keywords; unset variables leave Silent Mode off.
 silent_mode_disable_command: !env SILENT_MODE_DISABLE_CMD
 silent_mode_enable_command: !env SILENT_MODE_ENABLE_CMD
+
+# !image <prompt> (alias !imagine): OpenAI generation and ImgBB hosting.
+images_enabled: false
+openai_api_key: !env OPENAI_API_KEY
+imgbb_api_key: !env IMGBB_API_KEY
+images_directory: images
+# Defaults to cache.sqlite inside images_directory, independently of database.
+# images_database: /path/to/image-cache.sqlite
+images_model: gpt-image-1
+images_size: 1024x1024
+images_quality: low
