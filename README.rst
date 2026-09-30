@@ -175,22 +175,44 @@ external deletion; delete the corresponding SQLite row to generate a new
 image. Files and rows are retained until manually removed. Use one bot process
 per cache; simultaneous processes sharing a cache are not coordinated.
 
-``!music`` selects a random band and album from the quote libraries, persists
+``!music`` selects a random band and album from the quote libraries and persists
 that pair in separate ``artists`` and ``albums`` tables in the main SQLite
-database, and immediately starts the shared image generation/cache/upload
-worker. New albums save the randomly selected genre, format, and format
-description. Selecting the same artist/title again (ignoring case, Unicode
-normalization, and whitespace) reuses its album ID and original metadata.
-The acknowledgement includes the selected metadata; the completed reply is
-``#<album ID> <hosted URL>``. Empty quote libraries do not create albums.
+database. It immediately announces the album ID, metadata and pending state.
+The cover is queued for 30 seconds later (configure ``music_generation_delay``
+in seconds, minimum 1). Empty quote libraries do not create albums. Selecting
+an existing pair retains its ID and metadata and does not postpone pending work.
+Already generated pairs are reported as generated without another image request.
+
+``!music #42`` shows its state. ``!music #42 generate`` starts an ungenerated
+album immediately, including a cancelled or failed request. ``!music #42 cancel``
+keeps the album but cancels its scheduled cover; ``!music #42 delete`` removes
+the ungenerated album (the artist remains). These commands are available to IRC
+users like the existing music command. Cancellation/deletion is rejected once
+generation has started or an image exists. Metadata-editing commands and library
+search are not included in this phase.
+
+Pending deadlines, requesting nick and destination are stored in SQLite. A
+one-second bot scheduler polls for due albums and uses the shared image worker;
+busy workers leave albums queued. Pending work survives restarts. Atomic database
+claims prevent competing workers from taking the same pending album. A claim
+abandoned by a crashed worker expires after one hour. As with any external image
+API, a crash after the provider accepts a request but before its result is saved
+can cause another provider request on recovery.
+
+Missing genre, format and format description are randomly selected when image
+generation actually begins. Album metadata overrides random values; artist genre
+is the fallback before a random genre. Artist and album descriptions are included
+in the prompt. The resolved prompt is saved separately so failed upload/generation
+retries retain the same cache identity, without converting random choices into
+user-specified library metadata. Reported failures stop automatic retries and
+include the explicit retry command. Successful replies contain the same album ID
+and hosted URL, delivered through the existing logging/silent-mode result path.
 
 ``pmxbot.music.MusicLibrary.create_album`` creates/selects a persistent album
 without image generation or provider credentials. Separately,
 ``pmxbot.music.generate_album_image`` accepts a library, image cache, and album
-ID, loads the saved metadata, and generates or reuses its image. Creation and
-image attribution are stored separately. Failed generation/upload leaves the
-album available for retry by ID; successful cache hits retain image attribution.
-There are no new IRC commands or delayed-generation workflows.
+ID and generates or reuses its image. Creation and image attribution remain
+separate. Existing Phase 1 databases receive additive columns automatically.
 
 Album IDs identify artist/title pairs rather than individual rendered images.
 Existing ``music_image_ids`` and image-cache records are retained. New album IDs
