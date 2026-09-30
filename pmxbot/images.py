@@ -26,6 +26,7 @@ import pmxbot
 
 from . import albums, quotes
 from .core import SwitchChannel, command, execdelay
+from .music import MusicLibrary, generate_album_image
 
 log = logging.getLogger(__name__)
 _busy = threading.Lock()
@@ -126,8 +127,7 @@ class ImageCache:
         db = sqlite3.connect(str(self.database), timeout=20, isolation_level=None)
         db.row_factory = sqlite3.Row
         try:
-            db.execute(
-                '''CREATE TABLE IF NOT EXISTS image_cache (
+            db.execute('''CREATE TABLE IF NOT EXISTS image_cache (
                 cache_key TEXT PRIMARY KEY, prompt TEXT NOT NULL,
                 normalized_prompt TEXT NOT NULL, settings_json TEXT NOT NULL,
                 local_filename TEXT NOT NULL, hosted_url TEXT,
@@ -136,8 +136,7 @@ class ImageCache:
                 channel TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 uploaded_at TEXT, last_accessed_at TEXT,
                 hit_count INTEGER NOT NULL DEFAULT 0, last_error TEXT
-            )'''
-            )
+            )''')
         except Exception:
             db.close()
             raise
@@ -218,23 +217,6 @@ class ImageCache:
             )
             return url
 
-    def music_id(self, prompt):
-        "Return a persistent numeric ID for a successfully cached music image."
-        key = self.cache_key(prompt)
-        with closing(self.connect()) as db:
-            db.execute(
-                '''CREATE TABLE IF NOT EXISTS music_image_ids (
-                id INTEGER PRIMARY KEY, cache_key TEXT NOT NULL UNIQUE
-            )'''
-            )
-            db.execute(
-                'INSERT OR IGNORE INTO music_image_ids (cache_key) VALUES (?)',
-                (key,),
-            )
-            return db.execute(
-                'SELECT id FROM music_image_ids WHERE cache_key = ?', (key,)
-            ).fetchone()['id']
-
     def generate(self, prompt):
         data = post_json(
             'https://api.openai.com/v1/images/generations',
@@ -300,11 +282,15 @@ class ImageCache:
             ) from None
 
 
-def _generate(cache, prompt, channel, nick, include_music_id=False):
+def _generate(cache, prompt, channel, nick, album_id=None):
     try:
-        result = cache.get(prompt, nick, channel)
-        if include_music_id:
-            result = f'#{cache.music_id(prompt)} {result}'
+        if album_id is None:
+            result = cache.get(prompt, nick, channel)
+        else:
+            url = generate_album_image(
+                MusicLibrary(cache.database), cache, album_id, nick, channel
+            )
+            result = f'#{album_id} {url}'
     except ImageError as exc:
         result = str(exc)
     except Exception as exc:  # noqa: BLE001 - worker must always deliver a safe result
@@ -348,24 +334,22 @@ def music(channel, nick):
     genres = set(albums.genres)
     genres.update(genre for children in albums.genres.values() for genre in children)
     genre = random.choice(sorted(genres))
-    prompt = (
-        f"an album cover for the band {selected['band']}. "
-        f"the name of the album is {selected['album']}. "
-        f"this is the {album_format}, {format_description} edition. "
-        f"the genre of music is {genre}."
-    )
     return _start_image(
-        prompt,
+        None,
         channel,
         nick,
-        f"Looking up or generating your album cover... "
-        f"Band: {selected['band']}; Album: {selected['album']}; "
-        f"Format: {album_format}; Description: {format_description}; Genre: {genre}",
-        include_music_id=True,
+        None,
+        album_data={
+            'artist': selected['band'],
+            'title': selected['album'],
+            'genre': genre,
+            'format': album_format,
+            'format_description': format_description,
+        },
     )
 
 
-def _start_image(rest, channel, nick, acknowledgement, include_music_id=False):
+def _start_image(rest, channel, nick, acknowledgement, album_data=None):
     "Start the shared image worker with a command-specific acknowledgement."
     if not pmxbot.config.get('images_enabled', False):
         return 'Image generation is disabled; configure images_enabled to enable it.'
@@ -373,10 +357,22 @@ def _start_image(rest, channel, nick, acknowledgement, include_music_id=False):
         return 'An image request is already running; please try again shortly.'
     try:
         cache = ImageCache(pmxbot.config)
+        album_id = None
+        if album_data is not None:
+            album = MusicLibrary(cache.database).create_album(
+                **album_data, created_by=nick
+            )
+            album_id = album['id']
+            acknowledgement = (
+                f"Looking up or generating your album cover... "
+                f"Band: {album['artist_name']}; Album: {album['title']}; "
+                f"Format: {album['format']}; Description: {album['format_description']}; "
+                f"Genre: {album['genre']}"
+            )
         threading.Thread(
             target=_generate,
             args=(cache, rest, channel, nick),
-            kwargs={'include_music_id': include_music_id},
+            kwargs={'album_id': album_id},
             daemon=True,
         ).start()
     except ImageError as exc:

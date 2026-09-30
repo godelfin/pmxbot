@@ -175,13 +175,28 @@ external deletion; delete the corresponding SQLite row to generate a new
 image. Files and rows are retained until manually removed. Use one bot process
 per cache; simultaneous processes sharing a cache are not coordinated.
 
-``!music`` selects a random band and album from the quote libraries and uses
-the same image generation, cache, and upload flow as ``!imagine``. Its prompt
-is ``an album cover for the band [band]. the name of the album is [album]``.
-It immediately replies ``Looking up or generating your album cover... Band:
-[band]; Album: [album]`` and then sends the hosted URL when ready.
-Empty libraries produce a message asking for an
-entry instead of starting image generation.
+``!music`` selects a random band and album from the quote libraries, persists
+that pair in separate ``artists`` and ``albums`` tables in the main SQLite
+database, and immediately starts the shared image generation/cache/upload
+worker. New albums save the randomly selected genre, format, and format
+description. Selecting the same artist/title again (ignoring case, Unicode
+normalization, and whitespace) reuses its album ID and original metadata.
+The acknowledgement includes the selected metadata; the completed reply is
+``#<album ID> <hosted URL>``. Empty quote libraries do not create albums.
+
+``pmxbot.music.MusicLibrary.create_album`` creates/selects a persistent album
+without image generation or provider credentials. Separately,
+``pmxbot.music.generate_album_image`` accepts a library, image cache, and album
+ID, loads the saved metadata, and generates or reuses its image. Creation and
+image attribution are stored separately. Failed generation/upload leaves the
+album available for retry by ID; successful cache hits retain image attribution.
+There are no new IRC commands or delayed-generation workflows.
+
+Album IDs identify artist/title pairs rather than individual rendered images.
+Existing ``music_image_ids`` and image-cache records are retained. New album IDs
+start above the legacy IDs, which are not reassigned or automatically converted:
+legacy records contain only image cache keys, not structured artist/album data.
+Matching prompts still reuse the existing image cache.
 
 By default it reads the ``band`` and ``album`` libraries. It respects custom
 ``band`` and ``album`` mappings in ``quote_libraries``. Enable those commands
