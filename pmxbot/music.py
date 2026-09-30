@@ -74,7 +74,8 @@ class MusicLibrary:
     ):
         """Create or select an album without requesting an image.
 
-        Existing pairs retain their original metadata and attribution.
+        Existing pairs fill missing genre/format metadata from supplied values,
+        retaining their original populated metadata and attribution.
         Legacy image IDs are reserved so they cannot identify unrelated albums.
         """
         if not normalize(artist) or not normalize(title):
@@ -109,7 +110,12 @@ class MusicLibrary:
                 (id, artist_id, title, normalized_title, genre, format,
                  format_description, description, created_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(artist_id, normalized_title) DO NOTHING''',
+                ON CONFLICT(artist_id, normalized_title) DO UPDATE SET
+                    genre = COALESCE(albums.genre, excluded.genre),
+                    format = COALESCE(albums.format, excluded.format),
+                    format_description = COALESCE(
+                        albums.format_description, excluded.format_description
+                    )''',
                 (
                     floor + 1,
                     artist_id,

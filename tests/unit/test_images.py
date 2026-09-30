@@ -30,9 +30,14 @@ def music_store(config, monkeypatch):
 
 @pytest.mark.parametrize('mapped', [False, True])
 @pytest.mark.parametrize('genre', ['Jazz', 'Fusion', 'Anime'])
+@pytest.mark.parametrize('existing', [False, True])
 def test_music_prompt_and_shared_worker(
-    config, music_store, monkeypatch, mapped, genre
+    config, music_store, monkeypatch, mapped, genre, existing
 ):
+    if existing:
+        MusicLibrary(images.ImageCache(config).database).create_album(
+            'Second Band', 'First Album', created_by='original'
+        )
     if mapped:
         config['quote_libraries'] = {'Band': 'artists', 'album': 'records'}
     band_library, album_library = (
@@ -77,6 +82,7 @@ def test_music_prompt_and_shared_worker(
         assert prompt is None
         album = MusicLibrary(cache.database).get_album(1)
         assert album['images'] == []
+        assert album['created_by'] == ('original' if existing else 'alice')
         assert (
             album_prompt(album)
             == 'an album cover for the band Second Band. the name of the album is First Album. '
@@ -242,6 +248,27 @@ def test_album_persistence_is_independent_of_images(config, post, r2):
     generate_album_image(restarted, cache, first['id'], 'carol', '#test')
     assert restarted.get_album(first['id']) == saved
     assert post.call_count == 1
+
+
+def test_existing_album_fills_only_missing_music_metadata(tmp_path):
+    library = MusicLibrary(tmp_path / 'music.sqlite')
+    original = library.create_album(
+        'Band', 'Album', genre='Jazz', description='Original', created_by='alice'
+    )
+    filled = library.create_album(
+        'BAND',
+        'ALBUM',
+        genre='Rock',
+        format='Vinyl',
+        format_description='Remastered',
+        description='Replacement',
+        created_by='bob',
+    )
+    assert filled == dict(original, format='Vinyl', format_description='Remastered')
+    assert (
+        library.create_album('Band', 'Album', format='CD', format_description='Live')
+        == filled
+    )
 
 
 def test_legacy_image_ids_are_reserved(config):
