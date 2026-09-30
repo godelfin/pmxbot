@@ -217,6 +217,37 @@ them with ``!band add: <band name>`` and ``!album add: <album title>``.
 ``music`` is a built-in command; use another name such as ``tunes`` for a
 song quote library.
 
+
+Migrating legacy music images
+----------------------------
+
+Preview an import from ``music_image_ids`` without changing the database::
+
+    python -m pmxbot.migrate_music_images /path/to/pmxbot.sqlite
+
+Stop the bot, then apply with a new backup filename::
+
+    python -m pmxbot.migrate_music_images /path/to/pmxbot.sqlite --apply --backup /path/to/pmxbot.before-music.sqlite
+
+The script reads original prompts from ``image_cache`` to recover artists,
+albums, and available genre/format metadata. It retains cache keys and image
+attribution, linking each image through ``album_images`` without generating,
+uploading, moving, or deleting images. Existing library metadata and links are
+retained. Multiple covers for the same normalized artist/title share one album.
+New album metadata comes from the first parseable legacy entry in ID order.
+Legacy IDs become album IDs when available; existing albums take precedence,
+and occupied IDs receive a new ID. The JSON report lists every ID mapping and
+skipped entry. Missing cache records and unrecognized or ambiguous prompt
+formats are skipped for manual review. Review the dry-run report before applying;
+free-text prompts cannot always recover names unambiguously.
+
+Applying creates a SQLite backup (including committed WAL contents) before
+initializing the library schemas and importing rows. Row import is transactional;
+if it fails, imported rows roll back, though initialized schemas may remain.
+Rerunning is safe: existing album/image links are not duplicated. Legacy index
+and cache rows are retained for reference. This is an explicit offline migration,
+not an automatic startup migration.
+
 Usage
 =====
 
