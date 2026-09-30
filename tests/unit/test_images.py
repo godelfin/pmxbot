@@ -76,7 +76,7 @@ def test_music_prompt_and_shared_worker(
         assert isinstance(cache, images.ImageCache)
         assert prompt is None
         album = MusicLibrary(cache.database).get_album(1)
-        assert album['cache_key'] is None
+        assert album['images'] == []
         assert (
             album_prompt(album)
             == 'an album cover for the band Second Band. the name of the album is First Album. '
@@ -223,12 +223,7 @@ def test_album_persistence_is_independent_of_images(config, post, r2):
     assert first['created_at']
     assert first['created_by'] == 'alice'
     assert first['description'] == 'Minimalist'
-    assert (
-        first['cache_key']
-        is first['image_created_at']
-        is first['image_created_by']
-        is None
-    )
+    assert first['images'] == []
     restarted = MusicLibrary(cache.database)
     assert (
         restarted.create_album('  BÄND ', 'FIRST', genre='Rock', created_by='bob')
@@ -241,9 +236,9 @@ def test_album_persistence_is_independent_of_images(config, post, r2):
     assert url == hosted_url(cache, album_prompt(first))
     saved = restarted.get_album(first['id'])
     assert saved['created_by'] == 'alice'
-    assert saved['image_created_by'] == 'bob'
-    assert saved['image_created_at']
-    assert saved['cache_key'] == cache.cache_key(album_prompt(first))
+    assert saved['images'][0]['image_created_by'] == 'bob'
+    assert saved['images'][0]['image_created_at']
+    assert saved['images'][0]['cache_key'] == cache.cache_key(album_prompt(first))
     generate_album_image(restarted, cache, first['id'], 'carol', '#test')
     assert restarted.get_album(first['id']) == saved
     assert post.call_count == 1
@@ -589,7 +584,7 @@ def test_album_upload_failure_can_be_retried_by_id(config, post, r2):
     assert library.get_album(album['id']) == album
     r2.put_object.side_effect = None
     generate_album_image(library, cache, album['id'], 'alice')
-    assert library.get_album(album['id'])['cache_key']
+    assert library.get_album(album['id'])['images']
     assert post.call_count == 1
 
 
@@ -620,7 +615,7 @@ def test_worker_start_failure_keeps_album(config, monkeypatch):
     assert not images._busy.locked()
     album = MusicLibrary(images.ImageCache(config).database).get_album(1)
     assert album['title'] == 'Album'
-    assert album['cache_key'] is None
+    assert album['images'] == []
 
 
 def test_concurrent_album_creation_reuses_pair(config):
@@ -630,3 +625,44 @@ def test_concurrent_album_creation_reuses_pair(config):
     with ThreadPoolExecutor(max_workers=4) as pool:
         rows = list(pool.map(lambda _: library.create_album('Band', 'Album'), range(8)))
     assert all(row == rows[0] for row in rows)
+
+
+def test_album_images_many_to_many_and_idempotent(tmp_path):
+    library = MusicLibrary(tmp_path / 'music.sqlite')
+    first = library.create_album('Band', 'First')['id']
+    second = library.create_album('Band', 'Second')['id']
+    library.record_image(first, 'a', 'alice')
+    library.record_image(first, 'b', 'bob')
+    library.record_image(second, 'a', 'carol')
+    library.record_image(first, 'a', 'dave')
+    saved = MusicLibrary(library.database).get_album(first)['images']
+    assert [image['cache_key'] for image in saved] == ['a', 'b']
+    assert saved[0]['image_created_by'] == 'alice'
+    assert library.get_album(second)['images'][0]['cache_key'] == 'a'
+    with pytest.raises(sqlite3.IntegrityError):
+        library.record_image(999, 'a', 'alice')
+
+
+def test_migrate_album_image_link(tmp_path):
+    library = MusicLibrary(tmp_path / 'music.sqlite')
+    album_id = library.create_album('Band', 'Album')['id']
+    with sqlite3.connect(library.database) as db:
+        db.execute('ALTER TABLE albums ADD COLUMN cache_key TEXT')
+        db.execute('ALTER TABLE albums ADD COLUMN image_created_by TEXT')
+        db.execute('ALTER TABLE albums ADD COLUMN image_created_at TEXT')
+        db.execute(
+            "UPDATE albums SET cache_key = 'old', image_created_by = 'alice', "
+            "image_created_at = '2026-01-01'"
+        )
+    album = library.get_album(album_id)
+    assert album['images'] == [
+        {
+            'cache_key': 'old',
+            'image_created_by': 'alice',
+            'image_created_at': '2026-01-01',
+        }
+    ]
+    assert 'cache_key' not in album
+    assert library.get_album(album_id) == album
+    library.record_image(album_id, 'new', 'bob')
+    assert len(library.get_album(album_id)['images']) == 2

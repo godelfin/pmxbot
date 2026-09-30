@@ -30,12 +30,33 @@ class MusicLibrary:
                 artist_id INTEGER NOT NULL REFERENCES artists(id),
                 title TEXT NOT NULL, normalized_title TEXT NOT NULL,
                 genre TEXT, format TEXT, format_description TEXT, description TEXT,
-                cache_key TEXT, created_by TEXT,
+                created_by TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                image_created_by TEXT, image_created_at TEXT,
                 UNIQUE (artist_id, normalized_title)
             )''')
+            db.execute('BEGIN IMMEDIATE')
+            db.execute("""CREATE TABLE IF NOT EXISTS album_images (
+                album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+                cache_key TEXT NOT NULL,
+                image_created_by TEXT, image_created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (album_id, cache_key)
+            )""")
+            db.execute(
+                'CREATE INDEX IF NOT EXISTS album_images_cache_key ON album_images(cache_key)'
+            )
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(albums)')}
+            if 'cache_key' in columns:
+                db.execute("""INSERT INTO album_images
+                    (album_id, cache_key, image_created_by, image_created_at)
+                    SELECT id, cache_key, image_created_by, image_created_at
+                    FROM albums WHERE cache_key IS NOT NULL
+                    ON CONFLICT(album_id, cache_key) DO NOTHING""")
+                db.execute("""UPDATE albums SET cache_key = NULL,
+                    image_created_by = NULL, image_created_at = NULL
+                    WHERE cache_key IS NOT NULL""")
+            db.commit()
         except Exception:
+            db.rollback()
             db.close()
             raise
         return db
@@ -114,17 +135,32 @@ class MusicLibrary:
                 JOIN artists ON artists.id = albums.artist_id WHERE albums.id = ?''',
                 (album_id,),
             ).fetchone()
-        if row is None:
-            raise LookupError('Unknown album ID')
-        return dict(row)
+            if row is None:
+                raise LookupError('Unknown album ID')
+            album = dict(row)
+            for legacy_column in ('cache_key', 'image_created_by', 'image_created_at'):
+                album.pop(legacy_column, None)
+            album['images'] = [
+                dict(image)
+                for image in db.execute(
+                    """SELECT cache_key, image_created_by, image_created_at
+                FROM album_images WHERE album_id = ? ORDER BY cache_key""",
+                    (album_id,),
+                )
+            ]
+        return album
 
     def record_image(self, album_id, cache_key, nick):
+        """Link a cached image without replacing existing links or attribution.
+
+        Cache keys are logical references: the independently managed image cache
+        need not exist when creating or reading a music library.
+        """
         with closing(self.connect()) as db, db:
             db.execute(
-                '''UPDATE albums SET cache_key = ?, image_created_by = ?,
-                image_created_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND (cache_key IS NULL OR cache_key != ?)''',
-                (cache_key, nick, album_id, cache_key),
+                """INSERT INTO album_images (album_id, cache_key, image_created_by)
+                VALUES (?, ?, ?) ON CONFLICT(album_id, cache_key) DO NOTHING""",
+                (album_id, cache_key, nick),
             )
 
 

@@ -190,7 +190,19 @@ without image generation or provider credentials. Separately,
 ID, loads the saved metadata, and generates or reuses its image. Creation and
 image attribution are stored separately. Failed generation/upload leaves the
 album available for retry by ID; successful cache hits retain image attribution.
-There are no new IRC commands or delayed-generation workflows.
+Album/image associations are many-to-many in ``album_images``, keyed by
+``(album_id, cache_key)``. ``get_album`` returns an ``images`` collection containing
+cache keys and per-link attribution instead of scalar image fields. Recording an
+image adds a link; repeats preserve attribution. Cache keys remain logical
+references to the independently managed image cache. Unknown album IDs are
+rejected when recording a link.
+
+Existing scalar associations are migrated transactionally on first access,
+including attribution. Obsolete columns remain in existing databases but are
+cleared and no longer used; fresh databases omit them. Older branch code must
+not write to a migrated database. There is no revision/version model, preferred
+image, or semantic ordering of images. There are no new IRC commands or
+delayed-generation workflows.
 
 Album IDs identify artist/title pairs rather than individual rendered images.
 Existing ``music_image_ids`` and image-cache records are retained. New album IDs
