@@ -10,8 +10,7 @@ import requests
 
 import pmxbot
 from pmxbot import core, images, quotes
-from pmxbot import music as music_module
-from pmxbot.music import MusicLibrary, generate_album_image
+from pmxbot.music import MusicLibrary, album_prompt, generate_album_image
 
 PNG = b'\x89PNG\r\n\x1a\nimage bytes'
 URL = 'https://images.example.com/image.png'
@@ -50,27 +49,42 @@ def test_music_prompt_and_shared_worker(
     )
     choose = Mock(side_effect=[1, 0])
     monkeypatch.setattr(quotes.random, 'randrange', choose)
-    monkeypatch.setattr(music_module.albums, 'formats', {'Vinyl'})
-    monkeypatch.setattr(music_module.albums, 'format_desc', {'Remastered'})
-    monkeypatch.setattr(music_module.albums, 'genres', {genre: []})
+    monkeypatch.setattr(images.albums, 'formats', {'Vinyl'})
+    monkeypatch.setattr(images.albums, 'format_desc', {'Remastered'})
+    monkeypatch.setattr(images.albums, 'genres', {'Jazz': ['Fusion'], 'Anime': []})
+    choices = []
+
+    def select(options):
+        choices.append(options)
+        return genre if genre in options else options[0]
+
+    monkeypatch.setattr(images.random, 'choice', select)
     thread = Mock()
     monkeypatch.setattr(images.threading, 'Thread', thread)
-    reply = images.music('#test', 'alice')
-    assert '#1 Second Band — First Album' in reply
-    assert '[random]' in reply and 'pending' in reply
-    thread.assert_not_called()
-    cache = images.ImageCache(config)
-    library = MusicLibrary(cache.database)
-    album = library.get_album(1)
-    assert album['cache_key'] is album['genre'] is album['format'] is None
-    assert library.due() == []
-    assert 'Generating album #1' in images.music('#test', 'alice', '#1 generate')
     try:
+        assert (
+            images.music('#test', 'alice')
+            == 'Looking up or generating your album cover... '
+            'Band: Second Band; Album: First Album; '
+            f'Format: Vinyl; Description: Remastered; Genre: {genre}'
+        )
         thread.return_value.start.assert_called_once_with()
-        assert thread.call_args.kwargs['kwargs'] == {'album_id': 1}
-        prompt = library.image_prompt(1)
-        assert f'the genre of music is {genre}.' in prompt
-        assert 'Vinyl, Remastered' in prompt
+        kwargs = thread.call_args.kwargs
+        assert kwargs['target'] is images._generate
+        assert kwargs['kwargs'] == {'album_id': 1}
+        cache, prompt, channel, nick = kwargs['args']
+        assert isinstance(cache, images.ImageCache)
+        assert prompt is None
+        album = MusicLibrary(cache.database).get_album(1)
+        assert album['cache_key'] is None
+        assert (
+            album_prompt(album)
+            == 'an album cover for the band Second Band. the name of the album is First Album. '
+            f'this is the Vinyl, Remastered edition. the genre of music is {genre}.'
+        )
+        assert set(choices[-1]) == {'Jazz', 'Fusion', 'Anime'}
+        assert (channel, nick) == ('#test', 'alice')
+        assert choose.call_count == 2
         assert 'already running' in images.image('cat', '#test', 'bob')
     finally:
         images._busy.release()
@@ -161,18 +175,18 @@ def test_music_result_ids_persist_and_distinguish_albums(config, post):
     first_result = result(first['id'])
     assert (
         first_result
-        == f"alice: #{first['id']} {hosted_url(cache, library.get_album(first['id'])['generation_prompt'])}"
+        == f"alice: #{first['id']} {hosted_url(cache, album_prompt(first))}"
     )
     assert (
         result(second['id'])
-        == f"alice: #{second['id']} {hosted_url(cache, library.get_album(second['id'])['generation_prompt'])}"
+        == f"alice: #{second['id']} {hosted_url(cache, album_prompt(second))}"
     )
     assert result(first['id']) == first_result
     assert post.call_count == 2
     with sqlite3.connect(str(cache.database)) as db:
         row = db.execute(
             'SELECT local_filename FROM image_cache WHERE cache_key = ?',
-            (cache.cache_key(library.get_album(first['id'])['generation_prompt']),),
+            (cache.cache_key(album_prompt(first)),),
         ).fetchone()
         Path(row[0]).unlink()
         db.execute('UPDATE image_cache SET hosted_url = NULL')
@@ -187,11 +201,8 @@ def test_music_error_preserves_album_without_image(config, monkeypatch):
     monkeypatch.setattr(cache, 'get', Mock(side_effect=images.ImageError('Failed')))
     images._busy.acquire()
     images._generate(cache, None, '#test', 'alice', album['id'])
-    assert 'alice: #1 Failed' in list(images.image_results())[1]
-    saved = library.get_album(album['id'])
-    assert saved.pop('generation_prompt')
-    album.pop('generation_prompt')
-    assert saved == album
+    assert list(images.image_results()) == ['#test', 'alice: Failed']
+    assert library.get_album(album['id']) == album
 
 
 def test_album_persistence_is_independent_of_images(config, post, r2):
@@ -226,14 +237,12 @@ def test_album_persistence_is_independent_of_images(config, post, r2):
     assert second['artist_id'] == first['artist_id']
     assert restarted.create_album('Other', 'First')['id'] != first['id']
     url = generate_album_image(restarted, cache, first['id'], 'bob', '#test')
-    assert url == hosted_url(cache, library.get_album(first['id'])['generation_prompt'])
+    assert url == hosted_url(cache, album_prompt(first))
     saved = restarted.get_album(first['id'])
     assert saved['created_by'] == 'alice'
     assert saved['image_created_by'] == 'bob'
     assert saved['image_created_at']
-    assert saved['cache_key'] == cache.cache_key(
-        library.get_album(first['id'])['generation_prompt']
-    )
+    assert saved['cache_key'] == cache.cache_key(album_prompt(first))
     generate_album_image(restarted, cache, first['id'], 'carol', '#test')
     assert restarted.get_album(first['id']) == saved
     assert post.call_count == 1
@@ -576,10 +585,7 @@ def test_album_upload_failure_can_be_retried_by_id(config, post, r2):
     r2.put_object.side_effect = images.BotoCoreError()
     with pytest.raises(images.ImageError):
         generate_album_image(library, cache, album['id'], 'alice')
-    saved = library.get_album(album['id'])
-    assert saved.pop('generation_prompt')
-    album.pop('generation_prompt')
-    assert saved == album
+    assert library.get_album(album['id']) == album
     r2.put_object.side_effect = None
     generate_album_image(library, cache, album['id'], 'alice')
     assert library.get_album(album['id'])['cache_key']
@@ -623,174 +629,3 @@ def test_concurrent_album_creation_reuses_pair(config):
     with ThreadPoolExecutor(max_workers=4) as pool:
         rows = list(pool.map(lambda _: library.create_album('Band', 'Album'), range(8)))
     assert all(row == rows[0] for row in rows)
-
-
-def test_pending_survives_restart_and_delivers(config, music_store, monkeypatch, post):
-    music_store.db.executemany(
-        'INSERT INTO quotes (library, quote) VALUES (?, ?)',
-        [('band', 'Band'), ('album', 'Album')],
-    )
-    clock = Mock(return_value=1000)
-    monkeypatch.setattr(music_module.time, 'time', clock)
-    assert '30 seconds' in images.music('#original', 'alice')
-    library = MusicLibrary(images.ImageCache(config).database)
-    assert library.get_album(1)['generate_after'] == 1030
-    assert library.due() == []
-    # Re-selecting the same pair must not postpone it or change its destination.
-    clock.return_value = 1020
-    images.music('#other', 'bob')
-    assert library.get_album(1)['generate_after'] == 1030
-    clock.return_value = 1031
-    restarted = MusicLibrary(library.database)
-    assert restarted.due() == [1]
-    thread = Mock()
-    monkeypatch.setattr(images.threading, 'Thread', thread)
-    images.pending_music()
-    assert thread.call_args.kwargs['args'][2:] == ('#original', 'alice')
-    assert not restarted.claim(1)
-    assert not restarted.cancel(1, delete=True)
-    images._generate(
-        *thread.call_args.kwargs['args'], **thread.call_args.kwargs['kwargs']
-    )
-    results = list(images.image_results())
-    assert results[0] == '#original'
-    assert 'alice: #1 https://' in results[1]
-    assert restarted.due() == []
-    assert restarted.get_album(1)['generate_after'] is None
-    assert post.call_count == 1
-
-
-def test_cancel_delete_and_busy_queue(config, music_store, monkeypatch):
-    music_store.db.executemany(
-        'INSERT INTO quotes (library, quote) VALUES (?, ?)',
-        [('band', 'Band'), ('album', 'Album')],
-    )
-    images._busy.acquire()
-    try:
-        assert 'pending' in images.music('#test', 'alice')
-        assert 'already running' in images.music('#test', 'alice', '#1 generate')
-    finally:
-        images._busy.release()
-    library = MusicLibrary(images.ImageCache(config).database)
-    assert 'cancelled' in images.music('#test', 'alice', '#1 cancel')
-    assert library.due() == []
-    assert not library.claim(1, due_only=True)
-    assert 'not scheduled' in images.music('#test', 'alice', '#1')
-    assert 'deleted' in images.music('#test', 'alice', '#1 delete')
-    assert 'Unknown album' in images.music('#test', 'alice', '#1 generate')
-    assert '#2 ' in images.music('#test', 'alice')
-
-
-def test_claim_recovery_and_start_failure(config, monkeypatch):
-    library = MusicLibrary(images.ImageCache(config).database)
-    album = library.create_album('Band', 'Album')
-    clock = Mock(return_value=1000)
-    monkeypatch.setattr(music_module.time, 'time', clock)
-    assert library.claim(album['id'], '#test', 'alice')
-    assert library.due() == []
-    clock.return_value = 4601
-    assert MusicLibrary(library.database).due() == [album['id']]
-    monkeypatch.setattr(images.threading, 'Thread', Mock(side_effect=RuntimeError))
-    images.pending_music()
-    assert not images._busy.locked()
-    assert library.due() == [album['id']]
-    assert library.get_album(album['id'])['claimed_until'] is None
-
-
-def test_metadata_precedence_and_frozen_retry_prompt(config, monkeypatch, post):
-    library = MusicLibrary(images.ImageCache(config).database)
-    album = library.create_album(
-        'Band',
-        'Album',
-        genre='User genre',
-        format='User format',
-        description='User description',
-    )
-    with sqlite3.connect(str(library.database)) as db:
-        db.execute(
-            "UPDATE artists SET genre = 'Artist genre', description = 'Artist description'"
-        )
-    choice = Mock(return_value='Random description')
-    monkeypatch.setattr(music_module.random, 'choice', choice)
-    prompt = library.image_prompt(album['id'])
-    assert 'User genre' in prompt and 'User format, Random description' in prompt
-    assert 'Artist genre' in prompt and 'Artist description' in prompt
-    assert 'User description' in prompt
-    choice.assert_called_once()
-    assert MusicLibrary(library.database).image_prompt(album['id']) == prompt
-    choice.assert_called_once()
-    post.assert_not_called()
-    assert library.get_album(album['id'])['format_description'] is None
-
-
-def test_artist_genre_fallback(config, monkeypatch):
-    library = MusicLibrary(images.ImageCache(config).database)
-    album = library.create_album(
-        'Band', 'Album', format='CD', format_description='Live'
-    )
-    with sqlite3.connect(str(library.database)) as db:
-        db.execute("UPDATE artists SET genre = 'Artist genre'")
-    choice = Mock(side_effect=AssertionError('No random values needed'))
-    monkeypatch.setattr(music_module.random, 'choice', choice)
-    assert 'the genre of music is Artist genre.' in library.image_prompt(album['id'])
-
-
-def test_failed_pending_requires_explicit_retry(config, monkeypatch):
-    library = MusicLibrary(images.ImageCache(config).database)
-    library.create_album('Band', 'Album')
-    library.schedule(1, '#test', 'alice', -1)
-    assert library.claim(1)
-    cache = images.ImageCache(config)
-    monkeypatch.setattr(cache, 'get', Mock(side_effect=images.ImageError('Failed')))
-    images._busy.acquire()
-    images._generate(cache, None, '#test', 'alice', 1)
-    assert 'Retry with !music #1 generate' in list(images.image_results())[1]
-    assert library.due() == []
-    assert library.get_album(1)['cache_key'] is None
-    assert library.claim(1, '#test', 'alice')
-
-
-def test_phase_one_schema_migration_preserves_album(config):
-    database = images.ImageCache(config).database
-    with sqlite3.connect(str(database)) as db:
-        db.execute('''CREATE TABLE artists (id INTEGER PRIMARY KEY, name TEXT,
-            normalized_name TEXT UNIQUE, genre TEXT, description TEXT,
-            created_by TEXT, created_at TEXT)''')
-        db.execute('''CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT,
-            artist_id INTEGER REFERENCES artists(id), title TEXT, normalized_title TEXT,
-            genre TEXT, format TEXT, format_description TEXT, description TEXT,
-            cache_key TEXT, created_by TEXT, created_at TEXT,
-            image_created_by TEXT, image_created_at TEXT,
-            UNIQUE(artist_id, normalized_title))''')
-        db.execute(
-            "INSERT INTO artists (id, name, normalized_name) VALUES (1, 'Band', 'band')"
-        )
-        db.execute(
-            """INSERT INTO albums (id, artist_id, title, normalized_title, cache_key)
-                   VALUES (7, 1, 'Album', 'album', 'existing-key')"""
-        )
-    library = MusicLibrary(database)
-    album = library.get_album(7)
-    assert album['cache_key'] == 'existing-key'
-    assert album['generate_after'] is None
-    assert library.due() == []
-    assert (
-        library.image_prompt(7)
-        == 'an album cover for the band Band. the name of the album is Album.'
-    )
-
-
-def test_competing_claims_only_start_once(config):
-    from concurrent.futures import ThreadPoolExecutor
-
-    library = MusicLibrary(images.ImageCache(config).database)
-    library.create_album('Band', 'Album')
-    library.schedule(1, '#test', 'alice', -1)
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(
-            pool.map(
-                lambda _: MusicLibrary(library.database).claim(1, due_only=True),
-                range(8),
-            )
-        )
-    assert sum(results) == 1

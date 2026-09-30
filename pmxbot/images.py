@@ -5,13 +5,12 @@ import binascii
 import hashlib
 import json
 import logging
-import math
 import os
 import queue
+import random
 import sqlite3
 import tempfile
 import threading
-import time
 import unicodedata
 from collections.abc import Mapping
 from contextlib import closing
@@ -25,7 +24,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 import pmxbot
 
-from . import quotes
+from . import albums, quotes
 from .core import SwitchChannel, command, execdelay
 from .music import MusicLibrary, generate_album_image
 
@@ -298,13 +297,6 @@ def _generate(cache, prompt, channel, nick, album_id=None):
         # Exceptions may contain request credentials; never echo or log their text.
         log.error('Image request failed (%s)', type(exc).__name__)
         result = 'Image request failed; check the bot storage and configuration.'
-    if album_id is not None:
-        try:
-            MusicLibrary(cache.database).finish(album_id)
-        except Exception:  # noqa: BLE001
-            log.error('Could not finalize pending album state.')
-        if not result.startswith('#'):
-            result = f'#{album_id} {result} Retry with !music #{album_id} generate.'
     _results.put((channel, f'{nick}: {result}'))
 
 
@@ -317,12 +309,10 @@ def image(rest, channel, nick):
 
 
 @command()
-def music(channel, nick, rest=''):
-    "Queue a random album cover, or use !music #ID [generate|cancel|delete]."
+def music(channel, nick):
+    "Generate an album cover from a random band and album in the quote libraries."
     if not pmxbot.config.get('images_enabled', False):
         return 'Image generation is disabled; configure images_enabled to enable it.'
-    if rest.strip():
-        return _music_action(rest, channel, nick)
     configured = pmxbot.config.get('quote_libraries', {})
     libraries = (
         {
@@ -339,108 +329,24 @@ def music(channel, nick, rest=''):
         if not value:
             return f'No {name} entries found. Add one with !{name} add: <text>.'
         selected[name] = value
-    try:
-        library = MusicLibrary(ImageCache(pmxbot.config).database)
-        album = library.create_album(
-            selected['band'], selected['album'], created_by=nick
-        )
-        delay = max(1, float(pmxbot.config.get('music_generation_delay', 30)))
-        album = library.schedule(album['id'], channel, nick, delay)
-        return _album_status(album)
-    except Exception:  # noqa: BLE001
-        return 'Could not queue album; check the bot storage and configuration.'
-
-
-def _album_status(album):
-    state = (
-        'generated'
-        if album['cache_key']
-        else (
-            'generating'
-            if album['claimed_until']
-            else (
-                f"pending; cover due in {max(0, math.ceil(album['generate_after'] - time.time()))} seconds"
-                if album['generate_after']
-                else 'not scheduled'
-            )
-        )
+    album_format = random.choice(tuple(albums.formats))
+    format_description = random.choice(tuple(albums.format_desc))
+    genres = set(albums.genres)
+    genres.update(genre for children in albums.genres.values() for genre in children)
+    genre = random.choice(sorted(genres))
+    return _start_image(
+        None,
+        channel,
+        nick,
+        None,
+        album_data={
+            'artist': selected['band'],
+            'title': selected['album'],
+            'genre': genre,
+            'format': album_format,
+            'format_description': format_description,
+        },
     )
-    return (
-        f"#{album['id']} {album['artist_name']} — {album['title']}; "
-        f"Genre: {album['genre'] or album['artist_genre'] or '[random]'}; "
-        f"Format: {album['format'] or '[random]'}; "
-        f"Format description: {album['format_description'] or '[random]'}; "
-        f"Description: {album['description'] or '[none]'}; {state}. "
-        f"!music #{album['id']} generate|cancel|delete"
-    )
-
-
-def _music_action(rest, channel, nick):
-    parts = rest.split()
-    if not (1 <= len(parts) <= 2 and parts[0].lstrip('#').isdigit()):
-        return 'Usage: !music [#ID [generate|cancel|delete]]'
-    album_id = int(parts[0].lstrip('#'))
-    action = parts[1].lower() if len(parts) == 2 else 'status'
-    try:
-        library = MusicLibrary(ImageCache(pmxbot.config).database)
-        album = library.get_album(album_id)
-        if action == 'status':
-            return _album_status(album)
-        if action == 'generate':
-            return _start_pending(library, album_id, channel, nick)
-        if action in ('cancel', 'delete'):
-            if library.cancel(album_id, delete=action == 'delete'):
-                return (
-                    f"#{album_id} {'deleted' if action == 'delete' else 'cancelled'}."
-                )
-            return f'#{album_id} is already generating or generated.'
-        return 'Usage: !music [#ID [generate|cancel|delete]]'
-    except LookupError:
-        return 'Unknown album ID.'
-    except Exception:  # noqa: BLE001
-        return 'Could not update album; check the bot storage and configuration.'
-
-
-def _start_pending(library, album_id, channel, nick, *, due_only=False):
-    if not _busy.acquire(blocking=False):
-        return 'An image request is already running; please try again shortly.'
-    claimed = False
-    try:
-        claimed = library.claim(album_id, channel, nick, due_only=due_only)
-        if not claimed:
-            _busy.release()
-            return f'#{album_id} is already generating or generated.'
-        threading.Thread(
-            target=_generate,
-            args=(ImageCache(pmxbot.config), None, channel, nick),
-            kwargs={'album_id': album_id},
-            daemon=True,
-        ).start()
-        return f'Generating album #{album_id}…'
-    except Exception:  # noqa: BLE001
-        if claimed:
-            library.release(album_id)
-        _busy.release()
-        return 'Could not start image request; pending work will be retried.'
-
-
-@execdelay('pending music', None, 1, repeat=True)
-def pending_music():
-    if not pmxbot.config.get('images_enabled', False) or _busy.locked():
-        return
-    try:
-        library = MusicLibrary(ImageCache(pmxbot.config).database)
-        for album_id in library.due():
-            album = library.get_album(album_id)
-            _start_pending(
-                library,
-                album_id,
-                album['generation_channel'],
-                album['generation_nick'],
-                due_only=True,
-            )
-    except Exception:  # noqa: BLE001
-        log.error('Could not process pending music; check storage and configuration.')
 
 
 def _start_image(rest, channel, nick, acknowledgement, album_data=None):

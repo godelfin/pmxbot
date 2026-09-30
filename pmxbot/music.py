@@ -1,13 +1,9 @@
 """Persistent music library, independent of image generation and IRC commands."""
 
-import random
 import sqlite3
-import time
 import unicodedata
 from contextlib import closing
 from pathlib import Path
-
-from . import albums
 
 
 def normalize(value):
@@ -39,19 +35,6 @@ class MusicLibrary:
                 image_created_by TEXT, image_created_at TEXT,
                 UNIQUE (artist_id, normalized_title)
             )''')
-            # Serialize additive migration across IRC and worker connections.
-            db.execute('BEGIN IMMEDIATE')
-            columns = {row['name'] for row in db.execute('PRAGMA table_info(albums)')}
-            for name, kind in {
-                'generate_after': 'REAL',
-                'generation_channel': 'TEXT',
-                'generation_nick': 'TEXT',
-                'claimed_until': 'REAL',
-                'generation_prompt': 'TEXT',
-            }.items():
-                if name not in columns:
-                    db.execute(f'ALTER TABLE albums ADD COLUMN {name} {kind}')
-            db.commit()
         except Exception:
             db.close()
             raise
@@ -127,124 +110,13 @@ class MusicLibrary:
     def get_album(self, album_id):
         with closing(self.connect()) as db:
             row = db.execute(
-                '''SELECT albums.*, artists.name AS artist_name,
-                artists.genre AS artist_genre, artists.description AS artist_description FROM albums
+                '''SELECT albums.*, artists.name AS artist_name FROM albums
                 JOIN artists ON artists.id = albums.artist_id WHERE albums.id = ?''',
                 (album_id,),
             ).fetchone()
         if row is None:
             raise LookupError('Unknown album ID')
         return dict(row)
-
-    def schedule(self, album_id, channel, nick, delay):
-        with closing(self.connect()) as db, db:
-            db.execute(
-                """UPDATE albums SET generate_after = ?, generation_channel = ?,
-                generation_nick = ? WHERE id = ? AND cache_key IS NULL
-                AND generate_after IS NULL AND claimed_until IS NULL""",
-                (time.time() + delay, channel, nick, album_id),
-            )
-        return self.get_album(album_id)
-
-    def due(self):
-        with closing(self.connect()) as db:
-            return [
-                row['id']
-                for row in db.execute(
-                    """SELECT id FROM albums WHERE cache_key IS NULL
-                AND generate_after <= ? AND (claimed_until IS NULL OR claimed_until <= ?)
-                ORDER BY generate_after, id LIMIT 1""",
-                    (time.time(), time.time()),
-                )
-            ]
-
-    def claim(self, album_id, channel=None, nick=None, *, due_only=False):
-        # A crashed worker becomes eligible again after its one-hour lease expires.
-        with closing(self.connect()) as db, db:
-            due_clause = ' AND generate_after <= ?' if due_only else ''
-            now = time.time()
-            params = (now + 3600, now, channel, nick, album_id, now)
-            if due_only:
-                params += (now,)
-            return (
-                db.execute(
-                    """UPDATE albums SET claimed_until = ?,
-                generate_after = COALESCE(generate_after, ?),
-                generation_channel = COALESCE(?, generation_channel),
-                generation_nick = COALESCE(?, generation_nick)
-                WHERE id = ? AND cache_key IS NULL
-                AND (claimed_until IS NULL OR claimed_until <= ?)""" + due_clause,
-                    params,
-                ).rowcount
-                == 1
-            )
-
-    def finish(self, album_id):
-        with closing(self.connect()) as db, db:
-            db.execute(
-                'UPDATE albums SET claimed_until = NULL, generate_after = NULL WHERE id = ?',
-                (album_id,),
-            )
-
-    def release(self, album_id):
-        with closing(self.connect()) as db, db:
-            db.execute(
-                'UPDATE albums SET claimed_until = NULL WHERE id = ?', (album_id,)
-            )
-
-    def cancel(self, album_id, delete=False):
-        with closing(self.connect()) as db, db:
-            statement = (
-                'DELETE FROM albums'
-                if delete
-                else 'UPDATE albums SET generate_after = NULL, claimed_until = NULL'
-            )
-            return (
-                db.execute(
-                    statement + """ WHERE id = ? AND cache_key IS NULL
-                AND (claimed_until IS NULL OR claimed_until <= ?)""",
-                    (album_id, time.time()),
-                ).rowcount
-                == 1
-            )
-
-    def image_prompt(self, album_id):
-        with closing(self.connect()) as db, db:
-            db.execute('BEGIN IMMEDIATE')
-            row = db.execute(
-                '''SELECT albums.*, artists.name AS artist_name,
-                artists.genre AS artist_genre, artists.description AS artist_description
-                FROM albums JOIN artists ON artists.id = albums.artist_id
-                WHERE albums.id = ?''',
-                (album_id,),
-            ).fetchone()
-            if row is None:
-                raise LookupError('Unknown album ID')
-            album = dict(row)
-            if album['generation_prompt']:
-                return album['generation_prompt']
-            # Old generated albums must preserve their original prompt/cache identity.
-            if not album['cache_key']:
-                genres = set(albums.genres)
-                genres.update(
-                    child for children in albums.genres.values() for child in children
-                )
-                for field, choices in (
-                    ('format', tuple(albums.formats)),
-                    ('format_description', tuple(albums.format_desc)),
-                    ('genre', sorted(genres)),
-                ):
-                    album[field] = (
-                        album[field]
-                        or (album['artist_genre'] if field == 'genre' else None)
-                        or random.choice(choices)
-                    )
-            prompt = album_prompt(album)
-            db.execute(
-                'UPDATE albums SET generation_prompt = ? WHERE id = ?',
-                (prompt, album_id),
-            )
-            return prompt
 
     def record_image(self, album_id, cache_key, nick):
         with closing(self.connect()) as db, db:
@@ -268,10 +140,6 @@ def album_prompt(album):
         prompt += f" this is the {edition} edition."
     if album['genre']:
         prompt += f" the genre of music is {album['genre']}."
-    if album.get('artist_genre'):
-        prompt += f" Artist genre: {album['artist_genre']}."
-    if album.get('artist_description'):
-        prompt += f" Artist description: {album['artist_description']}."
     if album['description']:
         prompt += f" {album['description']}"
     return prompt
@@ -279,7 +147,8 @@ def album_prompt(album):
 
 def generate_album_image(library, cache, album_id, nick='', channel=''):
     """Generate/cache an existing album's image; failed requests keep the album."""
-    prompt = library.image_prompt(album_id)
+    album = library.get_album(album_id)
+    prompt = album_prompt(album)
     url = cache.get(prompt, nick, channel)
     library.record_image(album_id, cache.cache_key(prompt), nick)
     return url
