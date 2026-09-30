@@ -70,6 +70,7 @@ def test_music_prompt_and_shared_worker(
         thread.return_value.start.assert_called_once_with()
         kwargs = thread.call_args.kwargs
         assert kwargs['target'] is images._generate
+        assert kwargs['kwargs'] == {'include_music_id': True}
         cache, prompt, channel, nick = kwargs['args']
         assert isinstance(cache, images.ImageCache)
         assert (
@@ -154,6 +155,47 @@ def read_row(cache):
     with sqlite3.connect(str(cache.database)) as db:
         db.row_factory = sqlite3.Row
         return db.execute('SELECT * FROM image_cache').fetchone()
+
+
+def test_music_result_ids_persist_and_distinguish_images(config, post):
+    def result(prompt):
+        cache = images.ImageCache(config)
+        images._busy.acquire()
+        images._generate(cache, prompt, '#test', 'alice', include_music_id=True)
+        return list(images.image_results())[1]
+
+    cache = images.ImageCache(config)
+    first = result('First album cover')
+    assert first == f'alice: #1 {hosted_url(cache, "First album cover")}'
+    assert result('Second album cover') == (
+        f'alice: #2 {hosted_url(cache, "Second album cover")}'
+    )
+    assert result('FIRST album cover') == first
+    assert post.call_count == 2
+    # Replacing a missing local image must preserve its public ID.
+    with sqlite3.connect(str(cache.database)) as db:
+        row = db.execute(
+            'SELECT local_filename FROM image_cache WHERE cache_key = ?',
+            (cache.cache_key('First album cover'),),
+        ).fetchone()
+        Path(row[0]).unlink()
+        db.execute(
+            'UPDATE image_cache SET hosted_url = NULL WHERE cache_key = ?',
+            (cache.cache_key('First album cover'),),
+        )
+    assert result('First album cover') == first
+    assert post.call_count == 3
+
+
+def test_music_error_has_no_id(config, monkeypatch):
+    cache = images.ImageCache(config)
+    monkeypatch.setattr(cache, 'get', Mock(side_effect=images.ImageError('Failed')))
+    identifier = Mock()
+    monkeypatch.setattr(cache, 'music_id', identifier)
+    images._busy.acquire()
+    images._generate(cache, 'album cover', '#test', 'alice', include_music_id=True)
+    assert list(images.image_results()) == ['#test', 'alice: Failed']
+    identifier.assert_not_called()
 
 
 def test_generate_persist_and_reuse(config, post):
