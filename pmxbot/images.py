@@ -352,7 +352,7 @@ def music(channel, nick):
         f"an album cover for the band {selected['band']}. "
         f"the name of the album is {selected['album']}. "
         f"this is the {album_format}, {format_description} edition. "
-        f"the genre of music is {genre}."
+        f"the genre of music is {genre}, but nowhere should the genre be mentioned."
     )
     return _start_image(
         prompt,
