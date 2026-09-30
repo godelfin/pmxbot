@@ -139,7 +139,10 @@ def album_prompt(album):
     if edition:
         prompt += f" this is the {edition} edition."
     if album['genre']:
-        prompt += f" the genre of music is {album['genre']}."
+        prompt += (
+            f" the genre of music is {album['genre']}, "
+            "but nowhere should the genre be mentioned."
+        )
     if album['description']:
         prompt += f" {album['description']}"
     return prompt

@@ -80,7 +80,8 @@ def test_music_prompt_and_shared_worker(
         assert (
             album_prompt(album)
             == 'an album cover for the band Second Band. the name of the album is First Album. '
-            f'this is the Vinyl, Remastered edition. the genre of music is {genre}.'
+            f'this is the Vinyl, Remastered edition. the genre of music is {genre}, '
+            'but nowhere should the genre be mentioned.'
         )
         assert set(choices[-1]) == {'Jazz', 'Fusion', 'Anime'}
         assert (channel, nick) == ('#test', 'alice')
