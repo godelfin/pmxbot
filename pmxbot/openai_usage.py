@@ -13,7 +13,7 @@ from .core import command
 
 
 def today_cost(key, now):
-    """Sum all reported costs since midnight UTC, following pagination."""
+    """Sum all reported costs from last seven days, following pagination."""
     # start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end_time = int(time.time())
     start_time = end_time - (7* 24 * 60 * 60) # last 7 days
@@ -75,7 +75,5 @@ def openaiusage():
     except (ValueError, KeyError, TypeError, AttributeError, decimal.InvalidOperation):
         return 'OpenAI returned an invalid usage response. Please try again later.'
     return (
-        f'OpenAI: ${cost:.2f} USD used today (UTC, reported so far). '
-        'Credits left: unavailable via the public API; check '
-        'https://platform.openai.com/settings/organization/billing/overview'
+        f'OpenAI: ${cost:.2f} USD used in the last 7 days.'
     )
