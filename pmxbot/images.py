@@ -218,6 +218,23 @@ class ImageCache:
             )
             return url
 
+    def music_id(self, prompt):
+        "Return a persistent numeric ID for a successfully cached music image."
+        key = self.cache_key(prompt)
+        with closing(self.connect()) as db:
+            db.execute(
+                '''CREATE TABLE IF NOT EXISTS music_image_ids (
+                id INTEGER PRIMARY KEY, cache_key TEXT NOT NULL UNIQUE
+            )'''
+            )
+            db.execute(
+                'INSERT OR IGNORE INTO music_image_ids (cache_key) VALUES (?)',
+                (key,),
+            )
+            return db.execute(
+                'SELECT id FROM music_image_ids WHERE cache_key = ?', (key,)
+            ).fetchone()['id']
+
     def generate(self, prompt):
         data = post_json(
             'https://api.openai.com/v1/images/generations',
@@ -283,9 +300,11 @@ class ImageCache:
             ) from None
 
 
-def _generate(cache, prompt, channel, nick):
+def _generate(cache, prompt, channel, nick, include_music_id=False):
     try:
         result = cache.get(prompt, nick, channel)
+        if include_music_id:
+            result = f'#{cache.music_id(prompt)} {result}'
     except ImageError as exc:
         result = str(exc)
     except Exception as exc:  # noqa: BLE001 - worker must always deliver a safe result
@@ -342,10 +361,11 @@ def music(channel, nick):
         f"Looking up or generating your album cover... "
         f"Band: {selected['band']}; Album: {selected['album']}; "
         f"Format: {album_format}; Description: {format_description}; Genre: {genre}",
+        include_music_id=True,
     )
 
 
-def _start_image(rest, channel, nick, acknowledgement):
+def _start_image(rest, channel, nick, acknowledgement, include_music_id=False):
     "Start the shared image worker with a command-specific acknowledgement."
     if not pmxbot.config.get('images_enabled', False):
         return 'Image generation is disabled; configure images_enabled to enable it.'
@@ -354,7 +374,10 @@ def _start_image(rest, channel, nick, acknowledgement):
     try:
         cache = ImageCache(pmxbot.config)
         threading.Thread(
-            target=_generate, args=(cache, rest, channel, nick), daemon=True
+            target=_generate,
+            args=(cache, rest, channel, nick),
+            kwargs={'include_music_id': include_music_id},
+            daemon=True,
         ).start()
     except ImageError as exc:
         _busy.release()
