@@ -10,6 +10,7 @@ import requests
 
 import pmxbot
 from pmxbot import core, images, quotes
+from pmxbot.music import MusicLibrary, album_prompt, generate_album_image
 
 PNG = b'\x89PNG\r\n\x1a\nimage bytes'
 URL = 'https://images.example.com/image.png'
@@ -29,9 +30,14 @@ def music_store(config, monkeypatch):
 
 @pytest.mark.parametrize('mapped', [False, True])
 @pytest.mark.parametrize('genre', ['Jazz', 'Fusion', 'Anime'])
+@pytest.mark.parametrize('existing', [False, True])
 def test_music_prompt_and_shared_worker(
-    config, music_store, monkeypatch, mapped, genre
+    config, music_store, monkeypatch, mapped, genre, existing
 ):
+    if existing:
+        MusicLibrary(images.ImageCache(config).database).create_album(
+            'Second Band', 'First Album', created_by='original'
+        )
     if mapped:
         config['quote_libraries'] = {'Band': 'artists', 'album': 'records'}
     band_library, album_library = (
@@ -70,13 +76,18 @@ def test_music_prompt_and_shared_worker(
         thread.return_value.start.assert_called_once_with()
         kwargs = thread.call_args.kwargs
         assert kwargs['target'] is images._generate
-        assert kwargs['kwargs'] == {'include_music_id': True}
+        assert kwargs['kwargs'] == {'album_id': 1}
         cache, prompt, channel, nick = kwargs['args']
         assert isinstance(cache, images.ImageCache)
+        assert prompt is None
+        album = MusicLibrary(cache.database).get_album(1)
+        assert album['images'] == []
+        assert album['created_by'] == ('original' if existing else 'alice')
         assert (
-            prompt
+            album_prompt(album)
             == 'an album cover for the band Second Band. the name of the album is First Album. '
-            f'this is the Vinyl, Remastered edition. the genre of music is {genre}.'
+            f'this is the Vinyl, Remastered edition. the genre of music is {genre}, '
+            'but nowhere should the genre be mentioned.'
         )
         assert set(choices[-1]) == {'Jazz', 'Fusion', 'Anime'}
         assert (channel, nick) == ('#test', 'alice')
@@ -157,45 +168,130 @@ def read_row(cache):
         return db.execute('SELECT * FROM image_cache').fetchone()
 
 
-def test_music_result_ids_persist_and_distinguish_images(config, post):
-    def result(prompt):
-        cache = images.ImageCache(config)
+def test_music_result_ids_persist_and_distinguish_albums(config, post):
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    first = library.create_album('Band', 'First', created_by='alice')
+    second = library.create_album('Band', 'Second')
+
+    def result(album_id):
         images._busy.acquire()
-        images._generate(cache, prompt, '#test', 'alice', include_music_id=True)
+        images._generate(images.ImageCache(config), None, '#test', 'alice', album_id)
         return list(images.image_results())[1]
 
-    cache = images.ImageCache(config)
-    first = result('First album cover')
-    assert first == f'alice: #1 {hosted_url(cache, "First album cover")}'
-    assert result('Second album cover') == (
-        f'alice: #2 {hosted_url(cache, "Second album cover")}'
+    first_result = result(first['id'])
+    assert (
+        first_result
+        == f"alice: #{first['id']} {hosted_url(cache, album_prompt(first))}"
     )
-    assert result('FIRST album cover') == first
+    assert (
+        result(second['id'])
+        == f"alice: #{second['id']} {hosted_url(cache, album_prompt(second))}"
+    )
+    assert result(first['id']) == first_result
     assert post.call_count == 2
-    # Replacing a missing local image must preserve its public ID.
     with sqlite3.connect(str(cache.database)) as db:
         row = db.execute(
             'SELECT local_filename FROM image_cache WHERE cache_key = ?',
-            (cache.cache_key('First album cover'),),
+            (cache.cache_key(album_prompt(first)),),
         ).fetchone()
         Path(row[0]).unlink()
-        db.execute(
-            'UPDATE image_cache SET hosted_url = NULL WHERE cache_key = ?',
-            (cache.cache_key('First album cover'),),
-        )
-    assert result('First album cover') == first
+        db.execute('UPDATE image_cache SET hosted_url = NULL')
+    assert result(first['id']) == first_result
     assert post.call_count == 3
 
 
-def test_music_error_has_no_id(config, monkeypatch):
+def test_music_error_preserves_album_without_image(config, monkeypatch):
     cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
     monkeypatch.setattr(cache, 'get', Mock(side_effect=images.ImageError('Failed')))
-    identifier = Mock()
-    monkeypatch.setattr(cache, 'music_id', identifier)
     images._busy.acquire()
-    images._generate(cache, 'album cover', '#test', 'alice', include_music_id=True)
+    images._generate(cache, None, '#test', 'alice', album['id'])
     assert list(images.image_results()) == ['#test', 'alice: Failed']
-    identifier.assert_not_called()
+    assert library.get_album(album['id']) == album
+
+
+def test_album_persistence_is_independent_of_images(config, post, r2):
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    first = library.create_album(
+        'Bänd',
+        'First',
+        genre='Jazz',
+        format='Vinyl',
+        format_description='Remastered',
+        description='Minimalist',
+        created_by='alice',
+    )
+    post.assert_not_called()
+    r2.put_object.assert_not_called()
+    assert first['created_at']
+    assert first['created_by'] == 'alice'
+    assert first['description'] == 'Minimalist'
+    assert first['images'] == []
+    restarted = MusicLibrary(cache.database)
+    assert (
+        restarted.create_album('  BÄND ', 'FIRST', genre='Rock', created_by='bob')
+        == first
+    )
+    second = restarted.create_album('Bänd', 'Second')
+    assert second['artist_id'] == first['artist_id']
+    assert restarted.create_album('Other', 'First')['id'] != first['id']
+    url = generate_album_image(restarted, cache, first['id'], 'bob', '#test')
+    assert url == hosted_url(cache, album_prompt(first))
+    saved = restarted.get_album(first['id'])
+    assert saved['created_by'] == 'alice'
+    assert saved['images'][0]['image_created_by'] == 'bob'
+    assert saved['images'][0]['image_created_at']
+    assert saved['images'][0]['cache_key'] == cache.cache_key(album_prompt(first))
+    generate_album_image(restarted, cache, first['id'], 'carol', '#test')
+    assert restarted.get_album(first['id']) == saved
+    assert post.call_count == 1
+
+
+def test_existing_album_fills_only_missing_music_metadata(tmp_path):
+    library = MusicLibrary(tmp_path / 'music.sqlite')
+    original = library.create_album(
+        'Band', 'Album', genre='Jazz', description='Original', created_by='alice'
+    )
+    filled = library.create_album(
+        'BAND',
+        'ALBUM',
+        genre='Rock',
+        format='Vinyl',
+        format_description='Remastered',
+        description='Replacement',
+        created_by='bob',
+    )
+    assert filled == dict(original, format='Vinyl', format_description='Remastered')
+    assert (
+        library.create_album('Band', 'Album', format='CD', format_description='Live')
+        == filled
+    )
+
+
+def test_legacy_image_ids_are_reserved(config):
+    cache = images.ImageCache(config)
+    with sqlite3.connect(str(cache.database)) as db:
+        db.execute(
+            'CREATE TABLE music_image_ids (id INTEGER PRIMARY KEY, cache_key TEXT UNIQUE)'
+        )
+        db.execute("INSERT INTO music_image_ids VALUES (42, 'legacy')")
+    library = MusicLibrary(cache.database)
+    assert library.create_album('Band', 'Album')['id'] == 43
+    assert library.create_album('Band', 'Album')['id'] == 43
+    with sqlite3.connect(str(cache.database)) as db:
+        assert db.execute('SELECT * FROM music_image_ids').fetchall() == [
+            (42, 'legacy')
+        ]
+
+
+def test_unknown_album_does_not_generate(config, post):
+    cache = images.ImageCache(config)
+    with pytest.raises(LookupError):
+        generate_album_image(MusicLibrary(cache.database), cache, 123)
+    post.assert_not_called()
 
 
 def test_generate_persist_and_reuse(config, post):
@@ -503,3 +599,97 @@ def test_result_delivery_respects_silent_mode():
     )
     bot.handle_scheduled(handler)
     assert not images._busy.locked()
+
+
+def test_album_upload_failure_can_be_retried_by_id(config, post, r2):
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
+    r2.put_object.side_effect = images.BotoCoreError()
+    with pytest.raises(images.ImageError):
+        generate_album_image(library, cache, album['id'], 'alice')
+    assert library.get_album(album['id']) == album
+    r2.put_object.side_effect = None
+    generate_album_image(library, cache, album['id'], 'alice')
+    assert library.get_album(album['id'])['images']
+    assert post.call_count == 1
+
+
+def test_busy_worker_does_not_create_album(config):
+    images._busy.acquire()
+    try:
+        assert 'already running' in images._start_image(
+            None,
+            '#test',
+            'alice',
+            None,
+            album_data={'artist': 'Band', 'title': 'Album'},
+        )
+        assert not images.ImageCache(config).database.exists()
+    finally:
+        images._busy.release()
+
+
+def test_worker_start_failure_keeps_album(config, monkeypatch):
+    monkeypatch.setattr(images.threading, 'Thread', Mock(side_effect=RuntimeError))
+    assert 'Could not start' in images._start_image(
+        None,
+        '#test',
+        'alice',
+        None,
+        album_data={'artist': 'Band', 'title': 'Album'},
+    )
+    assert not images._busy.locked()
+    album = MusicLibrary(images.ImageCache(config).database).get_album(1)
+    assert album['title'] == 'Album'
+    assert album['images'] == []
+
+
+def test_concurrent_album_creation_reuses_pair(config):
+    from concurrent.futures import ThreadPoolExecutor
+
+    library = MusicLibrary(images.ImageCache(config).database)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        rows = list(pool.map(lambda _: library.create_album('Band', 'Album'), range(8)))
+    assert all(row == rows[0] for row in rows)
+
+
+def test_album_images_many_to_many_and_idempotent(tmp_path):
+    library = MusicLibrary(tmp_path / 'music.sqlite')
+    first = library.create_album('Band', 'First')['id']
+    second = library.create_album('Band', 'Second')['id']
+    library.record_image(first, 'a', 'alice')
+    library.record_image(first, 'b', 'bob')
+    library.record_image(second, 'a', 'carol')
+    library.record_image(first, 'a', 'dave')
+    saved = MusicLibrary(library.database).get_album(first)['images']
+    assert [image['cache_key'] for image in saved] == ['a', 'b']
+    assert saved[0]['image_created_by'] == 'alice'
+    assert library.get_album(second)['images'][0]['cache_key'] == 'a'
+    with pytest.raises(sqlite3.IntegrityError):
+        library.record_image(999, 'a', 'alice')
+
+
+def test_migrate_album_image_link(tmp_path):
+    library = MusicLibrary(tmp_path / 'music.sqlite')
+    album_id = library.create_album('Band', 'Album')['id']
+    with sqlite3.connect(library.database) as db:
+        db.execute('ALTER TABLE albums ADD COLUMN cache_key TEXT')
+        db.execute('ALTER TABLE albums ADD COLUMN image_created_by TEXT')
+        db.execute('ALTER TABLE albums ADD COLUMN image_created_at TEXT')
+        db.execute(
+            "UPDATE albums SET cache_key = 'old', image_created_by = 'alice', "
+            "image_created_at = '2026-01-01'"
+        )
+    album = library.get_album(album_id)
+    assert album['images'] == [
+        {
+            'cache_key': 'old',
+            'image_created_by': 'alice',
+            'image_created_at': '2026-01-01',
+        }
+    ]
+    assert 'cache_key' not in album
+    assert library.get_album(album_id) == album
+    library.record_image(album_id, 'new', 'bob')
+    assert len(library.get_album(album_id)['images']) == 2

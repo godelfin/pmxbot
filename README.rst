@@ -175,13 +175,40 @@ external deletion; delete the corresponding SQLite row to generate a new
 image. Files and rows are retained until manually removed. Use one bot process
 per cache; simultaneous processes sharing a cache are not coordinated.
 
-``!music`` selects a random band and album from the quote libraries and uses
-the same image generation, cache, and upload flow as ``!imagine``. Its prompt
-is ``an album cover for the band [band]. the name of the album is [album]``.
-It immediately replies ``Looking up or generating your album cover... Band:
-[band]; Album: [album]`` and then sends the hosted URL when ready.
-Empty libraries produce a message asking for an
-entry instead of starting image generation.
+``!music`` selects a random band and album from the quote libraries, persists
+that pair in separate ``artists`` and ``albums`` tables in the main SQLite
+database, and immediately starts the shared image generation/cache/upload
+worker. New albums save the randomly selected genre, format, and format
+description. Selecting the same artist/title again (ignoring case, Unicode
+normalization, and whitespace) reuses its album ID and original metadata.
+The acknowledgement includes the selected metadata; the completed reply is
+``#<album ID> <hosted URL>``. Empty quote libraries do not create albums.
+
+``pmxbot.music.MusicLibrary.create_album`` creates/selects a persistent album
+without image generation or provider credentials. Separately,
+``pmxbot.music.generate_album_image`` accepts a library, image cache, and album
+ID, loads the saved metadata, and generates or reuses its image. Creation and
+image attribution are stored separately. Failed generation/upload leaves the
+album available for retry by ID; successful cache hits retain image attribution.
+Album/image associations are many-to-many in ``album_images``, keyed by
+``(album_id, cache_key)``. ``get_album`` returns an ``images`` collection containing
+cache keys and per-link attribution instead of scalar image fields. Recording an
+image adds a link; repeats preserve attribution. Cache keys remain logical
+references to the independently managed image cache. Unknown album IDs are
+rejected when recording a link.
+
+Existing scalar associations are migrated transactionally on first access,
+including attribution. Obsolete columns remain in existing databases but are
+cleared and no longer used; fresh databases omit them. Older branch code must
+not write to a migrated database. There is no revision/version model, preferred
+image, or semantic ordering of images. There are no new IRC commands or
+delayed-generation workflows.
+
+Album IDs identify artist/title pairs rather than individual rendered images.
+Existing ``music_image_ids`` and image-cache records are retained. New album IDs
+start above the legacy IDs, which are not reassigned or automatically converted:
+legacy records contain only image cache keys, not structured artist/album data.
+Matching prompts still reuse the existing image cache.
 
 By default it reads the ``band`` and ``album`` libraries. It respects custom
 ``band`` and ``album`` mappings in ``quote_libraries``. Enable those commands
@@ -189,6 +216,37 @@ with ``band: band`` and ``album: album`` under ``quote_libraries``, then populat
 them with ``!band add: <band name>`` and ``!album add: <album title>``.
 ``music`` is a built-in command; use another name such as ``tunes`` for a
 song quote library.
+
+
+Migrating legacy music images
+----------------------------
+
+Preview an import from ``music_image_ids`` without changing the database::
+
+    python -m pmxbot.migrate_music_images /path/to/pmxbot.sqlite
+
+Stop the bot, then apply with a new backup filename::
+
+    python -m pmxbot.migrate_music_images /path/to/pmxbot.sqlite --apply --backup /path/to/pmxbot.before-music.sqlite
+
+The script reads original prompts from ``image_cache`` to recover artists,
+albums, and available genre/format metadata. It retains cache keys and image
+attribution, linking each image through ``album_images`` without generating,
+uploading, moving, or deleting images. Existing library metadata and links are
+retained. Multiple covers for the same normalized artist/title share one album.
+New album metadata comes from the first parseable legacy entry in ID order.
+Legacy IDs become album IDs when available; existing albums take precedence,
+and occupied IDs receive a new ID. The JSON report lists every ID mapping and
+skipped entry. Missing cache records and unrecognized or ambiguous prompt
+formats are skipped for manual review. Review the dry-run report before applying;
+free-text prompts cannot always recover names unambiguously.
+
+Applying creates a SQLite backup (including committed WAL contents) before
+initializing the library schemas and importing rows. Row import is transactional;
+if it fails, imported rows roll back, though initialized schemas may remain.
+Rerunning is safe: existing album/image links are not duplicated. Legacy index
+and cache rows are retained for reference. This is an explicit offline migration,
+not an automatic startup migration.
 
 Usage
 =====
