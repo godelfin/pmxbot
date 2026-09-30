@@ -183,6 +183,12 @@ description. Selecting the same artist/title again (ignoring case, Unicode
 normalization, and whitespace) reuses its album ID and original metadata.
 The acknowledgement includes the selected metadata; the completed reply is
 ``#<album ID> <hosted URL>``. Empty quote libraries do not create albums.
+``!music <album ID>`` (also ``!music #<album ID>``) returns the most recently
+created cached image with a hosted URL linked to that album, without generating
+or uploading an image. The reply includes the saved band, album title, format,
+format description, and genre, followed by the album ID and image URL.
+Unknown IDs and albums without a hosted cached image
+return an explanatory message.
 
 ``pmxbot.music.MusicLibrary.create_album`` creates/selects a persistent album
 without image generation or provider credentials. Separately,

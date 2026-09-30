@@ -142,6 +142,27 @@ class ImageCache:
             raise
         return db
 
+    def latest_album_image(self, album_id):
+        """Return the newest hosted cache entry linked to an existing album."""
+        MusicLibrary(self.database).get_album(album_id)
+        with closing(self.connect()) as db:
+            row = db.execute(
+                '''SELECT image_cache.cache_key, hosted_url FROM image_cache
+                JOIN album_images USING (cache_key)
+                WHERE album_id = ? AND hosted_url IS NOT NULL AND hosted_url != ''
+                ORDER BY image_cache.created_at DESC, image_cache.rowid DESC
+                LIMIT 1''',
+                (album_id,),
+            ).fetchone()
+            if row is None:
+                raise ImageError(f'No cached image for album #{album_id}.')
+            db.execute(
+                '''UPDATE image_cache SET hit_count = hit_count + 1,
+                last_accessed_at = CURRENT_TIMESTAMP WHERE cache_key = ?''',
+                (row['cache_key'],),
+            )
+            return row['hosted_url']
+
     def get(self, prompt, nick='', channel=''):
         if not normalize_prompt(prompt):
             raise ImageError('Usage: !image <prompt>')
@@ -309,10 +330,26 @@ def image(rest, channel, nick):
 
 
 @command()
-def music(channel, nick):
-    "Generate an album cover from a random band and album in the quote libraries."
+def music(channel, nick, rest=''):
+    "Generate a random album cover, or retrieve a cached cover: !music [album ID]."
     if not pmxbot.config.get('images_enabled', False):
         return 'Image generation is disabled; configure images_enabled to enable it.'
+    if rest.strip():
+        value = rest.strip().removeprefix('#')
+        if not value.isascii() or not value.isdecimal() or int(value) <= 0:
+            return 'Usage: !music [album ID]'
+        album_id = int(value)
+        try:
+            cache = ImageCache(pmxbot.config)
+            album = MusicLibrary(cache.database).get_album(album_id)
+            url = cache.latest_album_image(album_id)
+        except LookupError:
+            return f'Unknown album ID: #{album_id}.'
+        except ImageError as exc:
+            return str(exc)
+        except Exception:  # noqa: BLE001 - never expose storage details in IRC
+            return 'Could not look up album image; check the bot storage and configuration.'
+        return f'{_album_details(album)}; #{album_id} {url}'
     configured = pmxbot.config.get('quote_libraries', {})
     libraries = (
         {
@@ -349,6 +386,14 @@ def music(channel, nick):
     )
 
 
+def _album_details(album):
+    return (
+        f"Band: {album['artist_name']}; Album: {album['title']}; "
+        f"Format: {album['format']}; Description: {album['format_description']}; "
+        f"Genre: {album['genre']}"
+    )
+
+
 def _start_image(rest, channel, nick, acknowledgement, album_data=None):
     "Start the shared image worker with a command-specific acknowledgement."
     if not pmxbot.config.get('images_enabled', False):
@@ -365,9 +410,7 @@ def _start_image(rest, channel, nick, acknowledgement, album_data=None):
             album_id = album['id']
             acknowledgement = (
                 f"Looking up or generating your album cover... "
-                f"Band: {album['artist_name']}; Album: {album['title']}; "
-                f"Format: {album['format']}; Description: {album['format_description']}; "
-                f"Genre: {album['genre']}"
+                f"{_album_details(album)}"
             )
         threading.Thread(
             target=_generate,

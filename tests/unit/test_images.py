@@ -124,6 +124,78 @@ def test_music_registered():
     assert next(core.Handler.find_matching('!music', '#test')).func is images.music
 
 
+@pytest.mark.parametrize('argument', ['1', '#1', '  #1  '])
+def test_music_lookup_latest_cached_image(config, post, r2, monkeypatch, argument):
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album(
+        'Band', 'Album', genre='Jazz', format='Vinyl', format_description='Remastered'
+    )
+    # Insert out of timestamp order, including an unhosted newer entry and
+    # an unrelated image. Link order must not determine the selected image.
+    for prompt, date, linked in [
+        ('newest', '2026-02-01', True),
+        ('oldest', '2026-01-01', True),
+        ('unhosted', '2026-03-01', True),
+        ('unrelated', '2026-04-01', False),
+    ]:
+        cache.get(prompt)
+        key = cache.cache_key(prompt)
+        if linked:
+            library.record_image(album['id'], key, 'alice')
+        with sqlite3.connect(cache.database) as db:
+            db.execute(
+                'UPDATE image_cache SET created_at = ? WHERE cache_key = ?',
+                (date, key),
+            )
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            'UPDATE image_cache SET hosted_url = NULL WHERE cache_key = ?',
+            (cache.cache_key('unhosted'),),
+        )
+    library.record_image(album['id'], 'missing-cache-entry', 'alice')
+    post.reset_mock()
+    r2.reset_mock()
+    monkeypatch.setattr(images, '_start_image', Mock())
+    # Retrieval also works without credentials or the original model settings,
+    # and while generation is busy.
+    for name in list(config):
+        if name.startswith(('r2_', 'openai_')):
+            del config[name]
+    config['images_model'] = 'different-model'
+    images._busy.acquire()
+    try:
+        assert images.music('#test', 'bob', argument) == (
+            'Band: Band; Album: Album; Format: Vinyl; Description: Remastered; Genre: Jazz; '
+            f"#1 {hosted_url(cache, 'newest')}"
+        )
+    finally:
+        images._busy.release()
+    post.assert_not_called()
+    r2.put_object.assert_not_called()
+    images._start_image.assert_not_called()
+    with sqlite3.connect(cache.database) as db:
+        assert (
+            db.execute(
+                'SELECT hit_count FROM image_cache WHERE cache_key = ?',
+                (cache.cache_key('newest'),),
+            ).fetchone()[0]
+            == 1
+        )
+
+
+@pytest.mark.parametrize('argument', ['abc', '0', '-1', '#', '1 extra', '##1'])
+def test_music_lookup_invalid_id(config, argument):
+    assert images.music('#test', 'alice', argument) == 'Usage: !music [album ID]'
+
+
+def test_music_lookup_missing_image_or_album(config):
+    assert images.music('#test', 'alice', '1') == 'Unknown album ID: #1.'
+    library = MusicLibrary(images.ImageCache(config).database)
+    library.create_album('Band', 'Album')
+    assert images.music('#test', 'alice', '#1') == 'No cached image for album #1.'
+
+
 @pytest.fixture
 def config(tmp_path, monkeypatch):
     config = {
