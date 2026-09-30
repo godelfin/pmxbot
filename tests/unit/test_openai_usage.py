@@ -1,0 +1,138 @@
+import datetime
+from decimal import Decimal
+from unittest.mock import Mock
+
+import pytest
+import requests
+
+import pmxbot
+from pmxbot import core, openai_usage
+
+
+def test_command_registration():
+    assert (
+        next(core.Handler.find_matching('!openaiusage', '#test')).func
+        is openai_usage.openaiusage
+    )
+
+
+@pytest.fixture
+def api(monkeypatch):
+    monkeypatch.setattr(pmxbot, 'config', {'openai_admin_key': 'test-secret'})
+    monkeypatch.delenv('OPENAI_ADMIN_KEY', raising=False)
+    get = Mock()
+    monkeypatch.setattr(openai_usage.requests, 'get', get)
+    return get
+
+
+def response(values=(), **kwargs):
+    page = {
+        'data': [
+            {
+                'results': [
+                    {'amount': {'value': value, 'currency': 'usd'}} for value in values
+                ]
+            }
+        ],
+        'has_more': False,
+        'next_page': None,
+    }
+    page.update(kwargs)
+    return Mock(json=Mock(return_value=page))
+
+
+def test_cost_pagination_and_utc_range(api):
+    calls = []
+    pages = iter(
+        [response([0.1], has_more=True, next_page='next'), response([0.2, -0.01])]
+    )
+
+    def get(url, **kwargs):
+        calls.append((url, {**kwargs, 'params': dict(kwargs['params'])}))
+        return next(pages)
+
+    api.side_effect = get
+    now = datetime.datetime(2026, 9, 29, 12, tzinfo=datetime.timezone.utc)
+    assert openai_usage.today_cost('test-secret', now) == Decimal('0.29')
+    url, kwargs = calls[0]
+    assert url == 'https://api.openai.com/v1/organization/costs'
+    assert kwargs['headers'] == {'Authorization': 'Bearer test-secret'}
+    assert kwargs['timeout'] == 15
+    assert kwargs['params'] == {
+        'start_time': int(now.replace(hour=0).timestamp()),
+        'end_time': int(now.timestamp()),
+        'bucket_width': '1d',
+        'limit': 1,
+    }
+    assert calls[1][1]['params']['page'] == 'next'
+
+
+def test_command(api):
+    api.return_value = response([1.25, 2])
+    result = openai_usage.openaiusage()
+    assert '$3.25 USD used today (UTC, reported so far)' in result
+    assert 'Credits left: unavailable' in result
+
+
+def test_no_usage(api):
+    api.return_value = response(data=[])
+    assert '$0.00 USD' in openai_usage.openaiusage()
+
+
+def test_missing_key(api):
+    pmxbot.config.clear()
+    assert 'Configure openai_admin_key' in openai_usage.openaiusage()
+    api.assert_not_called()
+
+
+def test_environment_key(api, monkeypatch):
+    pmxbot.config.clear()
+    monkeypatch.setenv('OPENAI_ADMIN_KEY', 'environment-secret')
+    api.return_value = response()
+    openai_usage.openaiusage()
+    assert (
+        api.call_args.kwargs['headers']['Authorization'] == 'Bearer environment-secret'
+    )
+
+
+@pytest.mark.parametrize('status', [401, 403, 429, 500])
+def test_http_error(api, status):
+    api.return_value.raise_for_status.side_effect = requests.HTTPError(
+        'secret response', response=Mock(status_code=status)
+    )
+    result = openai_usage.openaiusage()
+    assert ('access denied' if status in (401, 403) else 'unavailable') in result
+    assert 'secret' not in result
+
+
+def test_timeout(api):
+    api.side_effect = requests.Timeout('secret')
+    assert (
+        openai_usage.openaiusage()
+        == 'OpenAI usage is unavailable. Please try again later.'
+    )
+
+
+@pytest.mark.parametrize(
+    'page',
+    [
+        {},
+        {'data': None},
+        response(['NaN']).json(),
+        response([None]).json(),
+        response(has_more=True).json(),
+        response(has_more=True, next_page='repeated').json(),
+        response(
+            data=[{'results': [{'amount': {'value': 1, 'currency': 'eur'}}]}]
+        ).json(),
+    ],
+)
+def test_invalid_response(api, page):
+    api.return_value = Mock(json=Mock(return_value=page))
+    assert 'invalid usage response' in openai_usage.openaiusage()
+
+
+def test_midnight(api):
+    now = datetime.datetime(2026, 9, 29, tzinfo=datetime.timezone.utc)
+    assert openai_usage.today_cost('test-secret', now) == 0
+    api.assert_not_called()

@@ -467,11 +467,13 @@ def test_command_registration():
 
 
 def test_keys_redacted_at_startup(config, monkeypatch, caplog):
+    config['openai_admin_key'] = 'admin-secret'
     monkeypatch.setattr(core, '_load_library_extensions', lambda: None)
     monkeypatch.setattr(core, '_load_bot_class', lambda: Mock())
     with caplog.at_level('INFO'):
         core.initialize(config)
     assert 'openai-secret' not in caplog.text
+    assert 'admin-secret' not in caplog.text
     assert 'r2-access-secret' not in caplog.text
     assert 'r2-secret' not in caplog.text
     assert '<redacted>' in caplog.text

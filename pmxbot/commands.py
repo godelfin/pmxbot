@@ -24,6 +24,7 @@ from . import logging
 from . import phrases
 from . import http
 from . import images  # noqa: F401 - register image commands and result delivery
+from . import openai_usage  # noqa: F401 - register usage command
 
 
 def plaintext(html):

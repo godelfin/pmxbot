@@ -365,3 +365,19 @@ conflict with existing commands (including ``quote`` and ``q``) are skipped
 with an error in the startup log. Libraries need no separate creation step;
 the first addition creates their first entry. Existing quote data needs no
 migration. SQLite and MongoDB support the same library commands.
+
+OpenAI spending
+===============
+
+``!openaiusage`` reports organization-wide spending recorded today in USD,
+using midnight UTC as the day boundary. Set ``OPENAI_ADMIN_KEY`` in the bot's
+environment, or ``openai_admin_key`` in its YAML configuration. This requires
+an OpenAI admin key with access to organization costs; the regular
+``openai_api_key`` used for image generation is separate.
+
+The command uses the `OpenAI Costs API
+<https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs>`_
+and includes all projects and usage types. Costs may lag recent requests.
+The documented API does not expose prepaid credit balances, so the command
+reports credits left as unavailable and links to the billing dashboard.
+It does not infer a balance from spending limits or token counts.
