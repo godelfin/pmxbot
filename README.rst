@@ -224,6 +224,36 @@ them with ``!band add: <band name>`` and ``!album add: <album title>``.
 song quote library.
 
 
+Read-only album web page
+------------------------
+
+The existing ``pmxbotweb`` viewer serves ``GET /albums/{id}`` using the same
+``database`` configuration as the bot (SQLite required). Install the existing
+``viewer`` extra and run ``pmxbotweb config.yaml``. If ``web_base`` is configured,
+prepend it to the route, for example ``/logs/albums/1842``.
+
+Every existing album row has a stable URL, including rows without artwork.
+The page displays artist and album metadata, the original stored generation
+prompt when available, and links to other albums with the same ``artist_id``.
+Related entries include artwork thumbnails or placeholders. Missing metadata
+is shown as "Not specified".
+
+Images use the cache's public hosted URLs. The latest hosted image is selected
+with the same ordering as ``!music <ID>``, and its saved prompt is displayed.
+Without a hosted image, the page shows a placeholder and any latest saved
+prompt. Local-only cache files are not exposed by this viewer. The route reads
+SQLite in read-only mode; it does not initialize or migrate tables, record
+cache hits, generate images, or require provider credentials. Unknown IDs
+return 404; unavailable database storage returns 503. Only GET and HEAD are
+accepted.
+
+This page adds no editing, saving, candidate creation, generation controls,
+POST endpoints, or schema changes. Existing album/image associations and
+artist/title uniqueness remain unchanged; no history or provenance model is
+introduced. Future artist navigation should use dedicated URL-friendly slugs,
+not URL-encoded normalized names. Artist navigation is not implemented yet.
+
+
 Migrating legacy music images
 ----------------------------
 

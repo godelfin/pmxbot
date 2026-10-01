@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ album.title }} — {{ album.artist_name }}</title>
+<link rel="canonical" href="{{ canonical }}">
+<style>
+:root { color-scheme: light; font-family: system-ui, sans-serif; color: #252726; background: #f4f2ec; }
+* { box-sizing: border-box; } body { margin: 0; }
+.shell { max-width: 1320px; margin: auto; padding: 36px; }
+.eyebrow { text-transform: uppercase; letter-spacing: .14em; font-size: .75rem; color: #62665f; }
+h1 { font-size: clamp(2rem, 5vw, 3.8rem); line-height: 1.1; margin: 14px 0; overflow-wrap: anywhere; }
+h2 { font-size: 1.1rem; margin: 0 0 24px; }
+.artist { font-size: 1.25rem; margin: 0 0 32px; }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 40px; }
+.details { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 32px; }
+.cover { width: 100%; aspect-ratio: 1; object-fit: contain; background: #e2e3da; display: block; }
+.placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 16px; color: #545b50; }
+.record { font-size: 5rem; line-height: 1; margin-bottom: 16px; }
+section, aside { min-width: 0; }
+dt { color: #62665f; font-size: .8rem; margin-top: 18px; }
+dd { margin: 5px 0 0; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt { border-top: 1px solid #d0d2c7; margin-top: 32px; padding-top: 24px; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.6; background: #eae9e2; padding: 24px; }
+aside { border-left: 1px solid #d0d2c7; padding-left: 24px; }
+ul { list-style: none; padding: 0; margin: 0; } li { margin-bottom: 20px; }
+a { color: #354e3b; text-underline-offset: 4px; }
+a:focus-visible { outline: 3px solid #557742; outline-offset: 5px; }
+.related-link { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 14px; align-items: center; text-decoration: none; }
+.related-link:hover strong { text-decoration: underline; }
+.related-link strong { display: block; overflow-wrap: anywhere; }
+.related-link small { display: block; margin-top: 6px; color: #62665f; }
+.thumb { font-size: .7rem; padding: 4px; }
+@media (max-width: 850px) { .layout { grid-template-columns: 1fr; } aside { border-left: 0; border-top: 1px solid #d0d2c7; padding: 24px 0 0; } }
+@media (max-width: 520px) { .shell { padding: 20px; } .details { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body><div class="shell">
+<header>
+<div class="eyebrow">Album artwork / #{{ album.id }}</div>
+<h1>{{ album.title }}</h1><p class="artist">{{ album.artist_name }}</p>
+</header>
+<div class="layout"><main>
+{% if album.image_url %}
+<img class="cover" src="{{ album.image_url }}" alt="Cover artwork for {{ album.title }} by {{ album.artist_name }}">
+{% else %}
+<div class="cover placeholder" role="img" aria-label="Artwork not yet available">
+<span class="record" aria-hidden="true">◎</span><strong>Artwork not yet available</strong>
+<p>This album has a home here while its artwork is waiting.</p>
+</div>
+{% endif %}
+<div class="details">
+<section aria-labelledby="artist-heading"><h2 id="artist-heading">Artist</h2><dl>
+<dt>Name</dt><dd>{{ album.artist_name }}</dd>
+<dt>Genre</dt><dd>{{ album.artist_genre or 'Not specified' }}</dd>
+<dt>Description</dt><dd>{{ album.artist_description or 'Not specified' }}</dd>
+</dl></section>
+<section aria-labelledby="album-heading"><h2 id="album-heading">Album</h2><dl>
+<dt>Genre</dt><dd>{{ album.genre or 'Not specified' }}</dd>
+<dt>Format</dt><dd>{{ album.format or 'Not specified' }}</dd>
+<dt>Format description</dt><dd>{{ album.format_description or 'Not specified' }}</dd>
+<dt>Description</dt><dd>{{ album.description or 'Not specified' }}</dd>
+</dl></section>
+</div>
+{% if album.prompt %}
+<section class="prompt" aria-labelledby="prompt-heading"><h2 id="prompt-heading">Generation prompt</h2>
+<pre>{{ album.prompt }}</pre></section>
+{% endif %}
+</main><aside aria-labelledby="related-heading">
+<h2 id="related-heading">More by {{ album.artist_name }}</h2><ul>
+{% for item in related %}
+<li><a class="related-link" href="{{ base }}/albums/{{ item.id }}">
+{% if item.image_url %}
+<img class="cover" src="{{ item.image_url }}" alt="" loading="lazy" width="72" height="72">
+{% else %}
+<span class="cover placeholder thumb" role="img" aria-label="Artwork not yet available">No artwork yet</span>
+{% endif %}
+<span><strong>{{ item.title }}</strong><small>#{{ item.id }}</small></span>
+</a></li>
+{% else %}<li>No other albums by this artist yet.</li>{% endfor %}
+</ul></aside></div></div></body></html>

@@ -18,6 +18,7 @@ import importlib_resources as resources
 import pmxbot.core
 import pmxbot.logging
 import pmxbot.util
+from pmxbot.web.albums import AlbumPage
 
 jenv = jinja2.Environment(loader=jinja2.loaders.PackageLoader('pmxbot.web'))
 TIMEOUT = 10.0
@@ -285,6 +286,7 @@ class LegacyPage:
 
 
 class PmxbotPages:
+    albums = AlbumPage()
     channel = ChannelPage()
     day = DayPage()
     karma = KarmaPage()
