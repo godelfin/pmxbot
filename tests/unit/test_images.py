@@ -29,15 +29,15 @@ def music_store(config, monkeypatch):
 
 
 @pytest.mark.parametrize('mapped', [False, True])
-@pytest.mark.parametrize('genre', ['Jazz', 'Fusion', 'Anime'])
 @pytest.mark.parametrize('existing', [False, True])
 def test_music_prompt_and_shared_worker(
-    config, music_store, monkeypatch, mapped, genre, existing
+    config, music_store, monkeypatch, mapped, existing
 ):
     if existing:
         MusicLibrary(images.ImageCache(config).database).create_album(
-            'Second Band', 'First Album', created_by='original'
+            'Second Band', 'First Album', genre='Jazz', created_by='original'
         )
+    genre = 'Jazz' if existing else None
     if mapped:
         config['quote_libraries'] = {'Band': 'artists', 'album': 'records'}
     band_library, album_library = (
@@ -61,7 +61,7 @@ def test_music_prompt_and_shared_worker(
 
     def select(options):
         choices.append(options)
-        return genre if genre in options else options[0]
+        return options[0]
 
     monkeypatch.setattr(images.random, 'choice', select)
     thread = Mock()
@@ -82,14 +82,19 @@ def test_music_prompt_and_shared_worker(
         assert prompt is None
         album = MusicLibrary(cache.database).get_album(1)
         assert album['images'] == []
+        assert album['genre'] == genre
         assert album['created_by'] == ('original' if existing else 'alice')
         assert (
             album_prompt(album)
             == 'an album cover for the band Second Band. the name of the album is First Album. '
-            f'this is the Vinyl, Remastered edition. the genre of music is {genre}, '
-            'but nowhere should the genre be mentioned.'
+            'this is the Vinyl, Remastered edition.'
+            + (
+                ' the genre of music is Jazz, but nowhere should the genre be mentioned.'
+                if existing
+                else ''
+            )
         )
-        assert set(choices[-1]) == {'Jazz', 'Fusion', 'Anime'}
+        assert choices == [('Vinyl',), ('Remastered',)]
         assert (channel, nick) == ('#test', 'alice')
         assert choose.call_count == 2
         assert 'already running' in images.image('cat', '#test', 'bob')
