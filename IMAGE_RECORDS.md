@@ -5,8 +5,7 @@ The existing `image_cache` table remains the canonical image record table; its
 unique `cache_key` is a lookup key, rather than the image's primary identity.
 
 `ImageCache.get_image(image_id)` returns the persisted record as a dictionary.
-`ImageCache.get_image_by_key(cache_key)` resolves an existing cache key to the same
-record. Both raise `LookupError` for an unknown image and do not generate or upload
+It raises `LookupError` for an unknown image and does not generate or upload
 images. `ImageCache.get(prompt, nick, channel)` continues returning the hosted URL.
 
 On the first image-cache connection, existing rows are migrated in one SQLite

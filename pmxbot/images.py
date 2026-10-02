@@ -180,16 +180,6 @@ class ImageCache:
                 raise LookupError('Unknown image ID')
             return dict(row)
 
-    def get_image_by_key(self, cache_key):
-        """Resolve a legacy cache key to its first-class image record."""
-        with closing(self.connect()) as db:
-            row = db.execute(
-                'SELECT * FROM image_cache WHERE cache_key = ?', (cache_key,)
-            ).fetchone()
-            if row is None:
-                raise LookupError('Unknown image cache key')
-            return dict(row)
-
     def latest_album_image(self, album_id):
         """Return the newest hosted cache entry linked to an existing album."""
         MusicLibrary(self.database).get_album(album_id)

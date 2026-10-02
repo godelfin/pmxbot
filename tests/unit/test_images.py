@@ -772,7 +772,7 @@ def test_image_ids_survive_retry_cache_hit_and_reopen(config, post, r2):
     r2.put_object.side_effect = images.BotoCoreError()
     with pytest.raises(images.ImageError):
         cache.get('cat', 'alice', '#test')
-    first = cache.get_image_by_key(cache.cache_key('cat'))
+    first = dict(read_row(cache))
     assert isinstance(first['id'], int) and first['id'] > 0
     Path(first['local_filename']).unlink()
     r2.put_object.side_effect = None
@@ -784,11 +784,17 @@ def test_image_ids_survive_retry_cache_hit_and_reopen(config, post, r2):
     assert saved['requested_by'] == 'alice'
     assert saved['channel'] == '#test'
     cache.get('dog')
-    assert cache.get_image_by_key(cache.cache_key('dog'))['id'] != first['id']
+    from contextlib import closing
+
+    with closing(cache.connect()) as db:
+        dog_id = db.execute(
+            'SELECT id FROM image_cache WHERE cache_key = ?',
+            (cache.cache_key('dog'),),
+        ).fetchone()['id']
+    assert dog_id != first['id']
+    assert cache.get_image(dog_id)['cache_key'] == cache.cache_key('dog')
     with pytest.raises(LookupError, match='Unknown image ID'):
         cache.get_image(99999)
-    with pytest.raises(LookupError, match='Unknown image cache key'):
-        cache.get_image_by_key('missing')
 
 
 def legacy_image_database(cache):
@@ -823,12 +829,13 @@ def test_legacy_image_migration_preserves_every_field_and_album_links(config, po
             '2025-01-01', '2025-01-02', '2025-01-03', 7, 'upload error'
         )''')
         before = dict(db.execute('SELECT * FROM image_cache').fetchone())
-    saved = cache.get_image_by_key('old')
-    identifier = saved.pop('id')
+        identifier = db.execute('SELECT rowid FROM image_cache').fetchone()[0]
+    saved = cache.get_image(identifier)
+    assert saved.pop('id') == identifier
     assert saved == before
     assert cache.latest_album_image(album['id']) == before['hosted_url']
     assert library.get_album(album['id'])['images'][0]['cache_key'] == 'old'
-    assert images.ImageCache(config).get_image_by_key('old')['id'] == identifier
+    assert images.ImageCache(config).get_image(identifier)['cache_key'] == 'old'
     with closing(cache.connect()) as db:
         db.execute('VACUUM')
     assert cache.get_image(identifier)['cache_key'] == 'old'
@@ -859,6 +866,8 @@ def test_concurrent_image_migration_assigns_one_stable_id(config):
         db.execute('''INSERT INTO image_cache
             (cache_key, prompt, normalized_prompt, settings_json, local_filename,
              generation_metadata_json) VALUES ('key', 'x', 'x', '{}', 'x.png', '{}')''')
+        identifier = db.execute('SELECT rowid FROM image_cache').fetchone()[0]
     with ThreadPoolExecutor(max_workers=4) as pool:
-        records = list(pool.map(lambda _: cache.get_image_by_key('key'), range(8)))
+        records = list(pool.map(lambda _: cache.get_image(identifier), range(8)))
+    assert records[0]['cache_key'] == 'key'
     assert all(record == records[0] for record in records)
