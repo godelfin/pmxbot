@@ -765,3 +765,100 @@ def test_migrate_album_image_link(tmp_path):
     assert library.get_album(album_id) == album
     library.record_image(album_id, 'new', 'bob')
     assert len(library.get_album(album_id)['images']) == 2
+
+
+def test_image_ids_survive_retry_cache_hit_and_reopen(config, post, r2):
+    cache = images.ImageCache(config)
+    r2.put_object.side_effect = images.BotoCoreError()
+    with pytest.raises(images.ImageError):
+        cache.get('cat', 'alice', '#test')
+    first = cache.get_image_by_key(cache.cache_key('cat'))
+    assert isinstance(first['id'], int) and first['id'] > 0
+    Path(first['local_filename']).unlink()
+    r2.put_object.side_effect = None
+    cache.get('CAT', 'bob', '#other')
+    cache.get('cat')
+    saved = images.ImageCache(config).get_image(first['id'])
+    assert saved['cache_key'] == first['cache_key']
+    assert saved['created_at'] == first['created_at']
+    assert saved['requested_by'] == 'alice'
+    assert saved['channel'] == '#test'
+    cache.get('dog')
+    assert cache.get_image_by_key(cache.cache_key('dog'))['id'] != first['id']
+    with pytest.raises(LookupError, match='Unknown image ID'):
+        cache.get_image(99999)
+    with pytest.raises(LookupError, match='Unknown image cache key'):
+        cache.get_image_by_key('missing')
+
+
+def legacy_image_database(cache):
+    """Create the actual pre-F1 schema independently of the new initializer."""
+    db = sqlite3.connect(cache.database, isolation_level=None)
+    db.row_factory = sqlite3.Row
+    db.execute('''CREATE TABLE image_cache (
+        cache_key TEXT PRIMARY KEY, prompt TEXT NOT NULL,
+        normalized_prompt TEXT NOT NULL, settings_json TEXT NOT NULL,
+        local_filename TEXT NOT NULL, hosted_url TEXT,
+        host TEXT NOT NULL DEFAULT 'r2', host_metadata_json TEXT,
+        generation_metadata_json TEXT NOT NULL, requested_by TEXT,
+        channel TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        uploaded_at TEXT, last_accessed_at TEXT,
+        hit_count INTEGER NOT NULL DEFAULT 0, last_error TEXT
+    )''')
+    return db
+
+
+def test_legacy_image_migration_preserves_every_field_and_album_links(config, post):
+    from contextlib import closing
+
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
+    library.record_image(album['id'], 'old', 'alice')
+    with closing(legacy_image_database(cache)) as db:
+        db.execute('''INSERT INTO image_cache VALUES (
+            'old', 'original prompt', 'original prompt', '{"quality":"low"}',
+            '/missing/original.png', 'https://old.example/image.png', 'imgbb',
+            '{"host":"original"}', '{"usage":42}', 'alice', '#test',
+            '2025-01-01', '2025-01-02', '2025-01-03', 7, 'upload error'
+        )''')
+        before = dict(db.execute('SELECT * FROM image_cache').fetchone())
+    saved = cache.get_image_by_key('old')
+    identifier = saved.pop('id')
+    assert saved == before
+    assert cache.latest_album_image(album['id']) == before['hosted_url']
+    assert library.get_album(album['id'])['images'][0]['cache_key'] == 'old'
+    assert images.ImageCache(config).get_image_by_key('old')['id'] == identifier
+    with closing(cache.connect()) as db:
+        db.execute('VACUUM')
+    assert cache.get_image(identifier)['cache_key'] == 'old'
+    post.assert_not_called()
+
+
+def test_image_migration_rolls_back_on_failure(config):
+    from contextlib import closing
+
+    cache = images.ImageCache(config)
+    with closing(legacy_image_database(cache)) as db:
+        # The old SQLite TEXT PRIMARY KEY allowed NULL; refuse data loss.
+        db.execute('''INSERT INTO image_cache
+            (prompt, normalized_prompt, settings_json, local_filename,
+             generation_metadata_json) VALUES ('x', 'x', '{}', 'x.png', '{}')''')
+        before = '\n'.join(db.iterdump())
+        with pytest.raises(sqlite3.IntegrityError):
+            images.initialize_image_records(db)
+        assert '\n'.join(db.iterdump()) == before
+
+
+def test_concurrent_image_migration_assigns_one_stable_id(config):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import closing
+
+    cache = images.ImageCache(config)
+    with closing(legacy_image_database(cache)) as db:
+        db.execute('''INSERT INTO image_cache
+            (cache_key, prompt, normalized_prompt, settings_json, local_filename,
+             generation_metadata_json) VALUES ('key', 'x', 'x', '{}', 'x.png', '{}')''')
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        records = list(pool.map(lambda _: cache.get_image_by_key('key'), range(8)))
+    assert all(record == records[0] for record in records)
