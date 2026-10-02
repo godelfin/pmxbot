@@ -368,9 +368,6 @@ def music(channel, nick, rest=''):
         selected[name] = value
     album_format = random.choice(tuple(albums.formats))
     format_description = random.choice(tuple(albums.format_desc))
-    genres = set(albums.genres)
-    genres.update(genre for children in albums.genres.values() for genre in children)
-    genre = random.choice(sorted(genres))
     return _start_image(
         None,
         channel,
@@ -379,7 +376,6 @@ def music(channel, nick, rest=''):
         album_data={
             'artist': selected['band'],
             'title': selected['album'],
-            'genre': genre,
             'format': album_format,
             'format_description': format_description,
         },
