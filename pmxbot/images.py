@@ -53,40 +53,18 @@ def post_json(url, provider, **kwargs):
 
 
 def initialize_image_records(db):
-    """Atomically promote legacy cache rows, preserving their rowid ordering.
-
-    The historical table name and cache keys remain compatible with music links
-    and existing readers. Numeric IDs identify images independently of albums.
-    No files are moved and no network access is needed for migration.
-    """
-    db.execute('BEGIN IMMEDIATE')
-    try:
-        columns = list(db.execute('PRAGMA table_info(image_cache)'))
-        legacy = columns and not any(row[1] == 'id' for row in columns)
-        if legacy:
-            db.execute('ALTER TABLE image_cache RENAME TO image_cache_legacy')
-        db.execute('''CREATE TABLE IF NOT EXISTS image_cache (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                cache_key TEXT NOT NULL UNIQUE, prompt TEXT NOT NULL,
-                normalized_prompt TEXT NOT NULL, settings_json TEXT NOT NULL,
-                local_filename TEXT NOT NULL, hosted_url TEXT,
-                host TEXT NOT NULL DEFAULT 'r2', host_metadata_json TEXT,
-                generation_metadata_json TEXT NOT NULL, requested_by TEXT,
-                channel TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                uploaded_at TEXT, last_accessed_at TEXT,
-                hit_count INTEGER NOT NULL DEFAULT 0, last_error TEXT
-            )''')
-        if legacy:
-            names = ', '.join('"' + row[1].replace('"', '""') + '"' for row in columns)
-            db.execute(
-                f'INSERT INTO image_cache (id, {names}) '
-                f'SELECT rowid, {names} FROM image_cache_legacy ORDER BY rowid'
-            )
-            db.execute('DROP TABLE image_cache_legacy')
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
+    """Create the current image schema for a fresh database."""
+    db.execute('''CREATE TABLE IF NOT EXISTS image_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cache_key TEXT NOT NULL UNIQUE, prompt TEXT NOT NULL,
+            normalized_prompt TEXT NOT NULL, settings_json TEXT NOT NULL,
+            local_filename TEXT NOT NULL, hosted_url TEXT,
+            host TEXT NOT NULL DEFAULT 'r2', host_metadata_json TEXT,
+            generation_metadata_json TEXT NOT NULL, requested_by TEXT,
+            channel TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            uploaded_at TEXT, last_accessed_at TEXT,
+            hit_count INTEGER NOT NULL DEFAULT 0, last_error TEXT
+        )''')
 
 
 class ImageCache:

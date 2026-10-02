@@ -8,13 +8,16 @@ unique `cache_key` is a lookup key, rather than the image's primary identity.
 It raises `LookupError` for an unknown image and does not generate or upload
 images. `ImageCache.get(prompt, nick, channel)` continues returning the hosted URL.
 
-On the first image-cache connection, existing rows are migrated in one SQLite
-transaction. Legacy rowids become explicit image IDs, preserving the ordering
-used to select the latest album cover. Every existing metadata field, cache key,
-local filename and hosted URL is copied unchanged. Migration does not read or
-move image files, call providers, or require credentials. A failed migration
-rolls back. Subsequent connections keep the assigned IDs, including after VACUUM.
-As with other database upgrades, take a database backup before deployment.
+New databases are initialized with the current schema. Existing databases must
+already have the F1 `image_cache.id` primary key; runtime legacy migration has
+been retired after production was upgraded. IDs remain stable across connections
+and VACUUM.
+
+To upgrade an older database that still uses `cache_key` as its primary key,
+back it up and first run the F1 release at commit `1e7dfae` (or the F1 merge
+`6efce91`). Open an image-cache connection with that release to perform the atomic
+migration, then verify the numeric primary key before deploying this version.
+The migration preserves existing rows, metadata, filenames, URLs and album links.
 
 Upload retries, hosting changes, cache hits and regeneration of a missing pending
 file retain the image ID and original request attribution. New keys create new
