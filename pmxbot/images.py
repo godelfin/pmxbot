@@ -52,6 +52,43 @@ def post_json(url, provider, **kwargs):
         ) from None
 
 
+def initialize_image_records(db):
+    """Atomically promote legacy cache rows, preserving their rowid ordering.
+
+    The historical table name and cache keys remain compatible with music links
+    and existing readers. Numeric IDs identify images independently of albums.
+    No files are moved and no network access is needed for migration.
+    """
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        columns = list(db.execute('PRAGMA table_info(image_cache)'))
+        legacy = columns and not any(row[1] == 'id' for row in columns)
+        if legacy:
+            db.execute('ALTER TABLE image_cache RENAME TO image_cache_legacy')
+        db.execute('''CREATE TABLE IF NOT EXISTS image_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cache_key TEXT NOT NULL UNIQUE, prompt TEXT NOT NULL,
+                normalized_prompt TEXT NOT NULL, settings_json TEXT NOT NULL,
+                local_filename TEXT NOT NULL, hosted_url TEXT,
+                host TEXT NOT NULL DEFAULT 'r2', host_metadata_json TEXT,
+                generation_metadata_json TEXT NOT NULL, requested_by TEXT,
+                channel TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                uploaded_at TEXT, last_accessed_at TEXT,
+                hit_count INTEGER NOT NULL DEFAULT 0, last_error TEXT
+            )''')
+        if legacy:
+            names = ', '.join('"' + row[1].replace('"', '""') + '"' for row in columns)
+            db.execute(
+                f'INSERT INTO image_cache (id, {names}) '
+                f'SELECT rowid, {names} FROM image_cache_legacy ORDER BY rowid'
+            )
+            db.execute('DROP TABLE image_cache_legacy')
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
 class ImageCache:
     def __init__(self, config):
         self.directory = (
@@ -127,20 +164,21 @@ class ImageCache:
         db = sqlite3.connect(str(self.database), timeout=20, isolation_level=None)
         db.row_factory = sqlite3.Row
         try:
-            db.execute('''CREATE TABLE IF NOT EXISTS image_cache (
-                cache_key TEXT PRIMARY KEY, prompt TEXT NOT NULL,
-                normalized_prompt TEXT NOT NULL, settings_json TEXT NOT NULL,
-                local_filename TEXT NOT NULL, hosted_url TEXT,
-                host TEXT NOT NULL DEFAULT 'r2', host_metadata_json TEXT,
-                generation_metadata_json TEXT NOT NULL, requested_by TEXT,
-                channel TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                uploaded_at TEXT, last_accessed_at TEXT,
-                hit_count INTEGER NOT NULL DEFAULT 0, last_error TEXT
-            )''')
+            initialize_image_records(db)
         except Exception:
             db.close()
             raise
         return db
+
+    def get_image(self, image_id):
+        """Return a persisted image record by its numeric ID, without generating."""
+        with closing(self.connect()) as db:
+            row = db.execute(
+                'SELECT * FROM image_cache WHERE id = ?', (image_id,)
+            ).fetchone()
+            if row is None:
+                raise LookupError('Unknown image ID')
+            return dict(row)
 
     def latest_album_image(self, album_id):
         """Return the newest hosted cache entry linked to an existing album."""
@@ -205,10 +243,18 @@ class ImageCache:
                 filename = self.directory / f'{key}.png'
                 self.save(filename, image)
                 db.execute(
-                    '''INSERT OR REPLACE INTO image_cache
+                    '''INSERT INTO image_cache
                     (cache_key, prompt, normalized_prompt, settings_json,
                      local_filename, generation_metadata_json, requested_by, channel, host)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'r2')''',
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'r2')
+                    ON CONFLICT(cache_key) DO UPDATE SET
+                        prompt = excluded.prompt,
+                        normalized_prompt = excluded.normalized_prompt,
+                        settings_json = excluded.settings_json,
+                        local_filename = excluded.local_filename,
+                        generation_metadata_json = excluded.generation_metadata_json,
+                        hosted_url = NULL, host_metadata_json = NULL,
+                        uploaded_at = NULL, last_error = NULL, host = 'r2' ''',
                     (
                         key,
                         prompt,
