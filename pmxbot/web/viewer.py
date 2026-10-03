@@ -466,7 +466,7 @@ def startup(config):
         'global': {
             'server.socket_port': config.port,
             'server.socket_host': config.host,
-            'server.environment': 'production',
+            'environment': 'production',
             'engine.autoreload.on': False,
             # 'tools.encode.on': True,
             'tools.encode.encoding': 'utf-8',
