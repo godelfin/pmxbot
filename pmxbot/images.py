@@ -387,14 +387,6 @@ def _generate(cache, prompt, channel, nick, album_id=None):
     _results.put((channel, f'{nick}: {result}'))
 
 
-@command(aliases=('imagine',))
-def image(rest, channel, nick):
-    "Generate and cache an image: !image <prompt>."
-    if not normalize_prompt(rest):
-        return 'Usage: !image <prompt>'
-    return _start_image(rest, channel, nick, 'Looking up or generating your image…')
-
-
 @command()
 def music(channel, nick, rest=''):
     "Generate a random album cover, or retrieve a cached cover: !music [album ID]."

@@ -100,7 +100,7 @@ connection traffic and private logging notices continue normally.
 Image generation
 ----------------
 
-Enable ``!image <prompt>`` (alias ``!imagine``) with::
+Enable album cover generation with ``!music`` using::
 
     images_enabled: true
     openai_api_key: !env OPENAI_API_KEY

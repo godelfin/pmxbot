@@ -94,7 +94,9 @@ def test_music_prompt_and_shared_worker(
         assert choices == [('Vinyl',), ('Remastered',)]
         assert (channel, nick) == ('#test', 'alice')
         assert choose.call_count == 2
-        assert 'already running' in images.image('cat', '#test', 'bob')
+        assert 'already running' in images._start_image(
+            'cat', '#test', 'bob', 'Looking up your image…'
+        )
     finally:
         images._busy.release()
 
@@ -442,7 +444,9 @@ def test_database_path_matches_main_storage(config, tmp_path, monkeypatch, uri):
 )
 def test_unsupported_database_reports_error(config, post, uri):
     config['database'] = uri
-    assert 'SQLite main bot database' in images.image('cat', '#test', 'alice')
+    assert 'SQLite main bot database' in images._start_image(
+        'cat', '#test', 'alice', 'Looking up your image…'
+    )
     assert not images._busy.locked()
     post.assert_not_called()
 
@@ -598,7 +602,7 @@ def test_invalid_r2_url_prevents_generation(config, post, name, url):
     post.assert_not_called()
 
 
-def test_command_runs_in_background_and_delivers_result(config, monkeypatch):
+def test_worker_runs_in_background_and_delivers_result(config, monkeypatch):
     started, finish = threading.Event(), threading.Event()
 
     def get(*args):
@@ -607,10 +611,14 @@ def test_command_runs_in_background_and_delivers_result(config, monkeypatch):
         return URL
 
     monkeypatch.setattr(images.ImageCache, 'get', get)
-    assert 'Looking up' in images.image('cat', '#test', 'alice')
+    assert 'Looking up' in images._start_image(
+        'cat', '#test', 'alice', 'Looking up your image…'
+    )
     try:
         assert started.wait(5)
-        assert 'already running' in images.image('dog', '#test', 'bob')
+        assert 'already running' in images._start_image(
+            'dog', '#test', 'bob', 'Looking up your image…'
+        )
         assert list(images.image_results()) == []
     finally:
         finish.set()
@@ -622,18 +630,15 @@ def test_command_runs_in_background_and_delivers_result(config, monkeypatch):
     assert not images._busy.locked()
 
 
-def test_command_disabled_and_empty_prompt(config, post):
-    assert images.image('  ', '#test', 'alice') == 'Usage: !image <prompt>'
+def test_worker_disabled(config, post):
     config['images_enabled'] = False
-    assert 'disabled' in images.image('cat', '#test', 'alice')
+    assert 'disabled' in images._start_image('cat', '#test', 'alice', 'Starting')
     post.assert_not_called()
 
 
-def test_command_registration():
-    assert next(core.Handler.find_matching('!image cat', '#test')).func is images.image
-    assert (
-        next(core.Handler.find_matching('!imagine cat', '#test')).func is images.image
-    )
+def test_image_commands_removed():
+    for message in ('!image cat', '!imagine cat'):
+        assert not list(core.Handler.find_matching(message, '#test'))
 
 
 def test_keys_redacted_at_startup(config, monkeypatch, caplog):
@@ -807,12 +812,14 @@ def test_existing_image_records_preserve_every_field_and_album_links(config, pos
     album = library.create_album('Band', 'Album')
     library.record_image(album['id'], 'old', 'alice')
     with closing(cache.connect()) as db:
-        db.execute('''INSERT INTO image_cache VALUES (
+        db.execute(
+            '''INSERT INTO image_cache VALUES (
             42, 'old', 'original prompt', 'original prompt', '{"quality":"low"}',
             '/missing/original.png', 'https://old.example/image.png', 'imgbb',
             '{"host":"original"}', '{"usage":42}', 'alice', '#test',
             '2025-01-01', '2025-01-02', '2025-01-03', 7, 'upload error'
-        )''')
+        )'''
+        )
         before = dict(db.execute('SELECT * FROM image_cache').fetchone())
         identifier = db.execute('SELECT id FROM image_cache').fetchone()[0]
     saved = cache.get_image(identifier)
@@ -833,9 +840,11 @@ def test_concurrent_image_connections_preserve_one_stable_id(config):
 
     cache = images.ImageCache(config)
     with closing(cache.connect()) as db:
-        db.execute('''INSERT INTO image_cache
+        db.execute(
+            '''INSERT INTO image_cache
             (cache_key, prompt, normalized_prompt, settings_json, local_filename,
-             generation_metadata_json) VALUES ('key', 'x', 'x', '{}', 'x.png', '{}')''')
+             generation_metadata_json) VALUES ('key', 'x', 'x', '{}', 'x.png', '{}')'''
+        )
         identifier = db.execute('SELECT id FROM image_cache').fetchone()[0]
     with ThreadPoolExecutor(max_workers=4) as pool:
         records = list(pool.map(lambda _: cache.get_image(identifier), range(8)))
