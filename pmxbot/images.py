@@ -54,7 +54,8 @@ def post_json(url, provider, **kwargs):
 
 def initialize_image_records(db):
     """Create the current image schema for a fresh database."""
-    db.execute('''CREATE TABLE IF NOT EXISTS image_cache (
+    db.execute(
+        '''CREATE TABLE IF NOT EXISTS image_cache (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cache_key TEXT NOT NULL UNIQUE, prompt TEXT NOT NULL,
             normalized_prompt TEXT NOT NULL, settings_json TEXT NOT NULL,
@@ -64,7 +65,8 @@ def initialize_image_records(db):
             channel TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             uploaded_at TEXT, last_accessed_at TEXT,
             hit_count INTEGER NOT NULL DEFAULT 0, last_error TEXT
-        )''')
+        )'''
+    )
 
 
 class ImageCache:
@@ -148,15 +150,55 @@ class ImageCache:
             raise
         return db
 
+    def read_connection(self):
+        """Open existing storage without schema initialization or filesystem writes."""
+        if not self.database.is_file():
+            raise LookupError('Unknown image ID')
+        db = sqlite3.connect(self.database.as_uri() + '?mode=ro', uri=True, timeout=20)
+        db.row_factory = sqlite3.Row
+        return db
+
     def get_image(self, image_id):
-        """Return a persisted image record by its numeric ID, without generating."""
-        with closing(self.connect()) as db:
-            row = db.execute(
-                'SELECT * FROM image_cache WHERE id = ?', (image_id,)
-            ).fetchone()
+        """Return a persisted image record without generating or mutating storage."""
+        with closing(self.read_connection()) as db:
+            tables = {
+                row[0]
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            row = (
+                db.execute(
+                    'SELECT * FROM image_cache WHERE id = ?', (image_id,)
+                ).fetchone()
+                if 'image_cache' in tables
+                else None
+            )
             if row is None:
                 raise LookupError('Unknown image ID')
             return dict(row)
+
+    def image_albums(self, cache_key):
+        """Read album identities associated with an image, without migrations."""
+        with closing(self.read_connection()) as db:
+            tables = {
+                row[0]
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if not {'album_images', 'albums', 'artists'} <= tables:
+                return []
+            return [
+                dict(row)
+                for row in db.execute(
+                    """SELECT albums.id, albums.title, artists.name AS artist_name
+                FROM album_images JOIN albums ON albums.id = album_images.album_id
+                JOIN artists ON artists.id = albums.artist_id
+                WHERE album_images.cache_key = ? ORDER BY albums.id""",
+                    (cache_key,),
+                )
+            ]
 
     def latest_album_image(self, album_id):
         """Return the newest hosted cache entry linked to an existing album."""

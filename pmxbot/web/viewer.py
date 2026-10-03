@@ -8,6 +8,8 @@ import urllib.parse
 import operator
 import contextlib
 import functools
+import json
+import sqlite3
 
 import cherrypy
 import jinja2.loaders
@@ -18,6 +20,7 @@ import importlib_resources as resources
 import pmxbot.core
 import pmxbot.logging
 import pmxbot.util
+from pmxbot.images import ImageCache, ImageError
 
 jenv = jinja2.Environment(loader=jinja2.loaders.PackageLoader('pmxbot.web'))
 TIMEOUT = 10.0
@@ -284,7 +287,94 @@ class LegacyPage:
         raise cherrypy.HTTPRedirect(url, 301)
 
 
+def safe_image_url(value):
+    """Allow public HTTPS artwork URLs without credentials or URL ambiguity."""
+    if not value or any(char.isspace() or ord(char) < 32 for char in value):
+        return None
+    if '\\' in value:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        _ = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != 'https'
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+    ):
+        return None
+    return value
+
+
+def image_metadata(image):
+    """Expose useful provider fields, keeping paths and hosting credentials private."""
+    sections = []
+    for label, field, keys in (
+        ('Settings', 'settings_json', ('model', 'size', 'quality', 'output_format')),
+        (
+            'Generation metadata',
+            'generation_metadata_json',
+            (
+                'created',
+                'usage',
+                'revised_prompt',
+                'model',
+                'size',
+                'quality',
+                'output_format',
+            ),
+        ),
+    ):
+        try:
+            data = json.loads(image[field])
+        except (ValueError, TypeError):
+            data = {}
+        selected = (
+            {key: data[key] for key in keys if key in data}
+            if isinstance(data, dict)
+            else {}
+        )
+        sections.append(
+            (
+                label,
+                json.dumps(selected, ensure_ascii=False, indent=2) if selected else '',
+            )
+        )
+    return sections
+
+
+class ImagePage:
+    @cherrypy.expose
+    def default(self, *path, **params):
+        cherrypy.lib.cptools.allow(['GET', 'HEAD'])
+        if len(path) != 1 or not path[0].isascii() or not path[0].isdecimal():
+            raise cherrypy.HTTPError(404, 'Unknown image ID')
+        # SQLite IDs are positive signed 64-bit integers. Bound before conversion.
+        value = path[0].lstrip('0')
+        if not value or len(value) > 19 or int(value) > 2**63 - 1:
+            raise cherrypy.HTTPError(404, 'Unknown image ID')
+        try:
+            cache = ImageCache(pmxbot.config)
+            image = cache.get_image(int(value))
+            albums = cache.image_albums(image['cache_key'])
+        except LookupError:
+            raise cherrypy.HTTPError(404, 'Unknown image ID') from None
+        except (sqlite3.Error, ImageError):
+            raise cherrypy.HTTPError(503, 'Image storage is unavailable') from None
+        context = get_context()
+        context['metadata_sections'] = image_metadata(image)
+        context.update(
+            image=image, albums=albums, image_url=safe_image_url(image['hosted_url'])
+        )
+        # Escape the entire inherited layout too, without changing legacy pages.
+        page = jenv.overlay(autoescape=True).get_template('image.html')
+        return page.render(**context).encode('utf-8')
+
+
 class PmxbotPages:
+    images = ImagePage()
     channel = ChannelPage()
     day = DayPage()
     karma = KarmaPage()
@@ -376,7 +466,7 @@ def startup(config):
         'global': {
             'server.socket_port': config.port,
             'server.socket_host': config.host,
-            'server.environment': 'production',
+            'environment': 'production',
             'engine.autoreload.on': False,
             # 'tools.encode.on': True,
             'tools.encode.encoding': 'utf-8',

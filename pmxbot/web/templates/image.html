@@ -1,0 +1,25 @@
+{% block body %}
+<h2>Image #{{ image.id }}</h2>
+{% if image_url %}
+<p><a href="{{ image_url }}" rel="noreferrer"><img src="{{ image_url }}" alt="Generated image #{{ image.id }}" referrerpolicy="no-referrer" style="max-width: 100%; height: auto;" /></a></p>
+{% else %}
+<p>Hosted artwork is unavailable. Saved image details are shown below.</p>
+{% endif %}
+<h3>Original prompt</h3>
+<pre style="white-space: pre-wrap; overflow-wrap: anywhere;">{{ image.prompt }}</pre>
+<dl>
+<dt>Image ID</dt><dd>{{ image.id }}</dd>
+<dt>Created</dt><dd>{{ image.created_at }}</dd>
+{% if image.requested_by %}<dt>Requester</dt><dd>{{ image.requested_by }}</dd>{% endif %}
+{% if image.channel %}<dt>Channel</dt><dd>{{ image.channel }}</dd>{% endif %}
+{% if image.uploaded_at %}<dt>Uploaded</dt><dd>{{ image.uploaded_at }}</dd>{% endif %}
+{% if image.host %}<dt>Image host</dt><dd>{{ image.host }}</dd>{% endif %}
+</dl>
+{% for label, metadata in metadata_sections %}
+{% if metadata %}<h3>{{ label }}</h3><pre style="white-space: pre-wrap; overflow-wrap: anywhere;">{{ metadata }}</pre>{% endif %}
+{% endfor %}
+{% if albums %}
+<h3>Albums</h3>
+<ul>{% for album in albums %}<li><a href="{{ base }}/albums/{{ album.id }}">#{{ album.id }}: {{ album.artist_name }} — {{ album.title }}</a></li>{% endfor %}</ul>
+{% endif %}
+<!--{% endblock %}-->
