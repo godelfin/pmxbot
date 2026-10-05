@@ -1,0 +1,30 @@
+#!/bin/bash
+# Install a reviewed copy as root in /usr/local/bin; do not run from the checkout.
+set -euo pipefail
+export PATH=/usr/bin:/bin
+export HOME=/home/deploy
+umask 022
+
+if [[ $(id -un) != deploy ]]; then
+    echo 'Deployment must run as deploy.' >&2
+    exit 1
+fi
+if [[ $# != 0 || -n ${SSH_ORIGINAL_COMMAND:-} ]]; then
+    echo 'Deployment accepts no arguments or remote commands.' >&2
+    exit 1
+fi
+
+# Lock lives outside the checkout so reset cannot remove it.
+exec 9>/home/deploy/.deploy-ircbot.lock
+flock -n 9 || { echo 'Another deployment is running.' >&2; exit 1; }
+
+cd /home/ircbot/pmxbot
+git fetch origin
+git reset --hard origin/main
+
+/home/ircbot/venv/bin/python3 -m pip install \
+    -c constraints.txt \
+    '.[viewer]'
+/home/ircbot/venv/bin/python3 -m pip check
+
+sudo -n /usr/bin/systemctl restart ircbot.service

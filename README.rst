@@ -59,6 +59,13 @@ in setup.py. Some optional dependencies are installed with
 - slack: Slack bot client.
 - viewer: Enable the web viewer application.
 
+Production deployment
+=====================
+
+The reviewed production deployment script is versioned at
+``deploy/deploy-ircbot``. See ``docs/deployment.rst`` for bootstrap, ownership,
+restricted SSH authorization, and administrator installation of script updates.
+
 Testing
 =======
 
