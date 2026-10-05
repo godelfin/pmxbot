@@ -209,6 +209,29 @@ class ImageCache:
                 ).fetchone()
             return dict(row), dict(image) if image is not None else None
 
+    def list_albums(self):
+        """Read all album titles and bands without initializing storage."""
+        if not self.database.is_file():
+            return []
+        with closing(self.read_connection()) as db:
+            tables = {
+                row[0]
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if not {'albums', 'artists'} <= tables:
+                return []
+            return [
+                dict(row)
+                for row in db.execute(
+                    '''SELECT albums.id, albums.title, artists.name AS artist_name
+                    FROM albums JOIN artists ON artists.id = albums.artist_id
+                    ORDER BY artists.normalized_name, albums.normalized_title,
+                    albums.id'''
+                )
+            ]
+
     def album_neighbors(self, album_id):
         """Return adjacent stored album IDs, skipping gaps in the sequence."""
         with closing(self.read_connection()) as db:

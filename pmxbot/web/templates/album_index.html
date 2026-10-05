@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Albums</title>
+<style>
+body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; color: #252b34; background: #f4f6f8; line-height: 1.6; }
+main { max-width: 70rem; margin: auto; padding: 1.25rem; }
+h1 { margin: 0 0 1.25rem; font-size: 1.5rem; }
+ul { padding: 1.25rem 1.25rem 1.25rem 2.5rem; background: white; border: 1px solid #d4dbe2; border-radius: .5rem; overflow-wrap: anywhere; }
+li + li { margin-top: .5rem; }
+a { color: #135ba1; }
+a:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Albums</h1>
+{% if albums %}
+<ul>
+{% for album in albums %}
+<li><a href="{{ base }}/albums/{{ album.id }}">{{ album.artist_name }} — {{ album.title }}</a></li>
+{% endfor %}
+</ul>
+{% else %}
+<p>No albums yet.</p>
+{% endif %}
+</main>
+</body>
+</html>

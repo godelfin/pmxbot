@@ -383,34 +383,19 @@ class AlbumPage:
 
 
 class PmxbotPages:
+    # Only the album index and album pages are published for now. Keep the other
+    # page classes available for when the rest of the viewer is enabled again.
     albums = AlbumPage()
-    channel = ChannelPage()
-    day = DayPage()
-    karma = KarmaPage()
-    search = SearchPage()
-    help = HelpPage()
-    legacy = LegacyPage()
 
     @cherrypy.expose
-    def default(self):
-        page = jenv.get_template('index.html')
-        db = pmxbot.logging.Logger.store
-        context = get_context()
-        chans = []
-        for chan in sorted(db.list_channels(), key=str.lower):
-            last = db.last_message(chan)
-            summary = [
-                chan,
-                last['datetime'].strftime("%Y-%m-%d %H:%M"),
-                last['datetime'].date(),
-                last['datetime'].time(),
-                last['nick'],
-                html.escape(last['message'][:75]),
-                make_anchor([last['datetime'].time(), last['nick']]),
-            ]
-            chans.append(summary)
-        context['chans'] = chans
-        return page.render(**context).encode('utf-8')
+    def index(self):
+        cherrypy.lib.cptools.allow(['GET', 'HEAD'])
+        try:
+            albums = ImageCache(pmxbot.config).list_albums()
+        except (sqlite3.Error, ImageError):
+            raise cherrypy.HTTPError(503, 'Album storage is unavailable') from None
+        page = jenv.overlay(autoescape=True).get_template('album_index.html')
+        return page.render(albums=albums, **get_context()).encode('utf-8')
 
 
 def patch_compat(config):

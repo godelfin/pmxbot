@@ -422,3 +422,72 @@ def test_album_without_artwork(page):
     assert soup.select_one('#album-heading')
     assert not soup.select('img, #details-heading, .image-cache-key')
     assert cache.database.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    'path',
+    [
+        '/channel/test',
+        '/day/test/2026-10-06',
+        '/karma',
+        '/karma/test',
+        '/search',
+        '/search/test',
+        '/help',
+        '/legacy/test/2026-10-06',
+        '/legacy/forward/test/2026-10-06/12.00.00.nick',
+    ],
+)
+def test_other_viewer_pages_are_disabled(page, path):
+    cache, request = page
+    assert request(path)['status'] == 404
+    assert not cache.database.exists()
+    assert not cache.directory.exists()
+
+
+def test_homepage_lists_all_albums(page):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    last = library.create_album('Zulu', 'Last')
+    first = library.create_album('<Band>', '<Album>')
+    second = library.create_album('<Band>', 'Second')
+    before = cache.database.read_bytes()
+    response = request('/')
+    assert response['status'] == 200
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    links = soup.select('main li a')
+    assert [link.get_text() for link in links] == [
+        '<Band> — <Album>', '<Band> — Second', 'Zulu — Last'
+    ]
+    assert [link['href'] for link in links] == [
+        f'/bot/albums/{album["id"]}' for album in (first, second, last)
+    ]
+    assert not soup.select('band, album')
+    for link in links:
+        assert request(link['href'].removeprefix('/bot'))['status'] == 200
+    assert request('/', method='HEAD')['body'] == ''
+    assert cache.database.read_bytes() == before
+
+
+def test_empty_homepage_does_not_create_storage(page):
+    cache, request = page
+    response = request('/')
+    assert response['status'] == 200
+    assert 'No albums yet.' in response['body']
+    assert not cache.database.exists()
+    assert not cache.directory.exists()
+
+
+def test_homepage_storage_failure_is_clean(page):
+    cache, request = page
+    cache.database.write_text('not sqlite')
+    response = request('/')
+    assert response['status'] == 503
+    assert str(cache.database) not in response['body']
+
+
+@pytest.mark.parametrize('method', ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
+def test_homepage_rejects_writes(page, method):
+    cache, request = page
+    assert request('/', method=method)['status'] == 405
+    assert not cache.database.exists()
