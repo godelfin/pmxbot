@@ -40,18 +40,6 @@ class MusicLibrary:
                 cache_key TEXT NOT NULL,
                 PRIMARY KEY (album_id, cache_key)
             )""")
-            columns = {row['name'] for row in db.execute('PRAGMA table_info(albums)')}
-            if 'cache_key' in columns:
-                db.execute("""INSERT INTO album_images
-                    (album_id, cache_key)
-                    SELECT id, cache_key
-                    FROM albums WHERE cache_key IS NOT NULL
-                    ON CONFLICT(album_id, cache_key) DO NOTHING""")
-                db.execute("""UPDATE albums SET cache_key = NULL,
-                    image_created_by = NULL, image_created_at = NULL
-                    WHERE cache_key IS NOT NULL""")
-            # Also upgrades existing tables. Conflicting historical links abort
-            # the transaction rather than silently choosing an album owner.
             db.execute(
                 'CREATE UNIQUE INDEX IF NOT EXISTS album_images_unique_cache_key '
                 'ON album_images(cache_key)'

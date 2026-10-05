@@ -207,14 +207,9 @@ are idempotent. Image attribution comes from ``image_cache.requested_by`` and
 references to the independently managed image cache. Unknown album IDs are
 rejected when recording a link.
 
-Existing scalar associations are migrated transactionally on first access.
-The completed ``album_images`` attribution-column upgrade is no longer run at
-startup. Older databases should first open the music library using commit
-``119c089`` (or its merge ``88850f1``) to remove those columns while preserving
-links and cached image attribution. Obsolete scalar columns in
-``albums`` remain in existing databases but are cleared and no longer used;
-fresh databases omit them. Older branch code must
-not write to a migrated database. There is no revision/version model, preferred
+Completed music migrations are no longer run at startup. Obsolete scalar columns
+in older ``albums`` tables are ignored; fresh databases omit them. Older branch
+code must not write to a migrated database. There is no revision/version model, preferred
 image, or semantic ordering of images. There are no new IRC commands or
 delayed-generation workflows.
 
@@ -231,53 +226,16 @@ them with ``!band add: <band name>`` and ``!album add: <album title>``.
 song quote library.
 
 
-Recovering unlinked music images
--------------------------------
+Historical music database upgrades
+---------------------------------
 
-Preview recovery from unlinked ``image_cache`` entries without changing the database::
-
-    python -m pmxbot.migrate_music_images /path/to/pmxbot.sqlite
-
-Stop the bot, then apply with a new backup filename::
-
-    python -m pmxbot.migrate_music_images /path/to/pmxbot.sqlite --apply --backup /path/to/pmxbot.before-unlinked.sqlite
-
-``--unlinked-cache`` remains accepted for compatibility; this is now the default
-and only import mode. Numeric ``image_cache.id`` values are required. The script
-scans only unlinked entries in image ID order, recovers names and available
-metadata from recognizable prompts, and reuses albums with matching normalized
-artist/title pairs. Existing album metadata is retained; new artist/album
-attribution comes from the cached request. New album IDs are independent of
-image IDs. Cached records and files are unchanged. The JSON report lists image
-IDs, cache keys, artist/title and album mappings, and reasons for skipped prompts.
-Ambiguous prompts require manual review. Repeated runs add no duplicate links.
-
-Applying creates a SQLite backup before initializing library schemas and
-importing rows. Row import is transactional; if it fails, imported rows roll
-back, though initialized schemas may remain. Stop the bot before applying and
-restart it afterward.
-
-Retiring legacy music IDs
--------------------------
-
-The legacy-ID import mode has been retired. Databases that still require it must
-first use commit ``119c089`` (or merge ``88850f1``) to import their legacy rows.
-Before using this version, complete that import so legacy IDs are no longer
-needed for album-ID reservation.
-
-Preview removal of the obsolete table::
-
-    python -m pmxbot.retire_music_image_ids /path/to/pmxbot.sqlite
-
-After stopping the bot, apply with a new backup filename::
-
-    python -m pmxbot.retire_music_image_ids /path/to/pmxbot.sqlite --apply --backup /path/to/pmxbot.before-retire.sqlite
-
-Cleanup verifies every legacy cache key has a cached image linked to an existing
-album and artist. It refuses to drop the table if any entry is unmigrated. A
-backup is created before the table is dropped. Album IDs, image IDs, cached
-records, and album links are retained. Rerunning after removal is harmless.
-Restart the bot afterward.
+The completed recovery and legacy-ID cleanup commands have been removed.
+Databases must already have album/image associations in ``album_images`` and
+image attribution in ``image_cache``. For an older database, back it up and first
+use commit ``119c089`` (or merge ``88850f1``) for legacy import, unlinked image
+recovery, and link-attribution cleanup. Commit ``36f3f89`` provides the explicit
+``music_image_ids`` retirement command. Complete these upgrades before running
+this version. Existing numeric album/image IDs and cached records remain valid.
 
 Usage
 =====

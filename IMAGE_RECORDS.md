@@ -32,6 +32,9 @@ Image attribution is stored only in `image_cache.requested_by` and `created_at`.
 The completed link-attribution migration has been retired. To upgrade a database
 that still has `album_images.image_created_by` or `image_created_at`, first open
 the music library at commit `119c089` (or merge `88850f1`), then deploy this version.
+Unlinked-image recovery and legacy-ID retirement tools have also been removed
+following the completed production migration. Historical recovery is available
+at `119c089`, and the legacy table cleanup command at `36f3f89`.
 Opening the music library adds the ownership constraint to existing databases. If shared
 images already exist, the schema upgrade fails atomically; resolve their album
 ownership before retrying. Existing links are never silently reassigned or deleted.

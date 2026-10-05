@@ -765,29 +765,6 @@ def test_upgrade_album_image_ownership(tmp_path, conflicting):
             library.record_image(second, 'a')
 
 
-def test_migrate_album_image_link(tmp_path):
-    library = MusicLibrary(tmp_path / 'music.sqlite')
-    album_id = library.create_album('Band', 'Album')['id']
-    with sqlite3.connect(library.database) as db:
-        db.execute('ALTER TABLE albums ADD COLUMN cache_key TEXT')
-        db.execute('ALTER TABLE albums ADD COLUMN image_created_by TEXT')
-        db.execute('ALTER TABLE albums ADD COLUMN image_created_at TEXT')
-        db.execute(
-            "UPDATE albums SET cache_key = 'old', image_created_by = 'alice', "
-            "image_created_at = '2026-01-01'"
-        )
-    album = library.get_album(album_id)
-    assert album['images'] == [
-        {
-            'cache_key': 'old',
-        }
-    ]
-    assert 'cache_key' not in album
-    assert library.get_album(album_id) == album
-    library.record_image(album_id, 'new')
-    assert len(library.get_album(album_id)['images']) == 2
-
-
 def test_image_ids_survive_retry_cache_hit_and_reopen(config, post, r2):
     cache = images.ImageCache(config)
     r2.put_object.side_effect = images.BotoCoreError()
