@@ -65,10 +65,6 @@ def test_apply_preserves_keys_attribution_and_is_idempotent(database, tmp_path):
     assert album['created_by'] == 'alice'
     assert album['created_at'] == '2025-01-02 03:04:05'
     assert [image['cache_key'] for image in album['images']] == ['key-1', 'key-2']
-    assert all(image['image_created_by'] == 'alice' for image in album['images'])
-    assert all(
-        image['image_created_at'] == album['created_at'] for image in album['images']
-    )
     after = dump(database)
     rerun = migrate(database, apply=True, backup=tmp_path / 'second.sqlite')
     assert rerun['linked'] == 0

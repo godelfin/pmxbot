@@ -116,9 +116,9 @@ def import_rows(db):
                 )
             inserted = db.execute(
                 '''INSERT INTO album_images
-                (album_id, cache_key, image_created_by, image_created_at)
-                VALUES (?, ?, ?, ?) ON CONFLICT(album_id, cache_key) DO NOTHING''',
-                (album_id, row['cache_key'], row['requested_by'], row['created_at']),
+                (album_id, cache_key)
+                VALUES (?, ?) ON CONFLICT(album_id, cache_key) DO NOTHING''',
+                (album_id, row['cache_key']),
             )
             report['linked' if inserted.rowcount else 'already_linked'] += 1
             report['mapping'].append(

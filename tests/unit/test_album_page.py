@@ -32,7 +32,7 @@ def page(tmp_path, monkeypatch):
     )
     app = cherrypy.Application(viewer.PmxbotPages(), '/bot')
 
-    def request(path='/images/42', method='GET'):
+    def request(path='/albums/42', method='GET'):
         env = {
             'REQUEST_METHOD': method,
             'SCRIPT_NAME': '/bot',
@@ -66,7 +66,7 @@ def page(tmp_path, monkeypatch):
     return cache, request
 
 
-def insert(cache, url='https://images.example/art.png?x=1&y=2'):
+def insert(cache, url='https://albums.example/art.png?x=1&y=2'):
     with closing(cache.connect()) as db:
         db.execute(
             '''INSERT INTO image_cache
@@ -83,20 +83,26 @@ def insert(cache, url='https://images.example/art.png?x=1&y=2'):
             ),
         )
 
+    library = MusicLibrary(cache.database)
+    album = library.create_album('<Band>', '<Album>')
+    with sqlite3.connect(cache.database) as db:
+        db.execute('UPDATE albums SET id = 42 WHERE id = ?', (album['id'],))
+    library.record_image(42, 'key')
+
 
 def test_render_and_read_only(page):
     cache, request = page
     insert(cache)
     library = MusicLibrary(cache.database)
     album = library.create_album('<Band>', '<Album>')
-    library.record_image(album['id'], 'key', 'alice')
+    library.record_image(album['id'], 'key')
     before = cache.database.read_bytes()
     response = request()
     assert response['status'] == 200
     body = response['body']
     soup = BeautifulSoup(body, 'html.parser')
-    assert soup.title.get_text() == 'Image #42'
-    assert soup.select_one('main > h1').get_text() == 'Image #42'
+    assert soup.title.get_text() == 'Album #42'
+    assert soup.select_one('main > h1').get_text() == '<Band> — <Album> (#42)'
     assert soup.select_one('meta[name=viewport]')['content'] == (
         'width=device-width, initial-scale=1'
     )
@@ -104,7 +110,7 @@ def test_render_and_read_only(page):
     assert (
         preview['href']
         == preview.img['src']
-        == ('https://images.example/art.png?x=1&y=2')
+        == ('https://albums.example/art.png?x=1&y=2')
     )
     assert preview['class'] == ['artwork-preview']
     assert preview['rel'] == ['noreferrer']
@@ -126,10 +132,10 @@ def test_render_and_read_only(page):
     assert [section.h2.get_text() for section in soup.select('main section')] == [
         'Artwork',
         'Original prompt',
+        'Album details',
         'Image details',
         'Settings',
         'Generation metadata',
-        'Related albums',
     ]
     for section in soup.select('main section'):
         assert section['aria-labelledby'] == section.h2['id']
@@ -137,8 +143,8 @@ def test_render_and_read_only(page):
         '  exact <script> & "prompt"\nsecond line  '
     )
     assert not soup.select('form, input, textarea')
-    assert 'Image #42' in body
-    assert 'src="https://images.example/art.png?x=1&amp;y=2"' in body
+    assert 'Album #42' in body
+    assert 'src="https://albums.example/art.png?x=1&amp;y=2"' in body
     assert '  exact &lt;script&gt; &amp; &#34;prompt&#34;\nsecond line  ' in body
     for value in (
         '&lt;alice&gt;',
@@ -166,17 +172,17 @@ def test_render_and_read_only(page):
 @pytest.mark.parametrize(
     'path',
     [
-        '/images',
-        '/images/',
-        '/images/no',
-        '/images/0',
-        '/images/-1',
-        '/images/1.0',
-        '/images/４２',
-        '/images/42/extra',
-        '/images/9223372036854775808',
-        '/images/' + '9' * 5000,
-        '/images/999',
+        '/albums',
+        '/albums/',
+        '/albums/no',
+        '/albums/0',
+        '/albums/-1',
+        '/albums/1.0',
+        '/albums/４２',
+        '/albums/42/extra',
+        '/albums/9223372036854775808',
+        '/albums/' + '9' * 5000,
+        '/albums/999',
     ],
 )
 def test_invalid_and_unknown_do_not_create_storage(page, path):
@@ -223,7 +229,55 @@ def test_unavailable_artwork_retains_metadata(page, url):
     assert not soup.select('.artwork-preview, img')
     assert soup.select_one('#details-heading')
     assert soup.select_one('#metadata-heading-2')
-    assert not soup.select_one('#albums-heading')
+    assert soup.select_one('#album-heading')
+
+
+def test_album_and_band_properties(page):
+    cache, request = page
+    insert(cache)
+    library = MusicLibrary(cache.database)
+    album = library.create_album(
+        '<Band>',
+        '<Album>',
+        genre='Album genre',
+        format='Vinyl',
+        format_description='Limited <edition>',
+        description='First line\n<script>album description</script>',
+    )
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            'UPDATE albums SET description = ? WHERE id = ?',
+            ('First line\n<script>album description</script>', album['id']),
+        )
+    library.record_image(album['id'], 'key')
+    other = library.create_album('Other band', 'Other title')
+    library.record_image(other['id'], 'other-key')
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            'UPDATE artists SET genre = ?, description = ? WHERE id = ?',
+            ('Band genre', '<b>Band description</b>', album['artist_id']),
+        )
+    before = cache.database.read_bytes()
+    soup = BeautifulSoup(request()['body'], 'html.parser')
+    cards = soup.select('#album-heading ~ .album-details')
+    assert len(cards) == 1
+    details = {
+        term.get_text(): term.find_next_sibling('dd').get_text()
+        for term in cards[0].select('dt')
+    }
+    assert details == {
+        'Title': '<Album>',
+        'Format': 'Vinyl',
+        'Format description': 'Limited <edition>',
+        'Album genre': 'Album genre',
+        'Album description': 'First line\n<script>album description</script>',
+        'Band': '<Band>',
+        'Band genre': 'Band genre',
+        'Band description': '<b>Band description</b>',
+    }
+    assert not cards[0].select('script, b, edition')
+    assert cards[0].a['href'] == f'/bot/albums/{album["id"]}'
+    assert cache.database.read_bytes() == before
 
 
 def test_database_without_image_schema_is_unchanged(page):
@@ -250,6 +304,7 @@ def test_malformed_metadata(page, data):
     assert [section.h2.get_text() for section in soup.select('main section')] == [
         'Artwork',
         'Original prompt',
+        'Album details',
         'Image details',
     ]
 
@@ -267,7 +322,7 @@ def test_existing_image_rejects_writes(page, method):
 
 def test_optional_details_and_attribute_escaping(page):
     cache, request = page
-    url = 'https://images.example/art.png?caption="<art>"&other=1'
+    url = 'https://albums.example/art.png?caption="<art>"&other=1'
     insert(cache, url)
     with sqlite3.connect(cache.database) as db:
         db.execute(
@@ -281,13 +336,13 @@ def test_optional_details_and_attribute_escaping(page):
     assert soup.select_one('.artwork-preview')['href'] == url
     assert soup.img['src'] == url
     assert set(soup.img.attrs) == {'src', 'alt', 'referrerpolicy'}
-    assert [dt.get_text() for dt in soup.select('dt')] == [
+    assert [dt.get_text() for dt in soup.select('#details-heading ~ dl dt')] == [
         'Image ID',
         'Created',
         'Uploaded',
         'Image host',
     ]
-    assert soup.select_one('dl').get_text().endswith('<host>\n')
+    assert soup.select_one('#details-heading ~ dl').get_text().endswith('<host>\n')
     assert not soup.select('host, art')
     assert cache.database.read_bytes() == before
 
@@ -298,3 +353,39 @@ def test_storage_failure_is_clean(page):
     response = request()
     assert response['status'] == 503
     assert str(cache.database) not in response['body']
+
+
+def test_route_uses_album_id_and_newest_image(page):
+    cache, request = page
+    insert(cache)
+    with sqlite3.connect(cache.database) as db:
+        db.execute('UPDATE image_cache SET id = 100 WHERE id = 42')
+        db.execute('''INSERT INTO image_cache
+            (id, cache_key, prompt, normalized_prompt, settings_json,
+             local_filename, generation_metadata_json, created_at)
+            VALUES (101, 'newer', 'new prompt', 'new prompt', '{}', '/private/newer.png', '{}',
+                    '2026-10-05 12:00:00')''')
+    MusicLibrary(cache.database).record_image(42, 'newer')
+    before = cache.database.read_bytes()
+    response = request('/albums/42')
+    assert response['status'] == 200
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    assert soup.title.get_text() == 'Album #42'
+    assert soup.select_one('#prompt-heading ~ pre').get_text() == 'new prompt'
+    assert soup.select_one('.image-cache-key').get_text() == 'Cache key: newer'
+    assert request('/albums/100')['status'] == 404
+    assert request('/images/100')['status'] == 404
+    assert cache.database.read_bytes() == before
+
+
+def test_album_without_artwork(page):
+    cache, request = page
+    album = MusicLibrary(cache.database).create_album('Band', 'Unillustrated')
+    before = cache.database.read_bytes()
+    response = request(f'/albums/{album["id"]}')
+    assert response['status'] == 200
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    assert soup.select_one('h1').get_text() == f'Band — Unillustrated (#{album["id"]})'
+    assert soup.select_one('#album-heading')
+    assert not soup.select('img, #details-heading, .image-cache-key')
+    assert cache.database.read_bytes() == before

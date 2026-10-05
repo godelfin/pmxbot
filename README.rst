@@ -196,16 +196,22 @@ without image generation or provider credentials. Separately,
 ID, loads the saved metadata, and generates or reuses its image. Creation and
 image attribution are stored separately. Failed generation/upload leaves the
 album available for retry by ID; successful cache hits retain image attribution.
-Album/image associations are many-to-many in ``album_images``, keyed by
-``(album_id, cache_key)``. ``get_album`` returns an ``images`` collection containing
-cache keys and per-link attribution instead of scalar image fields. Recording an
-image adds a link; repeats preserve attribution. Cache keys remain logical
+Album/image associations are stored in ``album_images``, keyed by
+``(album_id, cache_key)``. An album can have multiple images, but each cached image
+can be linked to only one album, enforced by a unique index on ``cache_key``.
+Linking an image to another album raises ``sqlite3.IntegrityError``.
+``get_album`` returns an ``images`` collection containing
+cache keys instead of scalar image fields. Recording an image adds a link; repeats
+are idempotent. Image attribution comes from ``image_cache.requested_by`` and
+``image_cache.created_at``; links carry no attribution. Cache keys remain logical
 references to the independently managed image cache. Unknown album IDs are
 rejected when recording a link.
 
-Existing scalar associations are migrated transactionally on first access,
-including attribution. Obsolete columns remain in existing databases but are
-cleared and no longer used; fresh databases omit them. Older branch code must
+Existing scalar associations are migrated transactionally on first access.
+Obsolete attribution columns in ``album_images`` are removed transactionally,
+preserving all links and cached image attribution. Obsolete scalar columns in
+``albums`` remain in existing databases but are cleared and no longer used;
+fresh databases omit them. Older branch code must
 not write to a migrated database. There is no revision/version model, preferred
 image, or semantic ordering of images. There are no new IRC commands or
 delayed-generation workflows.
