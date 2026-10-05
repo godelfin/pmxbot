@@ -1,4 +1,4 @@
-"""Import legacy music image IDs: python -m pmxbot.migrate_music_images DB."""
+"""Recover music associations: python -m pmxbot.migrate_music_images DB."""
 
 import argparse
 import json
@@ -44,23 +44,36 @@ def parse_prompt(prompt):
     return dict(artist=artist, title=title, **metadata)
 
 
-def import_rows(db):
+def import_rows(db, *, unlinked_cache=False):
     """Import in one transaction, preserving existing library rows and links."""
     report = {'linked': 0, 'already_linked': 0, 'skipped': [], 'mapping': []}
     with db:
         db.execute('BEGIN IMMEDIATE')
-        rows = db.execute('''SELECT legacy.id AS legacy_id, legacy.cache_key,
-            cache.prompt, cache.requested_by, cache.created_at
-            FROM music_image_ids AS legacy LEFT JOIN image_cache AS cache
-            ON cache.cache_key = legacy.cache_key ORDER BY legacy.id''').fetchall()
+        if unlinked_cache:
+            rows = db.execute("""SELECT cache.id AS image_id, cache.cache_key,
+                cache.prompt, cache.requested_by, cache.created_at
+                FROM image_cache AS cache WHERE NOT EXISTS (
+                    SELECT 1 FROM album_images AS links
+                    WHERE links.cache_key = cache.cache_key)
+                ORDER BY cache.id""").fetchall()
+        else:
+            rows = db.execute("""SELECT legacy.id AS legacy_id, legacy.cache_key,
+                cache.prompt, cache.requested_by, cache.created_at
+                FROM music_image_ids AS legacy LEFT JOIN image_cache AS cache
+                ON cache.cache_key = legacy.cache_key ORDER BY legacy.id""").fetchall()
         for row in rows:
+            identity = {
+                'image_id' if unlinked_cache else 'legacy_id': row[
+                    'image_id' if unlinked_cache else 'legacy_id'
+                ]
+            }
             try:
                 if row['prompt'] is None:
                     raise ValueError('missing image_cache row or prompt')
                 values = parse_prompt(row['prompt'])
             except ValueError as exc:
                 report['skipped'].append(
-                    {'legacy_id': row['legacy_id'], 'reason': str(exc)}
+                    dict(identity, cache_key=row['cache_key'], reason=str(exc))
                 )
                 continue
             db.execute(
@@ -88,15 +101,26 @@ def import_rows(db):
             else:
                 # Preserve a legacy ID when free. If occupied, allocate above
                 # both ID spaces so a later legacy row cannot collide with it.
-                album_id = row['legacy_id']
-                if db.execute(
-                    'SELECT 1 FROM albums WHERE id = ?', (album_id,)
-                ).fetchone():
-                    album_id = db.execute('''SELECT MAX(value) + 1 FROM (
+                album_id = None if unlinked_cache else row['legacy_id']
+                if (
+                    unlinked_cache
+                    or db.execute(
+                        'SELECT 1 FROM albums WHERE id = ?', (album_id,)
+                    ).fetchone()
+                ):
+                    album_id = db.execute("""SELECT MAX(value) + 1 FROM (
                         SELECT COALESCE(MAX(id), 0) AS value FROM albums
-                        UNION ALL SELECT COALESCE(MAX(id), 0) FROM music_image_ids
                         UNION ALL SELECT COALESCE(MAX(seq), 0) FROM sqlite_sequence
-                        WHERE name = 'albums')''').fetchone()[0]
+                        WHERE name = 'albums')""").fetchone()[0]
+                    if db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='music_image_ids'"
+                    ).fetchone():
+                        album_id = max(
+                            album_id,
+                            db.execute(
+                                'SELECT COALESCE(MAX(id), 0) + 1 FROM music_image_ids'
+                            ).fetchone()[0],
+                        )
                 db.execute(
                     '''INSERT INTO albums
                     (id, artist_id, title, normalized_title, genre, format,
@@ -123,7 +147,9 @@ def import_rows(db):
             report['linked' if inserted.rowcount else 'already_linked'] += 1
             report['mapping'].append(
                 {
-                    'legacy_id': row['legacy_id'],
+                    **identity,
+                    'artist': values['artist'],
+                    'title': values['title'],
                     'album_id': album_id,
                     'cache_key': row['cache_key'],
                 }
@@ -131,7 +157,7 @@ def import_rows(db):
     return report
 
 
-def migrate(database, *, apply=False, backup=None):
+def migrate(database, *, apply=False, backup=None, unlinked_cache=False):
     """Dry-run on a SQLite snapshot, or back up and import the real database.
 
     Stop the bot before applying. Neither cached files nor legacy rows are removed.
@@ -144,8 +170,17 @@ def migrate(database, *, apply=False, backup=None):
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-        if not {'music_image_ids', 'image_cache'} <= tables:
-            raise ValueError('Database requires music_image_ids and image_cache tables')
+        required = (
+            {'image_cache'} if unlinked_cache else {'music_image_ids', 'image_cache'}
+        )
+        if not required <= tables:
+            raise ValueError(
+                'Database requires ' + ' and '.join(sorted(required)) + ' tables'
+            )
+        if unlinked_cache and 'id' not in {
+            row[1] for row in source.execute('PRAGMA table_info(image_cache)')
+        }:
+            raise ValueError('Unlinked cache import requires image_cache.id')
         with tempfile.TemporaryDirectory(prefix='pmxbot-music-migration-') as directory:
             if apply:
                 if backup is None:
@@ -160,7 +195,7 @@ def migrate(database, *, apply=False, backup=None):
                 source.backup(snapshot)
             target = database if apply else destination
             with closing(MusicLibrary(target).connect()) as db:
-                report = import_rows(db)
+                report = import_rows(db, unlinked_cache=unlinked_cache)
             return dict(
                 report, applied=apply, backup=str(destination) if apply else None
             )
@@ -172,10 +207,20 @@ def main():
     parser.add_argument(
         '--apply', action='store_true', help='Write changes; stop the bot first'
     )
+    parser.add_argument(
+        '--unlinked-cache',
+        action='store_true',
+        help='Recover albums from unlinked image_cache entries instead of legacy IDs',
+    )
     parser.add_argument('--backup', help='New backup file, required with --apply')
     args = parser.parse_args()
     try:
-        report = migrate(args.database, apply=args.apply, backup=args.backup)
+        report = migrate(
+            args.database,
+            apply=args.apply,
+            backup=args.backup,
+            unlinked_cache=args.unlinked_cache,
+        )
     except (OSError, ValueError, sqlite3.Error) as exc:
         parser.exit(1, f'Migration failed: {exc}\n')
     print(json.dumps(report, indent=2))

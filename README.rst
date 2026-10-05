@@ -253,6 +253,25 @@ skipped entry. Missing cache records and unrecognized or ambiguous prompt
 formats are skipped for manual review. Review the dry-run report before applying;
 free-text prompts cannot always recover names unambiguously.
 
+To recover cached album covers that have no album link, including images absent
+from ``music_image_ids``, preview the unlinked-cache mode::
+
+    python -m pmxbot.migrate_music_images /path/to/pmxbot.sqlite --unlinked-cache
+
+Stop the bot, then apply with a new backup filename::
+
+    python -m pmxbot.migrate_music_images /path/to/pmxbot.sqlite --unlinked-cache --apply --backup /path/to/pmxbot.before-unlinked.sqlite
+
+This mode requires numeric ``image_cache.id`` values, but does not require the
+legacy ID table. It scans only unlinked cache entries in image ID order, reuses
+albums with matching normalized artist/title pairs, and allocates new album IDs
+independently of image IDs, reserving legacy IDs when that table is present.
+Existing album metadata is retained; new artist/album attribution comes from
+the cached request. Cache records are unchanged. The report includes image IDs,
+cache keys, proposed artist/title and album mappings, and reasons for skipped
+prompts. Already linked images are excluded, so repeated runs add no duplicate
+links. New album metadata comes from the first parseable image in ID order.
+
 Applying creates a SQLite backup (including committed WAL contents) before
 initializing the library schemas and importing rows. Row import is transactional;
 if it fails, imported rows roll back, though initialized schemas may remain.

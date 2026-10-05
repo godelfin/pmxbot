@@ -150,3 +150,109 @@ def test_prompt_versions(suffix):
 def test_ambiguous_prompts_are_rejected(prompt):
     with pytest.raises(ValueError):
         parse_prompt(prompt)
+
+
+@pytest.fixture
+def unlinked_database(tmp_path):
+    path = tmp_path / 'unlinked.sqlite'
+    library = MusicLibrary(path)
+    album = library.create_album('Band', 'Record', genre='Keep', created_by='bob')
+    library.record_image(album['id'], 'linked')
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute('''CREATE TABLE image_cache (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cache_key TEXT UNIQUE, prompt TEXT, requested_by TEXT, created_at TEXT)''')
+        for key, prompt in [
+            ('linked', 'a cat'),
+            (
+                'first',
+                'an album cover for the band BAND. the name of the album is RECORD.',
+            ),
+            (
+                'second',
+                'an album cover for the band Other. the name of the album is New.',
+            ),
+            (
+                'third',
+                'an album cover for the band OTHER. the name of the album is NEW.',
+            ),
+            ('unparseable', 'a cat'),
+            ('missing-prompt', None),
+        ]:
+            db.execute(
+                'INSERT INTO image_cache (cache_key, prompt, requested_by, created_at) VALUES (?, ?, ?, ?)',
+                (key, prompt, 'alice', '2025-01-02 03:04:05'),
+            )
+    return path
+
+
+def test_unlinked_preview_without_legacy_table(unlinked_database):
+    before = unlinked_database.read_bytes()
+    report = migrate(unlinked_database, unlinked_cache=True)
+    assert report['linked'] == 3
+    assert [row['image_id'] for row in report['mapping']] == [2, 3, 4]
+    assert [row['image_id'] for row in report['skipped']] == [5, 6]
+    assert report['mapping'][0]['artist'] == 'BAND'
+    assert report['mapping'][0]['title'] == 'RECORD'
+    assert unlinked_database.read_bytes() == before
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_unlinked_apply_preserves_records_and_is_idempotent(
+    unlinked_database, tmp_path, legacy
+):
+    if legacy:
+        with closing(sqlite3.connect(unlinked_database)) as db, db:
+            db.execute(
+                'CREATE TABLE music_image_ids (id INTEGER PRIMARY KEY, cache_key TEXT UNIQUE)'
+            )
+            db.execute("INSERT INTO music_image_ids VALUES (100, 'reserved')")
+    with closing(sqlite3.connect(unlinked_database)) as db:
+        cached = db.execute('SELECT * FROM image_cache ORDER BY id').fetchall()
+    before = dump(unlinked_database)
+    backup = tmp_path / 'backup.sqlite'
+    report = migrate(unlinked_database, unlinked_cache=True, apply=True, backup=backup)
+    assert dump(backup) == before
+    assert report['mapping'][0]['album_id'] == 1
+    new_album_id = report['mapping'][1]['album_id']
+    assert new_album_id > (100 if legacy else 1)
+    assert report['mapping'][2]['album_id'] == new_album_id
+    library = MusicLibrary(unlinked_database)
+    assert library.get_album(1)['genre'] == 'Keep'
+    assert library.get_album(1)['created_by'] == 'bob'
+    assert library.get_album(new_album_id)['created_by'] == 'alice'
+    with closing(sqlite3.connect(unlinked_database)) as db:
+        assert db.execute('SELECT * FROM image_cache ORDER BY id').fetchall() == cached
+        assert db.execute('SELECT COUNT(*) FROM album_images').fetchone()[0] == 4
+    after = dump(unlinked_database)
+    rerun = migrate(
+        unlinked_database,
+        unlinked_cache=True,
+        apply=True,
+        backup=tmp_path / 'second.sqlite',
+    )
+    assert rerun['linked'] == 0
+    assert rerun['mapping'] == []
+    assert len(rerun['skipped']) == 2
+    assert dump(unlinked_database) == after
+
+
+def test_unlinked_import_rolls_back(unlinked_database, tmp_path):
+    with closing(sqlite3.connect(unlinked_database)) as db, db:
+        db.execute(
+            """CREATE TRIGGER fail_link BEFORE INSERT ON album_images
+            WHEN NEW.cache_key = 'second' BEGIN SELECT RAISE(ABORT, 'test failure'); END"""
+        )
+    before = dump(unlinked_database)
+    with pytest.raises(sqlite3.IntegrityError):
+        migrate(
+            unlinked_database,
+            unlinked_cache=True,
+            apply=True,
+            backup=tmp_path / 'backup.sqlite',
+        )
+    assert dump(unlinked_database) == before
+
+
+def test_unlinked_requires_numeric_image_ids(database):
+    with pytest.raises(ValueError, match='image_cache.id'):
+        migrate(database, unlinked_cache=True)
