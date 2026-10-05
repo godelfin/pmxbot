@@ -29,8 +29,10 @@ Each linked image has one album owner: a unique index on
 have multiple images. Linking an image to its current album is idempotent;
 linking it to another album raises `sqlite3.IntegrityError`.
 Image attribution is stored only in `image_cache.requested_by` and `created_at`.
-Opening the music library removes obsolete link attribution columns
-transactionally and adds the ownership constraint to existing databases. If shared
+The completed link-attribution migration has been retired. To upgrade a database
+that still has `album_images.image_created_by` or `image_created_at`, first open
+the music library at commit `119c089` (or merge `88850f1`), then deploy this version.
+Opening the music library adds the ownership constraint to existing databases. If shared
 images already exist, the schema upgrade fails atomically; resolve their album
 ownership before retrying. Existing links are never silently reassigned or deleted.
 

@@ -208,8 +208,10 @@ references to the independently managed image cache. Unknown album IDs are
 rejected when recording a link.
 
 Existing scalar associations are migrated transactionally on first access.
-Obsolete attribution columns in ``album_images`` are removed transactionally,
-preserving all links and cached image attribution. Obsolete scalar columns in
+The completed ``album_images`` attribution-column upgrade is no longer run at
+startup. Older databases should first open the music library using commit
+``119c089`` (or its merge ``88850f1``) to remove those columns while preserving
+links and cached image attribution. Obsolete scalar columns in
 ``albums`` remain in existing databases but are cleared and no longer used;
 fresh databases omit them. Older branch code must
 not write to a migrated database. There is no revision/version model, preferred

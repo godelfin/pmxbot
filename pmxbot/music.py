@@ -50,23 +50,6 @@ class MusicLibrary:
                 db.execute("""UPDATE albums SET cache_key = NULL,
                     image_created_by = NULL, image_created_at = NULL
                     WHERE cache_key IS NOT NULL""")
-            link_columns = {
-                row['name'] for row in db.execute('PRAGMA table_info(album_images)')
-            }
-            if {'image_created_by', 'image_created_at'} & link_columns:
-                db.execute("""CREATE TABLE album_images_without_attribution (
-                    album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
-                    cache_key TEXT NOT NULL,
-                    PRIMARY KEY (album_id, cache_key)
-                )""")
-                db.execute(
-                    """INSERT INTO album_images_without_attribution
-                    (album_id, cache_key) SELECT album_id, cache_key FROM album_images"""
-                )
-                db.execute('DROP TABLE album_images')
-                db.execute(
-                    'ALTER TABLE album_images_without_attribution RENAME TO album_images'
-                )
             # Also upgrades existing tables. Conflicting historical links abort
             # the transaction rather than silently choosing an album owner.
             db.execute(
