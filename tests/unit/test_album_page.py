@@ -106,7 +106,9 @@ def test_render_and_read_only(page):
     assert soup.select_one('meta[name=viewport]')['content'] == (
         'width=device-width, initial-scale=1'
     )
-    preview = soup.select_one('#artwork-heading').parent.select_one('a')
+    artwork = soup.select_one('section[aria-label="Artwork"]')
+    assert artwork is not None
+    preview = artwork.select_one('a.artwork-preview')
     assert (
         preview['href']
         == preview.img['src']
@@ -129,15 +131,14 @@ def test_render_and_read_only(page):
     assert 'event.preventDefault()' in script
     assert 'dialog.showModal()' in script
     assert 'dialog.close()' in script
-    assert [section.h2.get_text() for section in soup.select('main section')] == [
-        'Artwork',
+    assert [section.h2.get_text() for section in soup.select('.image-content section')] == [
         'Original prompt',
         'Album details',
         'Image details',
         'Settings',
         'Generation metadata',
     ]
-    for section in soup.select('main section'):
+    for section in soup.select('.image-content section'):
         assert section['aria-labelledby'] == section.h2['id']
     assert soup.select_one('#prompt-heading').parent.pre.get_text() == (
         '  exact <script> & "prompt"\nsecond line  '
@@ -155,7 +156,6 @@ def test_render_and_read_only(page):
         '&lt;b&gt;revision&lt;/b&gt;',
         '&lt;Band&gt;',
         '&lt;Album&gt;',
-        f'/bot/albums/{album["id"]}',
     ):
         assert value in body
     assert '/private/secret.png' not in body
@@ -276,7 +276,7 @@ def test_album_and_band_properties(page):
         'Band description': '<b>Band description</b>',
     }
     assert not cards[0].select('script, b, edition')
-    assert cards[0].a['href'] == f'/bot/albums/{album["id"]}'
+    assert not cards[0].select('a')
     assert cache.database.read_bytes() == before
 
 
@@ -301,8 +301,7 @@ def test_malformed_metadata(page, data):
     response = request()
     assert response['status'] == 200
     soup = BeautifulSoup(response['body'], 'html.parser')
-    assert [section.h2.get_text() for section in soup.select('main section')] == [
-        'Artwork',
+    assert [section.h2.get_text() for section in soup.select('.image-content section')] == [
         'Original prompt',
         'Album details',
         'Image details',

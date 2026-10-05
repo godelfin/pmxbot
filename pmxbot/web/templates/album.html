@@ -45,7 +45,7 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; color: #252b34; backg
 <main class="album-page">
 <h1>{{ album.artist_name }} — {{ album.title }} (#{{ album.id }})</h1>
 <div class="image-layout">
-<section class="image-section" aria-labelledby="artwork-heading">
+<section class="image-section" aria-label="Artwork">
 {% if image_url %}
 <a class="artwork-preview" href="{{ image_url }}" rel="noreferrer" aria-label="View full-size artwork for image #{{ image.id }}"><img src="{{ image_url }}" alt="Generated image #{{ image.id }}" referrerpolicy="no-referrer" /></a>
 <p class="artwork-caption">Select the preview to view full-size artwork here.</p>
