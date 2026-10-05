@@ -178,8 +178,8 @@ class ImageCache:
                 raise LookupError('Unknown image ID')
             return dict(row)
 
-    def image_albums(self, cache_key):
-        """Read album identities associated with an image, without migrations."""
+    def get_album_page(self, album_id):
+        """Read an album and its newest cached artwork without modifying storage."""
         with closing(self.read_connection()) as db:
             tables = {
                 row[0]
@@ -187,18 +187,27 @@ class ImageCache:
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 )
             }
-            if not {'album_images', 'albums', 'artists'} <= tables:
-                return []
-            return [
-                dict(row)
-                for row in db.execute(
-                    """SELECT albums.id, albums.title, artists.name AS artist_name
-                FROM album_images JOIN albums ON albums.id = album_images.album_id
-                JOIN artists ON artists.id = albums.artist_id
-                WHERE album_images.cache_key = ? ORDER BY albums.id""",
-                    (cache_key,),
-                )
-            ]
+            if not {'albums', 'artists'} <= tables:
+                raise LookupError('Unknown album ID')
+            row = db.execute(
+                '''SELECT albums.*, artists.name AS artist_name,
+                artists.genre AS artist_genre,
+                artists.description AS artist_description
+                FROM albums JOIN artists ON artists.id = albums.artist_id
+                WHERE albums.id = ?''',
+                (album_id,),
+            ).fetchone()
+            if row is None:
+                raise LookupError('Unknown album ID')
+            image = None
+            if {'album_images', 'image_cache'} <= tables:
+                image = db.execute(
+                    '''SELECT image_cache.* FROM image_cache
+                    JOIN album_images USING (cache_key) WHERE album_id = ?
+                    ORDER BY image_cache.created_at DESC, image_cache.id DESC LIMIT 1''',
+                    (album_id,),
+                ).fetchone()
+            return dict(row), dict(image) if image is not None else None
 
     def latest_album_image(self, album_id):
         """Return the newest hosted cache entry linked to an existing album."""

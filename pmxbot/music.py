@@ -38,22 +38,41 @@ class MusicLibrary:
             db.execute("""CREATE TABLE IF NOT EXISTS album_images (
                 album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
                 cache_key TEXT NOT NULL,
-                image_created_by TEXT, image_created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (album_id, cache_key)
             )""")
-            db.execute(
-                'CREATE INDEX IF NOT EXISTS album_images_cache_key ON album_images(cache_key)'
-            )
             columns = {row['name'] for row in db.execute('PRAGMA table_info(albums)')}
             if 'cache_key' in columns:
                 db.execute("""INSERT INTO album_images
-                    (album_id, cache_key, image_created_by, image_created_at)
-                    SELECT id, cache_key, image_created_by, image_created_at
+                    (album_id, cache_key)
+                    SELECT id, cache_key
                     FROM albums WHERE cache_key IS NOT NULL
                     ON CONFLICT(album_id, cache_key) DO NOTHING""")
                 db.execute("""UPDATE albums SET cache_key = NULL,
                     image_created_by = NULL, image_created_at = NULL
                     WHERE cache_key IS NOT NULL""")
+            link_columns = {
+                row['name'] for row in db.execute('PRAGMA table_info(album_images)')
+            }
+            if {'image_created_by', 'image_created_at'} & link_columns:
+                db.execute("""CREATE TABLE album_images_without_attribution (
+                    album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+                    cache_key TEXT NOT NULL,
+                    PRIMARY KEY (album_id, cache_key)
+                )""")
+                db.execute(
+                    """INSERT INTO album_images_without_attribution
+                    (album_id, cache_key) SELECT album_id, cache_key FROM album_images"""
+                )
+                db.execute('DROP TABLE album_images')
+                db.execute(
+                    'ALTER TABLE album_images_without_attribution RENAME TO album_images'
+                )
+            # Also upgrades existing tables. Conflicting historical links abort
+            # the transaction rather than silently choosing an album owner.
+            db.execute(
+                'CREATE UNIQUE INDEX IF NOT EXISTS album_images_unique_cache_key '
+                'ON album_images(cache_key)'
+            )
             db.commit()
         except Exception:
             db.rollback()
@@ -149,24 +168,33 @@ class MusicLibrary:
             album['images'] = [
                 dict(image)
                 for image in db.execute(
-                    """SELECT cache_key, image_created_by, image_created_at
+                    """SELECT cache_key
                 FROM album_images WHERE album_id = ? ORDER BY cache_key""",
                     (album_id,),
                 )
             ]
         return album
 
-    def record_image(self, album_id, cache_key, nick):
-        """Link a cached image without replacing existing links or attribution.
+    def record_image(self, album_id, cache_key):
+        """Link an image to one album; attribution belongs to the image cache.
 
         Cache keys are logical references: the independently managed image cache
         need not exist when creating or reading a music library.
         """
         with closing(self.connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            owner = db.execute(
+                'SELECT album_id FROM album_images WHERE cache_key = ?',
+                (cache_key,),
+            ).fetchone()
+            if owner is not None and owner['album_id'] != album_id:
+                raise sqlite3.IntegrityError(
+                    f'Image is already linked to album #{owner["album_id"]}'
+                )
             db.execute(
-                """INSERT INTO album_images (album_id, cache_key, image_created_by)
-                VALUES (?, ?, ?) ON CONFLICT(album_id, cache_key) DO NOTHING""",
-                (album_id, cache_key, nick),
+                """INSERT INTO album_images (album_id, cache_key)
+                VALUES (?, ?) ON CONFLICT(album_id, cache_key) DO NOTHING""",
+                (album_id, cache_key),
             )
 
 
@@ -195,5 +223,5 @@ def generate_album_image(library, cache, album_id, nick='', channel=''):
     album = library.get_album(album_id)
     prompt = album_prompt(album)
     url = cache.get(prompt, nick, channel)
-    library.record_image(album_id, cache.cache_key(prompt), nick)
+    library.record_image(album_id, cache.cache_key(prompt))
     return url

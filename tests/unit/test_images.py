@@ -146,7 +146,7 @@ def test_music_lookup_latest_cached_image(config, post, r2, monkeypatch, argumen
         cache.get(prompt)
         key = cache.cache_key(prompt)
         if linked:
-            library.record_image(album['id'], key, 'alice')
+            library.record_image(album['id'], key)
         with sqlite3.connect(cache.database) as db:
             db.execute(
                 'UPDATE image_cache SET created_at = ? WHERE cache_key = ?',
@@ -157,7 +157,7 @@ def test_music_lookup_latest_cached_image(config, post, r2, monkeypatch, argumen
             'UPDATE image_cache SET hosted_url = NULL WHERE cache_key = ?',
             (cache.cache_key('unhosted'),),
         )
-    library.record_image(album['id'], 'missing-cache-entry', 'alice')
+    library.record_image(album['id'], 'missing-cache-entry')
     post.reset_mock()
     r2.reset_mock()
     monkeypatch.setattr(images, '_start_image', Mock())
@@ -314,12 +314,13 @@ def test_album_persistence_is_independent_of_images(config, post, r2):
     second = restarted.create_album('Bänd', 'Second')
     assert second['artist_id'] == first['artist_id']
     assert restarted.create_album('Other', 'First')['id'] != first['id']
+    cache.get(album_prompt(first), 'original-requester', '#original')
     url = generate_album_image(restarted, cache, first['id'], 'bob', '#test')
     assert url == hosted_url(cache, album_prompt(first))
     saved = restarted.get_album(first['id'])
     assert saved['created_by'] == 'alice'
-    assert saved['images'][0]['image_created_by'] == 'bob'
-    assert saved['images'][0]['image_created_at']
+    assert read_row(cache)['requested_by'] == 'original-requester'
+    assert read_row(cache)['created_at']
     assert saved['images'][0]['cache_key'] == cache.cache_key(album_prompt(first))
     generate_album_image(restarted, cache, first['id'], 'carol', '#test')
     assert restarted.get_album(first['id']) == saved
@@ -733,20 +734,51 @@ def test_concurrent_album_creation_reuses_pair(config):
     assert all(row == rows[0] for row in rows)
 
 
-def test_album_images_many_to_many_and_idempotent(tmp_path):
+def test_album_images_single_owner_and_idempotent(tmp_path):
     library = MusicLibrary(tmp_path / 'music.sqlite')
     first = library.create_album('Band', 'First')['id']
     second = library.create_album('Band', 'Second')['id']
-    library.record_image(first, 'a', 'alice')
-    library.record_image(first, 'b', 'bob')
-    library.record_image(second, 'a', 'carol')
-    library.record_image(first, 'a', 'dave')
+    library.record_image(first, 'a')
+    library.record_image(first, 'b')
+    with pytest.raises(sqlite3.IntegrityError, match='already linked to album'):
+        library.record_image(second, 'a')
+    library.record_image(first, 'a')
     saved = MusicLibrary(library.database).get_album(first)['images']
     assert [image['cache_key'] for image in saved] == ['a', 'b']
-    assert saved[0]['image_created_by'] == 'alice'
-    assert library.get_album(second)['images'][0]['cache_key'] == 'a'
+    assert saved == [{'cache_key': 'a'}, {'cache_key': 'b'}]
+    assert library.get_album(second)['images'] == []
+    with sqlite3.connect(library.database) as db:
+        with pytest.raises(sqlite3.IntegrityError, match='UNIQUE'):
+            db.execute(
+                'INSERT INTO album_images (album_id, cache_key) VALUES (?, ?)',
+                (second, 'a'),
+            )
     with pytest.raises(sqlite3.IntegrityError):
-        library.record_image(999, 'a', 'alice')
+        library.record_image(999, 'unused')
+
+
+@pytest.mark.parametrize('conflicting', [False, True])
+def test_upgrade_album_image_ownership(tmp_path, conflicting):
+    library = MusicLibrary(tmp_path / 'music.sqlite')
+    first = library.create_album('Band', 'First')['id']
+    second = library.create_album('Band', 'Second')['id']
+    library.record_image(first, 'a')
+    with sqlite3.connect(library.database) as db:
+        db.execute('DROP INDEX album_images_unique_cache_key')
+        if conflicting:
+            db.execute(
+                'INSERT INTO album_images (album_id, cache_key) VALUES (?, ?)',
+                (second, 'a'),
+            )
+    if conflicting:
+        with pytest.raises(sqlite3.IntegrityError, match='UNIQUE'):
+            library.get_album(first)
+        with sqlite3.connect(library.database) as db:
+            assert db.execute('SELECT COUNT(*) FROM album_images').fetchone()[0] == 2
+    else:
+        assert library.get_album(first)['images'] == [{'cache_key': 'a'}]
+        with pytest.raises(sqlite3.IntegrityError):
+            library.record_image(second, 'a')
 
 
 def test_migrate_album_image_link(tmp_path):
@@ -764,13 +796,11 @@ def test_migrate_album_image_link(tmp_path):
     assert album['images'] == [
         {
             'cache_key': 'old',
-            'image_created_by': 'alice',
-            'image_created_at': '2026-01-01',
         }
     ]
     assert 'cache_key' not in album
     assert library.get_album(album_id) == album
-    library.record_image(album_id, 'new', 'bob')
+    library.record_image(album_id, 'new')
     assert len(library.get_album(album_id)['images']) == 2
 
 
@@ -810,16 +840,14 @@ def test_existing_image_records_preserve_every_field_and_album_links(config, pos
     cache = images.ImageCache(config)
     library = MusicLibrary(cache.database)
     album = library.create_album('Band', 'Album')
-    library.record_image(album['id'], 'old', 'alice')
+    library.record_image(album['id'], 'old')
     with closing(cache.connect()) as db:
-        db.execute(
-            '''INSERT INTO image_cache VALUES (
+        db.execute('''INSERT INTO image_cache VALUES (
             42, 'old', 'original prompt', 'original prompt', '{"quality":"low"}',
             '/missing/original.png', 'https://old.example/image.png', 'imgbb',
             '{"host":"original"}', '{"usage":42}', 'alice', '#test',
             '2025-01-01', '2025-01-02', '2025-01-03', 7, 'upload error'
-        )'''
-        )
+        )''')
         before = dict(db.execute('SELECT * FROM image_cache').fetchone())
         identifier = db.execute('SELECT id FROM image_cache').fetchone()[0]
     saved = cache.get_image(identifier)
@@ -840,11 +868,9 @@ def test_concurrent_image_connections_preserve_one_stable_id(config):
 
     cache = images.ImageCache(config)
     with closing(cache.connect()) as db:
-        db.execute(
-            '''INSERT INTO image_cache
+        db.execute('''INSERT INTO image_cache
             (cache_key, prompt, normalized_prompt, settings_json, local_filename,
-             generation_metadata_json) VALUES ('key', 'x', 'x', '{}', 'x.png', '{}')'''
-        )
+             generation_metadata_json) VALUES ('key', 'x', 'x', '{}', 'x.png', '{}')''')
         identifier = db.execute('SELECT id FROM image_cache').fetchone()[0]
     with ThreadPoolExecutor(max_workers=4) as pool:
         records = list(pool.map(lambda _: cache.get_image(identifier), range(8)))
@@ -868,3 +894,48 @@ def test_concurrent_fresh_image_schema_creation(config):
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         assert list(pool.map(primary_key, range(8))) == [['id']] * 8
+
+
+@pytest.mark.parametrize('conflicting', [False, True])
+def test_remove_link_attribution_preserves_cache_and_links(
+    config, post, r2, conflicting
+):
+    cache = images.ImageCache(config)
+    cache.get('cat', 'alice', '#test')
+    before = dict(read_row(cache))
+    library = MusicLibrary(cache.database)
+    first = library.create_album('Band', 'First')['id']
+    second = library.create_album('Band', 'Second')['id']
+    key = before['cache_key']
+    library.record_image(first, key)
+    with sqlite3.connect(cache.database) as db:
+        db.execute('ALTER TABLE album_images ADD COLUMN image_created_by TEXT')
+        db.execute('ALTER TABLE album_images ADD COLUMN image_created_at TEXT')
+        db.execute(
+            "UPDATE album_images SET image_created_by = 'bob', image_created_at = 'old'"
+        )
+        if conflicting:
+            db.execute('DROP INDEX album_images_unique_cache_key')
+            db.execute(
+                'INSERT INTO album_images (album_id, cache_key) VALUES (?, ?)',
+                (second, key),
+            )
+    if conflicting:
+        with pytest.raises(sqlite3.IntegrityError):
+            library.get_album(first)
+    else:
+        assert library.get_album(first)['images'] == [{'cache_key': key}]
+        assert library.get_album(first)['images'] == [{'cache_key': key}]
+    with sqlite3.connect(cache.database) as db:
+        columns = {row[1] for row in db.execute('PRAGMA table_info(album_images)')}
+        if conflicting:
+            assert 'image_created_by' in columns
+            assert db.execute('SELECT COUNT(*) FROM album_images').fetchone()[0] == 2
+        else:
+            assert columns == {'album_id', 'cache_key'}
+            with pytest.raises(sqlite3.IntegrityError):
+                db.execute(
+                    'INSERT INTO album_images (album_id, cache_key) VALUES (?, ?)',
+                    (second, key),
+                )
+    assert dict(read_row(cache)) == before

@@ -345,36 +345,37 @@ def image_metadata(image):
     return sections
 
 
-class ImagePage:
+class AlbumPage:
     @cherrypy.expose
     def default(self, *path, **params):
         cherrypy.lib.cptools.allow(['GET', 'HEAD'])
         if len(path) != 1 or not path[0].isascii() or not path[0].isdecimal():
-            raise cherrypy.HTTPError(404, 'Unknown image ID')
+            raise cherrypy.HTTPError(404, 'Unknown album ID')
         # SQLite IDs are positive signed 64-bit integers. Bound before conversion.
         value = path[0].lstrip('0')
         if not value or len(value) > 19 or int(value) > 2**63 - 1:
-            raise cherrypy.HTTPError(404, 'Unknown image ID')
+            raise cherrypy.HTTPError(404, 'Unknown album ID')
         try:
             cache = ImageCache(pmxbot.config)
-            image = cache.get_image(int(value))
-            albums = cache.image_albums(image['cache_key'])
+            album, image = cache.get_album_page(int(value))
         except LookupError:
-            raise cherrypy.HTTPError(404, 'Unknown image ID') from None
+            raise cherrypy.HTTPError(404, 'Unknown album ID') from None
         except (sqlite3.Error, ImageError):
-            raise cherrypy.HTTPError(503, 'Image storage is unavailable') from None
+            raise cherrypy.HTTPError(503, 'Album storage is unavailable') from None
         context = get_context()
-        context['metadata_sections'] = image_metadata(image)
+        context['metadata_sections'] = image_metadata(image) if image else []
         context.update(
-            image=image, albums=albums, image_url=safe_image_url(image['hosted_url'])
+            image=image,
+            album=album,
+            image_url=safe_image_url(image['hosted_url']) if image else None,
         )
         # Escape the entire inherited layout too, without changing legacy pages.
-        page = jenv.overlay(autoescape=True).get_template('image.html')
+        page = jenv.overlay(autoescape=True).get_template('album.html')
         return page.render(**context).encode('utf-8')
 
 
 class PmxbotPages:
-    images = ImagePage()
+    albums = AlbumPage()
     channel = ChannelPage()
     day = DayPage()
     karma = KarmaPage()

@@ -3,32 +3,34 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Image #{{ image.id }}</title>
+<title>Album #{{ album.id }}</title>
 <style>
 body { margin: 0; font-family: Verdana, Arial, sans-serif; color: #252b34; background: #f4f6f8; line-height: 1.5; }
-.image-page { max-width: 70rem; margin: auto; padding: 1.25rem; }
-.image-page h1 { margin: 0 0 1.25rem; }
-.image-page h2 { margin: 0 0 1rem; font-size: 1.125rem; }
+.album-page { max-width: 70rem; margin: auto; padding: 1.25rem; }
+.album-page h1 { margin: 0 0 1.25rem; }
+.album-page h2 { margin: 0 0 1rem; font-size: 1.125rem; }
 .image-layout { display: grid; grid-template-columns: minmax(0, 20rem) minmax(0, 1fr); gap: 1.25rem; align-items: start; }
 .image-content { display: grid; gap: 1.25rem; min-width: 0; }
 .image-section { min-width: 0; padding: 1.25rem; background: white; border: 1px solid #d4dbe2; border-radius: .5rem; overflow-wrap: anywhere; }
 .artwork-preview { display: block; width: fit-content; max-width: 100%; }
 .artwork-preview img { display: block; max-width: 100%; max-height: 18rem; width: auto; height: auto; object-fit: contain; }
-.image-page a { color: #135ba1; }
-.image-page a:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
+.album-page a { color: #135ba1; }
+.album-page a:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
 .artwork-dialog { width: fit-content; max-width: min(92vw, 70rem); max-height: 92vh; padding: .75rem; border: 0; border-radius: .5rem; background: #fff; box-shadow: 0 1rem 4rem #0008; }
 .artwork-dialog::backdrop { background: #111d; }
 .artwork-dialog img { display: block; max-width: min(88vw, 68rem); max-height: calc(88vh - 3.5rem); width: auto; height: auto; object-fit: contain; }
 .artwork-dialog-close { display: block; margin: 0 0 .75rem auto; padding: .45rem .8rem; font: inherit; cursor: pointer; }
 .artwork-caption { margin: .75rem 0 0; font-size: .875rem; }
-.image-page pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9375rem; }
+.album-page pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9375rem; }
 .image-details { display: grid; grid-template-columns: minmax(0, 8rem) minmax(0, 1fr); gap: .5rem 1rem; margin: 0; }
 .image-details dt { font-weight: bold; }
 .image-details dd { margin: 0; }
-.image-page ul { margin: 0; padding-left: 1.25rem; }
-.image-page li + li { margin-top: .5rem; }
+.music-description { white-space: pre-wrap; }
+.album-page ul { margin: 0; padding-left: 1.25rem; }
+.album-page li + li { margin-top: .5rem; }
+.image-cache-key { margin: 1.25rem 0 0; color: #000; font-size: .625rem; overflow-wrap: anywhere; }
 @media (max-width: 42rem) {
-  .image-page { padding: .75rem; }
+  .album-page { padding: .75rem; }
   .image-layout { grid-template-columns: minmax(0, 1fr); }
   .image-section { padding: 1rem; }
 }
@@ -40,11 +42,10 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; color: #252b34; backg
 </head>
 <body>
 {% block body %}
-<main class="image-page">
-<h1>Image #{{ image.id }}</h1>
+<main class="album-page">
+<h1>{{ album.artist_name }} — {{ album.title }} (#{{ album.id }})</h1>
 <div class="image-layout">
-<section class="image-section" aria-labelledby="artwork-heading">
-<h2 id="artwork-heading">Artwork</h2>
+<section class="image-section" aria-label="Artwork">
 {% if image_url %}
 <a class="artwork-preview" href="{{ image_url }}" rel="noreferrer" aria-label="View full-size artwork for image #{{ image.id }}"><img src="{{ image_url }}" alt="Generated image #{{ image.id }}" referrerpolicy="no-referrer" /></a>
 <p class="artwork-caption">Select the preview to view full-size artwork here.</p>
@@ -53,14 +54,32 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; color: #252b34; backg
 <img src="{{ image_url }}" alt="Generated image #{{ image.id }}" referrerpolicy="no-referrer" />
 </dialog>
 {% else %}
-<p>Hosted artwork is unavailable. Saved image details are shown below.</p>
+<p>Hosted artwork is unavailable. Album details are shown below.</p>
 {% endif %}
 </section>
 <div class="image-content">
 <section class="image-section" aria-labelledby="prompt-heading">
 <h2 id="prompt-heading">Original prompt</h2>
-<pre>{{ image.prompt }}</pre>
+<pre>{% if image %}{{ image.prompt }}{% else %}No artwork has been generated for this album.{% endif %}</pre>
 </section>
+{% if album %}
+<section class="image-section" aria-labelledby="album-heading">
+<h2 id="album-heading">Album details</h2>
+<div class="album-details">
+<dl class="image-details">
+<dt>Band</dt><dd>{{ album.artist_name }}</dd>
+  <dt>Title</dt><dd>{{ album.title }}</dd>
+{% if album.format %}<dt>Format</dt><dd>{{ album.format }}</dd>{% endif %}
+{% if album.format_description %}<dt>Format description</dt><dd class="music-description">{{ album.format_description }}</dd>{% endif %}
+{% if album.genre %}<dt>Album genre</dt><dd>{{ album.genre }}</dd>{% endif %}
+{% if album.description %}<dt>Album description</dt><dd class="music-description">{{ album.description }}</dd>{% endif %}
+{% if album.artist_genre %}<dt>Band genre</dt><dd>{{ album.artist_genre }}</dd>{% endif %}
+{% if album.artist_description %}<dt>Band description</dt><dd class="music-description">{{ album.artist_description }}</dd>{% endif %}
+</dl>
+</div>
+</section>
+{% endif %}
+{% if image %}
 <section class="image-section" aria-labelledby="details-heading">
 <h2 id="details-heading">Image details</h2>
 <dl class="image-details">
@@ -72,6 +91,7 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; color: #252b34; backg
 {% if image.host %}<dt>Image host</dt><dd>{{ image.host }}</dd>{% endif %}
 </dl>
 </section>
+{% endif %}
 {% for label, metadata in metadata_sections %}
 {% if metadata %}
 <section class="image-section" aria-labelledby="metadata-heading-{{ loop.index }}">
@@ -80,14 +100,9 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; color: #252b34; backg
 </section>
 {% endif %}
 {% endfor %}
-{% if albums %}
-<section class="image-section" aria-labelledby="albums-heading">
-<h2 id="albums-heading">Related albums</h2>
-<ul>{% for album in albums %}<li><a href="{{ base }}/albums/{{ album.id }}">#{{ album.id }}: {{ album.artist_name }} — {{ album.title }}</a></li>{% endfor %}</ul>
-</section>
-{% endif %}
 </div>
 </div>
+{% if image %}<p class="image-cache-key">Cache key: {{ image.cache_key }}</p>{% endif %}
 </main>
 {% if image_url %}
 <script>
