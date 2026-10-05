@@ -209,6 +209,17 @@ class ImageCache:
                 ).fetchone()
             return dict(row), dict(image) if image is not None else None
 
+    def album_neighbors(self, album_id):
+        """Return adjacent stored album IDs, skipping gaps in the sequence."""
+        with closing(self.read_connection()) as db:
+            row = db.execute(
+                '''SELECT
+                (SELECT MAX(id) FROM albums WHERE id < ?) AS previous,
+                (SELECT MIN(id) FROM albums WHERE id > ?) AS next''',
+                (album_id, album_id),
+            ).fetchone()
+            return dict(row)
+
     def latest_album_image(self, album_id):
         """Return the newest hosted cache entry linked to an existing album."""
         MusicLibrary(self.database).get_album(album_id)

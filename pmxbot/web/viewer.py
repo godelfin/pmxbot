@@ -18,6 +18,7 @@ import inflect
 import importlib_resources as resources
 
 import pmxbot.core
+import pmxbot.albums
 import pmxbot.logging
 import pmxbot.util
 from pmxbot.images import ImageCache, ImageError
@@ -358,6 +359,7 @@ class AlbumPage:
         try:
             cache = ImageCache(pmxbot.config)
             album, image = cache.get_album_page(int(value))
+            neighbors = cache.album_neighbors(int(value))
         except LookupError:
             raise cherrypy.HTTPError(404, 'Unknown album ID') from None
         except (sqlite3.Error, ImageError):
@@ -367,6 +369,12 @@ class AlbumPage:
         context.update(
             image=image,
             album=album,
+            neighbors=neighbors,
+            formats=sorted(pmxbot.albums.formats),
+            format_descriptions=sorted(pmxbot.albums.format_desc),
+            genres=sorted(
+                set(pmxbot.albums.genres).union(*pmxbot.albums.genres.values())
+            ),
             image_url=safe_image_url(image['hosted_url']) if image else None,
         )
         # Escape the entire inherited layout too, without changing legacy pages.

@@ -102,7 +102,7 @@ def test_render_and_read_only(page):
     body = response['body']
     soup = BeautifulSoup(body, 'html.parser')
     assert soup.title.get_text() == 'Album #42'
-    assert soup.select_one('main > h1').get_text() == '<Band> — <Album> (#42)'
+    assert soup.select_one('main > h1').get_text() == '<Band> — <Album>'
     assert soup.select_one('meta[name=viewport]')['content'] == (
         'width=device-width, initial-scale=1'
     )
@@ -131,19 +131,30 @@ def test_render_and_read_only(page):
     assert 'event.preventDefault()' in script
     assert 'dialog.showModal()' in script
     assert 'dialog.close()' in script
-    assert [section.h2.get_text() for section in soup.select('.image-content section')] == [
+    assert [section.h2.get_text() for section in soup.select('.image-content section[aria-labelledby]')] == [
         'Original prompt',
         'Album details',
         'Image details',
         'Settings',
         'Generation metadata',
     ]
-    for section in soup.select('.image-content section'):
+    for section in soup.select('.image-content section[aria-labelledby]'):
         assert section['aria-labelledby'] == section.h2['id']
     assert soup.select_one('#prompt-heading').parent.pre.get_text() == (
         '  exact <script> & "prompt"\nsecond line  '
     )
-    assert not soup.select('form, input, textarea')
+    assert not soup.select('form, textarea')
+    assert soup.select_one('#album-band')['value'] == '<Band>'
+    assert soup.select_one('#album-title')['value'] == '<Album>'
+    for name, choices in (
+        ('format', pmxbot.albums.formats),
+        ('format_description', pmxbot.albums.format_desc),
+        ('genre', set(pmxbot.albums.genres).union(*pmxbot.albums.genres.values())),
+        ('artist_genre', set(pmxbot.albums.genres).union(*pmxbot.albums.genres.values())),
+    ):
+        select = soup.select_one(f'select[name="{name}"]')
+        assert {option['value'] for option in select.select('option')} == choices | {''}
+        assert select.select_one('option[selected]')['value'] == ''
     assert 'Album #42' in body
     assert 'src="https://albums.example/art.png?x=1&amp;y=2"' in body
     assert '  exact &lt;script&gt; &amp; &#34;prompt&#34;\nsecond line  ' in body
@@ -261,10 +272,11 @@ def test_album_and_band_properties(page):
     soup = BeautifulSoup(request()['body'], 'html.parser')
     cards = soup.select('#album-heading ~ .album-details')
     assert len(cards) == 1
-    details = {
-        term.get_text(): term.find_next_sibling('dd').get_text()
-        for term in cards[0].select('dt')
-    }
+    details = {}
+    for term in cards[0].select('dt'):
+        value = term.find_next_sibling('dd')
+        control = value.select_one('input, option[selected]')
+        details[term.get_text()] = control['value'] if control else value.get_text()
     assert details == {
         'Title': '<Album>',
         'Format': 'Vinyl',
@@ -277,6 +289,28 @@ def test_album_and_band_properties(page):
     }
     assert not cards[0].select('script, b, edition')
     assert not cards[0].select('a')
+    assert cache.database.read_bytes() == before
+
+
+def test_album_navigation_and_columns(page):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    first = library.create_album('Band', 'First')
+    removed = library.create_album('Band', 'Removed')
+    last = library.create_album('Band', 'Last')
+    with sqlite3.connect(cache.database) as db:
+        db.execute('DELETE FROM albums WHERE id = ?', (removed['id'],))
+    before = cache.database.read_bytes()
+    soup = BeautifulSoup(request(f'/albums/{first["id"]}')['body'], 'html.parser')
+    main = soup.select_one('.image-main')
+    assert main.select_one('section[aria-label="Artwork"]') is not None
+    assert [h.get_text() for h in main.select('h2')] == ['Original prompt', 'Album details']
+    navigation = soup.select_one('.image-sidebar nav')
+    assert navigation.select_one('button[disabled]').get_text() == 'Prev'
+    assert navigation.select_one('a[rel=next]')['href'] == f'/bot/albums/{last["id"]}'
+    soup = BeautifulSoup(request(f'/albums/{last["id"]}')['body'], 'html.parser')
+    assert soup.select_one('a[rel=prev]')['href'] == f'/bot/albums/{first["id"]}'
+    assert soup.select_one('.album-navigation button[disabled]').get_text() == 'Next'
     assert cache.database.read_bytes() == before
 
 
@@ -301,7 +335,7 @@ def test_malformed_metadata(page, data):
     response = request()
     assert response['status'] == 200
     soup = BeautifulSoup(response['body'], 'html.parser')
-    assert [section.h2.get_text() for section in soup.select('.image-content section')] == [
+    assert [section.h2.get_text() for section in soup.select('.image-content section[aria-labelledby]')] == [
         'Original prompt',
         'Album details',
         'Image details',
@@ -384,7 +418,7 @@ def test_album_without_artwork(page):
     response = request(f'/albums/{album["id"]}')
     assert response['status'] == 200
     soup = BeautifulSoup(response['body'], 'html.parser')
-    assert soup.select_one('h1').get_text() == f'Band — Unillustrated (#{album["id"]})'
+    assert soup.select_one('h1').get_text() == 'Band — Unillustrated'
     assert soup.select_one('#album-heading')
     assert not soup.select('img, #details-heading, .image-cache-key')
     assert cache.database.read_bytes() == before
