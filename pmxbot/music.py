@@ -78,23 +78,12 @@ class MusicLibrary:
 
         Existing pairs fill missing genre/format metadata from supplied values,
         retaining their original populated metadata and attribution.
-        Legacy image IDs are reserved so they cannot identify unrelated albums.
         """
         if not normalize(artist) or not normalize(title):
             raise ValueError('Artist and album title must not be empty')
         with closing(self.connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
-            legacy = db.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'music_image_ids'"
-            ).fetchone()
             floor = db.execute('SELECT COALESCE(MAX(id), 0) FROM albums').fetchone()[0]
-            if legacy:
-                floor = max(
-                    floor,
-                    db.execute(
-                        'SELECT COALESCE(MAX(id), 0) FROM music_image_ids'
-                    ).fetchone()[0],
-                )
             sequence = db.execute(
                 "SELECT seq FROM sqlite_sequence WHERE name = 'albums'"
             ).fetchone()

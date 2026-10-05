@@ -219,9 +219,8 @@ image, or semantic ordering of images. There are no new IRC commands or
 delayed-generation workflows.
 
 Album IDs identify artist/title pairs rather than individual rendered images.
-Existing ``music_image_ids`` and image-cache records are retained. New album IDs
-start above the legacy IDs, which are not reassigned or automatically converted:
-legacy records contain only image cache keys, not structured artist/album data.
+Album and image IDs are independent. New album IDs follow the album sequence;
+the retired ``music_image_ids`` table is no longer consulted at runtime.
 Matching prompts still reuse the existing image cache.
 
 By default it reads the ``band`` and ``album`` libraries. It respects custom
@@ -232,54 +231,53 @@ them with ``!band add: <band name>`` and ``!album add: <album title>``.
 song quote library.
 
 
-Migrating legacy music images
-----------------------------
+Recovering unlinked music images
+-------------------------------
 
-Preview an import from ``music_image_ids`` without changing the database::
+Preview recovery from unlinked ``image_cache`` entries without changing the database::
 
     python -m pmxbot.migrate_music_images /path/to/pmxbot.sqlite
 
 Stop the bot, then apply with a new backup filename::
 
-    python -m pmxbot.migrate_music_images /path/to/pmxbot.sqlite --apply --backup /path/to/pmxbot.before-music.sqlite
+    python -m pmxbot.migrate_music_images /path/to/pmxbot.sqlite --apply --backup /path/to/pmxbot.before-unlinked.sqlite
 
-The script reads original prompts from ``image_cache`` to recover artists,
-albums, and available genre/format metadata. It retains cache keys and image
-attribution, linking each image through ``album_images`` without generating,
-uploading, moving, or deleting images. Existing library metadata and links are
-retained. Multiple covers for the same normalized artist/title share one album.
-New album metadata comes from the first parseable legacy entry in ID order.
-Legacy IDs become album IDs when available; existing albums take precedence,
-and occupied IDs receive a new ID. The JSON report lists every ID mapping and
-skipped entry. Missing cache records and unrecognized or ambiguous prompt
-formats are skipped for manual review. Review the dry-run report before applying;
-free-text prompts cannot always recover names unambiguously.
+``--unlinked-cache`` remains accepted for compatibility; this is now the default
+and only import mode. Numeric ``image_cache.id`` values are required. The script
+scans only unlinked entries in image ID order, recovers names and available
+metadata from recognizable prompts, and reuses albums with matching normalized
+artist/title pairs. Existing album metadata is retained; new artist/album
+attribution comes from the cached request. New album IDs are independent of
+image IDs. Cached records and files are unchanged. The JSON report lists image
+IDs, cache keys, artist/title and album mappings, and reasons for skipped prompts.
+Ambiguous prompts require manual review. Repeated runs add no duplicate links.
 
-To recover cached album covers that have no album link, including images absent
-from ``music_image_ids``, preview the unlinked-cache mode::
+Applying creates a SQLite backup before initializing library schemas and
+importing rows. Row import is transactional; if it fails, imported rows roll
+back, though initialized schemas may remain. Stop the bot before applying and
+restart it afterward.
 
-    python -m pmxbot.migrate_music_images /path/to/pmxbot.sqlite --unlinked-cache
+Retiring legacy music IDs
+-------------------------
 
-Stop the bot, then apply with a new backup filename::
+The legacy-ID import mode has been retired. Databases that still require it must
+first use commit ``119c089`` (or merge ``88850f1``) to import their legacy rows.
+Before using this version, complete that import so legacy IDs are no longer
+needed for album-ID reservation.
 
-    python -m pmxbot.migrate_music_images /path/to/pmxbot.sqlite --unlinked-cache --apply --backup /path/to/pmxbot.before-unlinked.sqlite
+Preview removal of the obsolete table::
 
-This mode requires numeric ``image_cache.id`` values, but does not require the
-legacy ID table. It scans only unlinked cache entries in image ID order, reuses
-albums with matching normalized artist/title pairs, and allocates new album IDs
-independently of image IDs, reserving legacy IDs when that table is present.
-Existing album metadata is retained; new artist/album attribution comes from
-the cached request. Cache records are unchanged. The report includes image IDs,
-cache keys, proposed artist/title and album mappings, and reasons for skipped
-prompts. Already linked images are excluded, so repeated runs add no duplicate
-links. New album metadata comes from the first parseable image in ID order.
+    python -m pmxbot.retire_music_image_ids /path/to/pmxbot.sqlite
 
-Applying creates a SQLite backup (including committed WAL contents) before
-initializing the library schemas and importing rows. Row import is transactional;
-if it fails, imported rows roll back, though initialized schemas may remain.
-Rerunning is safe: existing album/image links are not duplicated. Legacy index
-and cache rows are retained for reference. This is an explicit offline migration,
-not an automatic startup migration.
+After stopping the bot, apply with a new backup filename::
+
+    python -m pmxbot.retire_music_image_ids /path/to/pmxbot.sqlite --apply --backup /path/to/pmxbot.before-retire.sqlite
+
+Cleanup verifies every legacy cache key has a cached image linked to an existing
+album and artist. It refuses to drop the table if any entry is unmigrated. A
+backup is created before the table is dropped. Album IDs, image IDs, cached
+records, and album links are retained. Rerunning after removal is harmless.
+Restart the bot afterward.
 
 Usage
 =====

@@ -348,22 +348,6 @@ def test_existing_album_fills_only_missing_music_metadata(tmp_path):
     )
 
 
-def test_legacy_image_ids_are_reserved(config):
-    cache = images.ImageCache(config)
-    with sqlite3.connect(str(cache.database)) as db:
-        db.execute(
-            'CREATE TABLE music_image_ids (id INTEGER PRIMARY KEY, cache_key TEXT UNIQUE)'
-        )
-        db.execute("INSERT INTO music_image_ids VALUES (42, 'legacy')")
-    library = MusicLibrary(cache.database)
-    assert library.create_album('Band', 'Album')['id'] == 43
-    assert library.create_album('Band', 'Album')['id'] == 43
-    with sqlite3.connect(str(cache.database)) as db:
-        assert db.execute('SELECT * FROM music_image_ids').fetchall() == [
-            (42, 'legacy')
-        ]
-
-
 def test_unknown_album_does_not_generate(config, post):
     cache = images.ImageCache(config)
     with pytest.raises(LookupError):
