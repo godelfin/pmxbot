@@ -1,5 +1,7 @@
 """Persistent music library, independent of image generation and IRC commands."""
 
+import json
+import re
 import sqlite3
 import unicodedata
 from contextlib import closing
@@ -164,10 +166,49 @@ class MusicLibrary:
             )
 
 
+# Match complete words, including hyphenated names, without matching "bass" or
+# "classic". These are contextual hints, not an API moderation blocklist.
+_TITLE_CONTEXTS = (
+    (
+        r"ass|tits?|penis|cock|dick|pussy|cunt|boobs?|breasts?|vagina|genitals?",
+        "Keep the artwork non-explicit, with no nudity or sexual anatomy.",
+    ),
+    (
+        r"anal|sex|sexual|sexy|fuck|fucking|blowjobs?|handjobs?|gangbangs?|orgy|"
+        r"orgies|porn|cum|semen|masturbation|incest|bestiality|goon",
+        "Do not depict sexual acts or explicit sexual content.",
+    ),
+    (
+        r"rape|raped|raping|molest|molestation|assault",
+        "Do not depict sexual violence or abuse.",
+    ),
+    (
+        r"fag|fags|fagged|faggot|faggots|holocaust|nazi|nazis",
+        "Do not depict hateful imagery, extremist symbols, or atrocities.",
+    ),
+)
+
+
+def album_title_context(album):
+    """Clarify ambiguous names only for the relevant title contexts."""
+    names = normalize(f"{album['artist_name']} {album['title']}")
+    instructions = [
+        instruction
+        for words, instruction in _TITLE_CONTEXTS
+        if re.search(rf"\b(?:{words})\b", names)
+    ]
+    if not instructions:
+        return ''
+    return (
+        ' The quoted band and album names are text labels for a music release. '
+        + ' '.join(instructions)
+    )
+
+
 def album_prompt(album):
     prompt = (
-        f"an album cover for the band {album['artist_name']}. "
-        f"the name of the album is {album['title']}."
+        f"an album cover for the band {json.dumps(album['artist_name'], ensure_ascii=False)}. "
+        f"the name of the album is {json.dumps(album['title'], ensure_ascii=False)}."
     )
     edition = ', '.join(
         value for value in (album['format'], album['format_description']) if value
@@ -181,7 +222,7 @@ def album_prompt(album):
         )
     if album['description']:
         prompt += f" {album['description']}"
-    return prompt
+    return prompt + album_title_context(album)
 
 
 def generate_album_image(

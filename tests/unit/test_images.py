@@ -77,7 +77,7 @@ def test_music_prompt_and_shared_worker(
         assert album['format_description'] is None
         assert album['created_by'] == ('original' if existing else 'alice')
         assert album_prompt(album) == (
-            'an album cover for the band Second Band. the name of the album is First Album.'
+            'an album cover for the band "Second Band". the name of the album is "First Album".'
         ) + (
             ' the genre of music is Jazz, but nowhere should the genre be mentioned.'
             if existing
@@ -339,7 +339,7 @@ def test_music_strips_metadata_before_album_prompt(config, post, monkeypatch):
         dict(album, genre=None, description=None, format=None, format_description=None)
     )
     assert post.call_args.kwargs['json']['prompt'] == (
-        'an album cover for the band Band. the name of the album is Album.'
+        'an album cover for the band "Band". the name of the album is "Album".'
     )
     saved = library.get_album(album['id'])
     for field in ('genre', 'description', 'format', 'format_description'):
@@ -386,7 +386,7 @@ def test_album_persistence_is_independent_of_images(config, post, r2):
     cache.get(album_prompt(first), 'original-requester', '#original')
     url = generate_album_image(restarted, cache, first['id'], 'bob', '#test')
     assert post.call_args.kwargs['json']['prompt'] == (
-        'an album cover for the band Bänd. the name of the album is First. '
+        'an album cover for the band "Bänd". the name of the album is "First". '
         'this is the Vinyl, Remastered edition. '
         'the genre of music is Jazz, but nowhere should the genre be mentioned. Minimalist'
     )
