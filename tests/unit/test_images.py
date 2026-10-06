@@ -9,7 +9,7 @@ import pytest
 import requests
 
 import pmxbot
-from pmxbot import core, images, quotes
+from pmxbot import core, images, music, quotes
 from pmxbot.music import MusicLibrary, album_prompt, generate_album_image
 
 PNG = b'\x89PNG\r\n\x1a\nimage bytes'
@@ -329,6 +329,33 @@ def test_music_result_ids_persist_and_distinguish_albums(config, post):
     assert post.call_count == 3
 
 
+def test_music_strips_metadata_before_album_prompt(config, post, monkeypatch):
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album(
+        'Band',
+        'Album',
+        genre='Jazz',
+        format='Vinyl',
+        format_description='Remastered',
+        description='Minimalist',
+    )
+    prompt = Mock(wraps=album_prompt)
+    monkeypatch.setattr(music, 'album_prompt', prompt)
+    images._busy.acquire()
+    images._generate(cache, None, '#test', 'alice', album['id'])
+    list(images.image_results())
+    prompt.assert_called_once_with(
+        dict(album, genre=None, description=None, format=None, format_description=None)
+    )
+    assert post.call_args.kwargs['json']['prompt'] == (
+        'an album cover for the band Band. the name of the album is Album.'
+    )
+    saved = library.get_album(album['id'])
+    for field in ('genre', 'description', 'format', 'format_description'):
+        assert saved[field] == album[field]
+
+
 def test_music_error_preserves_album_without_image(config, monkeypatch):
     cache = images.ImageCache(config)
     library = MusicLibrary(cache.database)
@@ -368,6 +395,11 @@ def test_album_persistence_is_independent_of_images(config, post, r2):
     assert restarted.create_album('Other', 'First')['id'] != first['id']
     cache.get(album_prompt(first), 'original-requester', '#original')
     url = generate_album_image(restarted, cache, first['id'], 'bob', '#test')
+    assert post.call_args.kwargs['json']['prompt'] == (
+        'an album cover for the band Bänd. the name of the album is First. '
+        'this is the Vinyl, Remastered edition. '
+        'the genre of music is Jazz, but nowhere should the genre be mentioned. Minimalist'
+    )
     assert url == hosted_url(cache, album_prompt(first))
     saved = restarted.get_album(first['id'])
     assert saved['created_by'] == 'alice'

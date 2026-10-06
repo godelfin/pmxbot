@@ -184,9 +184,15 @@ def album_prompt(album):
     return prompt
 
 
-def generate_album_image(library, cache, album_id, nick='', channel=''):
+def generate_album_image(
+    library, cache, album_id, nick='', channel='', *, include_metadata=True
+):
     """Generate/cache an existing album's image; failed requests keep the album."""
     album = library.get_album(album_id)
+    if not include_metadata:
+        album = dict(
+            album, genre=None, description=None, format=None, format_description=None
+        )
     prompt = album_prompt(album)
     url = cache.get(prompt, nick, channel)
     library.record_image(album_id, cache.cache_key(prompt))

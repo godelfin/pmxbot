@@ -422,7 +422,12 @@ def _generate(cache, prompt, channel, nick, album_id=None):
             result = cache.get(prompt, nick, channel)
         else:
             url = generate_album_image(
-                MusicLibrary(cache.database), cache, album_id, nick, channel
+                MusicLibrary(cache.database),
+                cache,
+                album_id,
+                nick,
+                channel,
+                include_metadata=False,
             )
             result = f'#{album_id} {url} {_album_url(album_id)}'
     except ImageError as exc:
