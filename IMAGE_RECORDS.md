@@ -55,3 +55,10 @@ creates the new table for existing databases; read-only pages also support
 databases that predate it. Failures from before this change cannot be recovered
 unless they were recorded elsewhere. If database storage itself is unavailable,
 the bot logs that it could not save the failure and preserves the original error.
+
+The read-only `/gallery` page shows 24 albums per page, newest album ID first,
+with the newest linked image as a lazy-loaded thumbnail. Each card opens its
+album details. Albums without valid hosted artwork have a placeholder.
+Use `/gallery?page=2` for subsequent pages; the album index and details link to
+the gallery. Pagination is performed in SQLite, and viewing the gallery never
+initializes or changes storage.

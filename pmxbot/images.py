@@ -252,6 +252,38 @@ class ImageCache:
                 )
             ]
 
+    def gallery_albums(self, page, page_size=24):
+        """Read one page of albums and their latest artwork without writes."""
+        if not self.database.is_file():
+            return [], 0
+        with closing(self.read_connection()) as db:
+            db.execute('BEGIN')
+            tables = {
+                row[0]
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if not {'albums', 'artists'} <= tables:
+                return [], 0
+            total = db.execute('SELECT COUNT(*) FROM albums').fetchone()[0]
+            artwork = (
+                '''(SELECT image_cache.hosted_url FROM image_cache
+                JOIN album_images USING (cache_key)
+                WHERE album_images.album_id = albums.id
+                ORDER BY image_cache.created_at DESC, image_cache.id DESC LIMIT 1)'''
+                if {'album_images', 'image_cache'} <= tables
+                else 'NULL'
+            )
+            rows = db.execute(
+                f'''SELECT albums.id, albums.title, artists.name AS artist_name,
+                {artwork} AS hosted_url
+                FROM albums JOIN artists ON artists.id = albums.artist_id
+                ORDER BY albums.id DESC LIMIT ? OFFSET ?''',
+                (page_size, (page - 1) * page_size),
+            )
+            return [dict(row) for row in rows], total
+
     def album_neighbors(self, album_id):
         """Return adjacent stored album IDs, skipping gaps in the sequence."""
         with closing(self.read_connection()) as db:

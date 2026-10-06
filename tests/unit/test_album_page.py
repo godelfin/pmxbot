@@ -33,11 +33,12 @@ def page(tmp_path, monkeypatch):
     app = cherrypy.Application(viewer.PmxbotPages(), '/bot')
 
     def request(path='/albums/42', method='GET'):
+        path, _, query = path.partition('?')
         env = {
             'REQUEST_METHOD': method,
             'SCRIPT_NAME': '/bot',
             'PATH_INFO': path,
-            'QUERY_STRING': '',
+            'QUERY_STRING': query,
             'SERVER_NAME': 'localhost',
             'HTTP_HOST': 'localhost',
             'CONTENT_LENGTH': '0',
@@ -553,3 +554,115 @@ def test_homepage_rejects_writes(page, method):
     cache, request = page
     assert request('/', method=method)['status'] == 405
     assert not cache.database.exists()
+
+
+def test_gallery_pagination_and_album_links(page):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    albums = [library.create_album('<Band>', f'Album {i}') for i in range(25)]
+    with closing(cache.connect()) as db:
+        db.executemany(
+            '''INSERT INTO image_cache
+            (cache_key, prompt, normalized_prompt, settings_json, local_filename,
+             hosted_url, generation_metadata_json)
+            VALUES (?, 'prompt', 'prompt', '{}', 'private.png', ?, '{}')''',
+            [
+                (str(album['id']), f'https://example.com/{album["id"]}.png')
+                for album in albums
+            ],
+        )
+    for album in albums:
+        library.record_image(album['id'], str(album['id']))
+    before = cache.database.read_bytes()
+    response = request('/gallery')
+    assert response['status'] == 200
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    cards = soup.select('.gallery-card')
+    assert len(cards) == 24
+    assert [card['href'] for card in cards] == [
+        f'/bot/albums/{album["id"]}' for album in reversed(albums[1:])
+    ]
+    assert len(soup.select('.gallery img')) == 24
+    assert cards[0].img['loading'] == 'lazy'
+    assert cards[0].img['referrerpolicy'] == 'no-referrer'
+    assert '<Band>' in cards[0].get_text()
+    assert not soup.select('band')
+    assert soup.select_one('a[rel=next]')['href'] == '/bot/gallery?page=2'
+    assert not soup.select_one('a[rel=prev]')
+    last = BeautifulSoup(request('/gallery?page=2')['body'], 'html.parser')
+    assert len(last.select('.gallery-card')) == 1
+    assert last.select_one('.gallery-card')['href'] == f'/bot/albums/{albums[0]["id"]}'
+    assert last.select_one('a[rel=prev]')['href'] == '/bot/gallery?page=1'
+    assert not last.select_one('a[rel=next]')
+    assert request('/gallery?page=3')['status'] == 404
+    assert request('/gallery', method='HEAD')['body'] == ''
+    assert cache.database.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    'url', [None, 'javascript:alert(1)', 'https://example.com/art.png']
+)
+def test_gallery_artwork_safety_and_latest_image(page, url):
+    cache, request = page
+    insert(cache)
+    with closing(cache.connect()) as db:
+        db.execute(
+            '''INSERT INTO image_cache
+            (cache_key, prompt, normalized_prompt, settings_json, local_filename,
+             hosted_url, generation_metadata_json, created_at)
+            VALUES ('latest', 'prompt', 'prompt', '{}', 'private.png', ?, '{}', '2099-01-01')''',
+            (url,),
+        )
+    library = MusicLibrary(cache.database)
+    library.record_image(42, 'latest')
+    missing = library.create_album('Band', 'No artwork')
+    before = cache.database.read_bytes()
+    soup = BeautifulSoup(request('/gallery')['body'], 'html.parser')
+    card = soup.select_one('a[href="/bot/albums/42"]')
+    assert bool(card.img) == bool(url and url.startswith('https://'))
+    if card.img:
+        assert card.img['src'] == url
+    else:
+        assert 'Artwork unavailable' in card.get_text()
+    assert not soup.select_one(f'a[href="/bot/albums/{missing["id"]}"]').img
+    assert cache.database.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    'value', ['0', '-1', '1.5', 'no', '', '１', '9' * 100, '1&page=2']
+)
+def test_gallery_invalid_page_does_not_create_storage(page, value):
+    cache, request = page
+    assert request(f'/gallery?page={value}')['status'] == 400
+    assert not cache.database.exists()
+    assert not cache.directory.exists()
+
+
+def test_empty_gallery_does_not_create_storage(page):
+    cache, request = page
+    response = request('/gallery')
+    assert response['status'] == 200
+    assert 'No albums yet.' in response['body']
+    assert request('/gallery?page=2')['status'] == 404
+    assert not cache.database.exists()
+    assert not cache.directory.exists()
+
+
+@pytest.mark.parametrize('method', ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
+def test_gallery_rejects_writes(page, method):
+    cache, request = page
+    assert request('/gallery', method=method)['status'] == 405
+    assert not cache.database.exists()
+
+
+def test_gallery_without_image_schema_and_storage_error(page):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    library.create_album('Band', 'Unillustrated')
+    before = cache.database.read_bytes()
+    assert 'Artwork unavailable' in request('/gallery')['body']
+    assert cache.database.read_bytes() == before
+    cache.database.write_text('not sqlite')
+    response = request('/gallery')
+    assert response['status'] == 503
+    assert str(cache.database) not in response['body']

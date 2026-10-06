@@ -385,9 +385,42 @@ class AlbumPage:
 
 
 class PmxbotPages:
-    # Only the album index and album pages are published for now. Keep the other
+    # Only the album index, gallery, and album pages are published. Keep the other
     # page classes available for when the rest of the viewer is enabled again.
     albums = AlbumPage()
+
+    @cherrypy.expose
+    def gallery(self, page='1'):
+        cherrypy.lib.cptools.allow(['GET', 'HEAD'])
+        if (
+            not isinstance(page, str)
+            or not page.isascii()
+            or not page.isdecimal()
+            or len(page) > 9
+            or int(page) < 1
+        ):
+            raise cherrypy.HTTPError(400, 'Invalid gallery page')
+        page_number = int(page)
+        page_size = 24
+        try:
+            albums, total = ImageCache(pmxbot.config).gallery_albums(
+                page_number, page_size
+            )
+        except (sqlite3.Error, ImageError):
+            raise cherrypy.HTTPError(503, 'Album storage is unavailable') from None
+        page_count = max(1, (total + page_size - 1) // page_size)
+        if page_number > page_count:
+            raise cherrypy.HTTPError(404, 'Unknown gallery page')
+        for album in albums:
+            album['image_url'] = safe_image_url(album.pop('hosted_url'))
+        template = jenv.overlay(autoescape=True).get_template('gallery.html')
+        return template.render(
+            albums=albums,
+            page_number=page_number,
+            page_count=page_count,
+            total=total,
+            **get_context(),
+        ).encode('utf-8')
 
     @cherrypy.expose
     def index(self):
