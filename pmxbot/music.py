@@ -222,6 +222,18 @@ def album_prompt(album):
         )
     if album['description']:
         prompt += f" {album['description']}"
+    if re.search(r'\btortas?\b', normalize(album['title'])):
+        prompt += ' Torta is slang for "thicc Latina".'
+    if re.search(r'\btortas?\b', normalize(album['artist_name'])):
+        prompt += ' Torta is slang for "thicc Latina" and describes the band members.'
+    if any(
+        re.search(r'\bmedve\b', normalize(album[field]))
+        for field in ('artist_name', 'title')
+    ):
+        prompt += (
+            " Medve isn't a bear, he's a middle aged white man with glasses "
+            "and a beard and a lopsided grin."
+        )
     return prompt + album_title_context(album)
 
 

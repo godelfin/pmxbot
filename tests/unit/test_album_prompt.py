@@ -60,3 +60,57 @@ def test_embedded_quotes_are_escaped():
         f'an album cover for the band {json.dumps(band)}. '
         f'the name of the album is {json.dumps(title)}.'
     )
+
+
+@pytest.mark.parametrize('word', ['torta', 'tortas', 'TORTA', 'Tortas'])
+def test_torta_album_clarification(word):
+    value = prompt('Band', f'{word} Aid')
+    assert value.endswith(' Torta is slang for "thicc Latina".')
+    assert 'band members' not in value
+
+
+@pytest.mark.parametrize('word', ['torta', 'tortas', 'TORTA', 'Tortas'])
+def test_torta_band_clarification(word):
+    assert prompt(f'The {word}-Players', 'Album').endswith(
+        ' Torta is slang for "thicc Latina" and describes the band members.'
+    )
+
+
+def test_torta_in_both_names_adds_both_clarifications():
+    assert prompt('The Tortas', 'Torta Aid').endswith(
+        ' Torta is slang for "thicc Latina".'
+        ' Torta is slang for "thicc Latina" and describes the band members.'
+    )
+
+
+def test_torta_substrings_have_no_clarification():
+    assert 'Torta is slang' not in prompt('Tortastic', 'Retorta')
+
+
+@pytest.mark.parametrize(
+    'band,title',
+    [
+        ('Medve', 'Album'),
+        ('Band', 'Medve Returns'),
+        ('The MEDVE-Players', 'Album'),
+        ('Medve', 'medve'),
+    ],
+)
+def test_medve_clarification(band, title):
+    clarification = (
+        "Medve isn't a bear, he's a middle aged white man with glasses "
+        "and a beard and a lopsided grin."
+    )
+    value = prompt(band, title)
+    assert value.endswith(' ' + clarification)
+    assert value.count(clarification) == 1
+
+
+def test_medve_substrings_have_no_clarification():
+    assert "Medve isn't a bear" not in prompt('Medved', 'Medveville')
+
+
+def test_medve_and_torta_clarifications_combine():
+    value = prompt('Medve', 'Torta Aid')
+    assert 'Torta is slang for "thicc Latina".' in value
+    assert "Medve isn't a bear" in value
