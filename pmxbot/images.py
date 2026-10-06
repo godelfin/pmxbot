@@ -429,7 +429,7 @@ def _generate(cache, prompt, channel, nick, album_id=None):
                 channel,
                 include_metadata=False,
             )
-            result = f'#{album_id} {url} {_album_url(album_id)}'
+            result = f'#{album_id} {url}\n{_album_url(album_id)}'
     except ImageError as exc:
         result = str(exc)
     except Exception as exc:  # noqa: BLE001 - worker must always deliver a safe result

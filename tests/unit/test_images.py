@@ -150,7 +150,7 @@ def test_music_generated_album_link(config, post, monkeypatch, settings, expecte
     album = MusicLibrary(cache.database).create_album('Band', 'Album')
     images._busy.acquire()
     images._generate(cache, None, '#test', 'alice', album['id'])
-    assert list(images.image_results())[1].endswith(f' {expected}')
+    assert list(images.image_results())[1].endswith(f'\n{expected}')
 
 
 def test_music_registered():
@@ -309,12 +309,12 @@ def test_music_result_ids_persist_and_distinguish_albums(config, post):
     assert (
         first_result
         == f"alice: #{first['id']} {hosted_url(cache, album_prompt(first))}"
-        f" {ALBUMS_URL}albums/{first['id']}"
+        f"\n{ALBUMS_URL}albums/{first['id']}"
     )
     assert (
         result(second['id'])
         == f"alice: #{second['id']} {hosted_url(cache, album_prompt(second))}"
-        f" {ALBUMS_URL}albums/{second['id']}"
+        f"\n{ALBUMS_URL}albums/{second['id']}"
     )
     assert result(first['id']) == first_result
     assert post.call_count == 2
