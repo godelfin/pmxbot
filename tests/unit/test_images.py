@@ -188,7 +188,28 @@ def test_music_lookup_latest_cached_image(config, post, r2, monkeypatch, argumen
         )
 
 
-@pytest.mark.parametrize('argument', ['abc', '0', '-1', '#', '1 extra', '##1'])
+@pytest.mark.parametrize('argument', ['1', '#1', '  #1  ', '001', '#001'])
+def test_music_lookup_id_validation(config, monkeypatch, argument):
+    library = Mock()
+    library.get_album.return_value = {
+        'artist_name': 'Band',
+        'title': 'Album',
+        'format': None,
+        'format_description': None,
+        'genre': None,
+    }
+    monkeypatch.setattr(images, 'MusicLibrary', Mock(return_value=library))
+    lookup = Mock(return_value=URL)
+    monkeypatch.setattr(images.ImageCache, 'latest_album_image', lookup)
+    assert images.music('#test', 'alice', argument).endswith(f'#1 {URL}')
+    library.get_album.assert_called_once_with(1)
+    lookup.assert_called_once_with(1)
+
+
+@pytest.mark.parametrize(
+    'argument',
+    ['abc', '0', '-1', '#', '1 extra', '##1', '1#', '#0', '#-1', '１', '#١'],
+)
 def test_music_lookup_invalid_id(config, argument):
     assert images.music('#test', 'alice', argument) == 'Usage: !music [album ID]'
 

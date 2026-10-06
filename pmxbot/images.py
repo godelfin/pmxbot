@@ -436,7 +436,9 @@ def music(channel, nick, rest=''):
     if not pmxbot.config.get('images_enabled', False):
         return 'Image generation is disabled; configure images_enabled to enable it.'
     if rest.strip():
-        value = rest.strip().removeprefix('#')
+        value = rest.strip()
+        if value.startswith('#'):
+            value = value[1:]
         if not value.isascii() or not value.isdecimal() or int(value) <= 0:
             return 'Usage: !music [album ID]'
         album_id = int(value)
