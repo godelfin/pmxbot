@@ -135,7 +135,19 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
   });
   close.addEventListener('click', () => dialog.close());
   dialog.addEventListener('click', (event) => {
-    if (event.target !== dialog.querySelector('img')) dialog.close();
+    const artwork = dialog.querySelector('img');
+    if (event.target !== artwork || !artwork.naturalWidth) {
+      dialog.close();
+      return;
+    }
+    const bounds = artwork.getBoundingClientRect();
+    const scale = Math.min(bounds.width / artwork.naturalWidth, bounds.height / artwork.naturalHeight);
+    const width = artwork.naturalWidth * scale;
+    const height = artwork.naturalHeight * scale;
+    const left = bounds.left + (bounds.width - width) / 2;
+    const top = bounds.top + (bounds.height - height) / 2;
+    if (event.clientX < left || event.clientX > left + width ||
+        event.clientY < top || event.clientY > top + height) dialog.close();
   });
 })();
 </script>
