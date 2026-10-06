@@ -547,4 +547,4 @@ def image_results():
         return
     _busy.release()
     yield SwitchChannel(channel)
-    yield result
+    yield from result.splitlines()

@@ -150,7 +150,9 @@ def test_music_generated_album_link(config, post, monkeypatch, settings, expecte
     album = MusicLibrary(cache.database).create_album('Band', 'Album')
     images._busy.acquire()
     images._generate(cache, None, '#test', 'alice', album['id'])
-    assert list(images.image_results())[1].endswith(f'\n{expected}')
+    output = list(images.image_results())
+    assert output[2] == expected
+    assert '\n' not in output[1]
 
 
 def test_music_registered():
@@ -303,19 +305,17 @@ def test_music_result_ids_persist_and_distinguish_albums(config, post):
     def result(album_id):
         images._busy.acquire()
         images._generate(images.ImageCache(config), None, '#test', 'alice', album_id)
-        return list(images.image_results())[1]
+        return list(images.image_results())[1:]
 
     first_result = result(first['id'])
-    assert (
-        first_result
-        == f"alice: #{first['id']} {hosted_url(cache, album_prompt(first))}"
-        f"\n{ALBUMS_URL}albums/{first['id']}"
-    )
-    assert (
-        result(second['id'])
-        == f"alice: #{second['id']} {hosted_url(cache, album_prompt(second))}"
-        f"\n{ALBUMS_URL}albums/{second['id']}"
-    )
+    assert first_result == [
+        f"alice: #{first['id']} {hosted_url(cache, album_prompt(first))}",
+        f"{ALBUMS_URL}albums/{first['id']}",
+    ]
+    assert result(second['id']) == [
+        f"alice: #{second['id']} {hosted_url(cache, album_prompt(second))}",
+        f"{ALBUMS_URL}albums/{second['id']}",
+    ]
     assert result(first['id']) == first_result
     assert post.call_count == 2
     with sqlite3.connect(str(cache.database)) as db:
@@ -730,6 +730,32 @@ def test_worker_storage_error_delivered_without_secrets(config, monkeypatch):
     output = list(images.image_results())
     assert 'secret' not in output[1]
     assert 'failed' in output[1]
+    assert not images._busy.locked()
+
+
+def test_music_result_delivery_to_irc(config, post, monkeypatch):
+    import irc.client
+
+    from pmxbot.irc import LoggingCommandBot
+
+    cache = images.ImageCache(config)
+    album = MusicLibrary(cache.database).create_album('Band', 'Album')
+    bot = LoggingCommandBot.__new__(LoggingCommandBot)
+    bot._nickname = 'pmxbot'
+    bot._conn = irc.client.ServerConnection(irc.client.Reactor())
+    bot._conn.socket = Mock()
+    monkeypatch.setattr(bot, 'allow', lambda channel, message: True)
+    monkeypatch.setattr(core.ContentHandler, 'find_matching', Mock(return_value=[]))
+    images._busy.acquire()
+    images._generate(cache, None, '#test', 'alice', album['id'])
+    handler = next(
+        item for item in core.Scheduled._registry if item.func is images.image_results
+    )
+    bot.handle_scheduled(handler)
+    assert [call.args[0] for call in bot._conn.socket.write.call_args_list] == [
+        f'PRIVMSG #test :alice: #1 {hosted_url(cache, album_prompt(album))}\r\n'.encode(),
+        f'PRIVMSG #test :{ALBUMS_URL}albums/1\r\n'.encode(),
+    ]
     assert not images._busy.locked()
 
 
