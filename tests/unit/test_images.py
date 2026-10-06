@@ -14,6 +14,7 @@ from pmxbot.music import MusicLibrary, album_prompt, generate_album_image
 
 PNG = b'\x89PNG\r\n\x1a\nimage bytes'
 URL = 'https://images.example.com/image.png'
+ALBUMS_URL = 'https://bot.example.com/'
 
 
 def hosted_url(cache, prompt):
@@ -121,8 +122,36 @@ def test_music_disabled(config, monkeypatch):
     config['images_enabled'] = False
     start = Mock()
     monkeypatch.setattr(images, '_start_image', start)
-    assert 'disabled' in images.music('#test', 'alice')
+    result = images.music('#test', 'alice')
+    assert 'disabled' in result
+    assert ALBUMS_URL not in result
     start.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ('settings', 'expected'),
+    [
+        (
+            {'albums_url': 'https://bot.example.com/bot/'},
+            'https://bot.example.com/bot/albums/1',
+        ),
+        (
+            {'logs URL': 'https://logs.example.com/bot/'},
+            'https://logs.example.com/bot/albums/1',
+        ),
+        ({'web_base': '/bot/'}, 'http://bot.example.com/bot/albums/1'),
+        ({}, 'http://bot.example.com/albums/1'),
+    ],
+)
+def test_music_generated_album_link(config, post, monkeypatch, settings, expected):
+    del config['albums_url']
+    config.update(settings)
+    monkeypatch.setattr(images.socket, 'getfqdn', lambda: 'bot.example.com')
+    cache = images.ImageCache(config)
+    album = MusicLibrary(cache.database).create_album('Band', 'Album')
+    images._busy.acquire()
+    images._generate(cache, None, '#test', 'alice', album['id'])
+    assert list(images.image_results())[1].endswith(f' Album: {expected}')
 
 
 def test_music_registered():
@@ -227,6 +256,7 @@ def config(tmp_path, monkeypatch):
     config = {
         'database': f'sqlite:{tmp_path / "pmxbot.sqlite"}',
         'images_enabled': True,
+        'albums_url': ALBUMS_URL,
         'images_directory': str(tmp_path / 'images'),
         'openai_api_key': 'openai-secret',
         'r2_endpoint_url': 'https://account.r2.cloudflarestorage.com',
@@ -281,10 +311,12 @@ def test_music_result_ids_persist_and_distinguish_albums(config, post):
     assert (
         first_result
         == f"alice: #{first['id']} {hosted_url(cache, album_prompt(first))}"
+        f" Album: {ALBUMS_URL}albums/{first['id']}"
     )
     assert (
         result(second['id'])
         == f"alice: #{second['id']} {hosted_url(cache, album_prompt(second))}"
+        f" Album: {ALBUMS_URL}albums/{second['id']}"
     )
     assert result(first['id']) == first_result
     assert post.call_count == 2

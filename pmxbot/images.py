@@ -10,6 +10,7 @@ import logging
 import os
 import queue
 import random
+import socket
 import sqlite3
 import tempfile
 import threading
@@ -423,7 +424,7 @@ def _generate(cache, prompt, channel, nick, album_id=None):
             url = generate_album_image(
                 MusicLibrary(cache.database), cache, album_id, nick, channel
             )
-            result = f'#{album_id} {url}'
+            result = f'#{album_id} {url} {_album_url(album_id)}'
     except ImageError as exc:
         result = str(exc)
     except Exception as exc:  # noqa: BLE001 - worker must always deliver a safe result
@@ -431,6 +432,14 @@ def _generate(cache, prompt, channel, nick, album_id=None):
         log.error('Image request failed (%s)', type(exc).__name__)
         result = 'Image request failed; check the bot storage and configuration.'
     _results.put((channel, f'{nick}: {result}'))
+
+
+def _album_url(album_id):
+    url = pmxbot.config.get('albums_url') or pmxbot.config.get('logs URL')
+    if not url:
+        base = pmxbot.config.get('web_base', '/').strip('/')
+        url = f'http://{socket.getfqdn()}/{base}'
+    return f'{url.rstrip("/")}/albums/{album_id}'
 
 
 @command()
