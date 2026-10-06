@@ -498,11 +498,7 @@ def music(channel, nick, rest=''):
 
 
 def _album_details(album):
-    return (
-        f"Band: {album['artist_name']}; Album: {album['title']}; "
-        f"Format: {album['format']}; Description: {album['format_description']}; "
-        f"Genre: {album['genre']}"
-    )
+    return f"Band: {album['artist_name']}; Album: {album['title']}"
 
 
 def _start_image(rest, channel, nick, acknowledgement, album_data=None):

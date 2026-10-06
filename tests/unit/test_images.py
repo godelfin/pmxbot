@@ -71,8 +71,7 @@ def test_music_prompt_and_shared_worker(
         assert (
             images.music('#test', 'alice')
             == 'Looking up or generating your album cover... '
-            'Band: Second Band; Album: First Album; '
-            f'Format: Vinyl; Description: Remastered; Genre: {genre}'
+            'Band: Second Band; Album: First Album'
         )
         thread.return_value.start.assert_called_once_with()
         kwargs = thread.call_args.kwargs
@@ -151,7 +150,7 @@ def test_music_generated_album_link(config, post, monkeypatch, settings, expecte
     album = MusicLibrary(cache.database).create_album('Band', 'Album')
     images._busy.acquire()
     images._generate(cache, None, '#test', 'alice', album['id'])
-    assert list(images.image_results())[1].endswith(f' Album: {expected}')
+    assert list(images.image_results())[1].endswith(f' {expected}')
 
 
 def test_music_registered():
@@ -200,8 +199,7 @@ def test_music_lookup_latest_cached_image(config, post, r2, monkeypatch, argumen
     images._busy.acquire()
     try:
         assert images.music('#test', 'bob', argument) == (
-            'Band: Band; Album: Album; Format: Vinyl; Description: Remastered; Genre: Jazz; '
-            f"#1 {hosted_url(cache, 'newest')}"
+            'Band: Band; Album: Album; ' f"#1 {hosted_url(cache, 'newest')}"
         )
     finally:
         images._busy.release()
@@ -311,12 +309,12 @@ def test_music_result_ids_persist_and_distinguish_albums(config, post):
     assert (
         first_result
         == f"alice: #{first['id']} {hosted_url(cache, album_prompt(first))}"
-        f" Album: {ALBUMS_URL}albums/{first['id']}"
+        f" {ALBUMS_URL}albums/{first['id']}"
     )
     assert (
         result(second['id'])
         == f"alice: #{second['id']} {hosted_url(cache, album_prompt(second))}"
-        f" Album: {ALBUMS_URL}albums/{second['id']}"
+        f" {ALBUMS_URL}albums/{second['id']}"
     )
     assert result(first['id']) == first_result
     assert post.call_count == 2
