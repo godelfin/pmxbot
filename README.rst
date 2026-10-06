@@ -423,8 +423,10 @@ migration. SQLite and MongoDB support the same library commands.
 OpenAI spending
 ===============
 
-``!openaiusage`` reports organization-wide spending recorded today in USD,
-using midnight UTC as the day boundary. Set ``OPENAI_ADMIN_KEY`` in the bot's
+``!openaiusage`` reports organization-wide spending recorded in the last
+seven days in USD, from exactly seven days before the query time up to the
+query time, using UTC. Midnight queries include the preceding seven days.
+Set ``OPENAI_ADMIN_KEY`` in the bot's
 environment, or ``openai_admin_key`` in its YAML configuration. This requires
 an OpenAI admin key with access to organization costs; the regular
 ``openai_api_key`` used for image generation is separate.
@@ -432,6 +434,5 @@ an OpenAI admin key with access to organization costs; the regular
 The command uses the `OpenAI Costs API
 <https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs>`_
 and includes all projects and usage types. Costs may lag recent requests.
-The documented API does not expose prepaid credit balances, so the command
-reports credits left as unavailable and links to the billing dashboard.
+The command reports spending only and does not retrieve prepaid credit balances.
 It does not infer a balance from spending limits or token counts.
