@@ -355,6 +355,61 @@ def test_music_error_preserves_album_without_image(config, monkeypatch):
     images._generate(cache, None, '#test', 'alice', album['id'])
     assert list(images.image_results()) == ['#test', 'alice: Failed']
     assert library.get_album(album['id']) == album
+    (failure,) = cache.album_image_failures(album['id'])
+    assert failure['error'] == 'Failed'
+    assert failure['requested_by'] == 'alice'
+    assert failure['channel'] == '#test'
+
+
+@pytest.mark.parametrize(
+    'error',
+    [images.ImageError('OpenAI request failed'), RuntimeError('secret credential')],
+)
+def test_album_generation_failure_is_persisted(config, monkeypatch, error):
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
+    other = library.create_album('Other', 'Album')
+    monkeypatch.setattr(cache, 'generate', Mock(side_effect=error))
+    with pytest.raises(type(error)) as caught:
+        generate_album_image(library, cache, album['id'], 'alice', '#test')
+    assert caught.value is error
+    restarted = images.ImageCache(config)
+    (failure,) = restarted.album_image_failures(album['id'])
+    assert failure['prompt'] == album_prompt(album)
+    assert failure['error_type'] == type(error).__name__
+    assert failure['created_at']
+    assert 'secret credential' not in failure['error']
+    assert restarted.album_image_failures(other['id']) == []
+    assert library.get_album(album['id'])['images'] == []
+
+
+def test_album_configuration_failure_is_persisted(config):
+    cache = images.ImageCache(dict(config, r2_public_url=''))
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
+    for _ in range(2):
+        with pytest.raises(images.ImageError, match='R2_PUBLIC_URL'):
+            generate_album_image(library, cache, album['id'])
+    failures = cache.album_image_failures(album['id'])
+    assert len(failures) == 2
+    assert failures[0]['id'] > failures[1]['id']
+    assert all('R2_PUBLIC_URL' in failure['error'] for failure in failures)
+
+
+def test_failure_logging_storage_error_preserves_original(config, monkeypatch, caplog):
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
+    error = images.ImageError('Generation failed')
+    monkeypatch.setattr(cache, 'get', Mock(side_effect=error))
+    monkeypatch.setattr(
+        library, 'record_image_failure', Mock(side_effect=sqlite3.OperationalError)
+    )
+    with pytest.raises(images.ImageError) as caught:
+        generate_album_image(library, cache, album['id'])
+    assert caught.value is error
+    assert 'Could not store album image failure' in caplog.text
 
 
 def test_album_persistence_is_independent_of_images(config, post, r2):
@@ -773,10 +828,14 @@ def test_album_upload_failure_can_be_retried_by_id(config, post, r2):
     with pytest.raises(images.ImageError):
         generate_album_image(library, cache, album['id'], 'alice')
     assert library.get_album(album['id']) == album
+    failures = cache.album_image_failures(album['id'])
+    assert len(failures) == 1
+    assert 'upload failed' in failures[0]['error']
     r2.put_object.side_effect = None
     generate_album_image(library, cache, album['id'], 'alice')
     assert library.get_album(album['id'])['images']
     assert post.call_count == 1
+    assert cache.album_image_failures(album['id']) == failures
 
 
 def test_busy_worker_does_not_create_album(config):

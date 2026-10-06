@@ -235,6 +235,23 @@ class ImageCache:
                 )
             ]
 
+    def album_image_failures(self, album_id):
+        """Read failure history, including databases predating failure logging."""
+        with closing(self.read_connection()) as db:
+            if not db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'album_image_failures'"
+            ).fetchone():
+                return []
+            return [
+                dict(row)
+                for row in db.execute(
+                    '''SELECT * FROM album_image_failures WHERE album_id = ?
+                    ORDER BY created_at DESC, id DESC''',
+                    (album_id,),
+                )
+            ]
+
     def album_neighbors(self, album_id):
         """Return adjacent stored album IDs, skipping gaps in the sequence."""
         with closing(self.read_connection()) as db:

@@ -64,6 +64,20 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 <p>Hosted artwork is unavailable. Album details are shown below.</p>
 {% endif %}
 </section>
+{% if failures %}
+<section class="image-section" aria-labelledby="failures-heading">
+<h2 id="failures-heading">Artwork request failures</h2>
+<ul>
+{% for failure in failures %}
+<li>
+<p><time>{{ failure.created_at }}</time>{% if failure.requested_by %} — {{ failure.requested_by }}{% endif %}{% if failure.channel %} in {{ failure.channel }}{% endif %}</p>
+<p>{{ failure.error_type }}: {{ failure.error }}</p>
+<details><summary>Requested prompt</summary><pre>{{ failure.prompt }}</pre></details>
+</li>
+{% endfor %}
+</ul>
+</section>
+{% endif %}
 <section class="image-section" aria-labelledby="prompt-heading">
 <h2 id="prompt-heading">Original prompt</h2>
 <pre>{% if image %}{{ image.prompt }}{% else %}No artwork has been generated for this album.{% endif %}</pre>

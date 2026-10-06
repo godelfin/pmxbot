@@ -8,7 +8,7 @@ import pytest
 from bs4 import BeautifulSoup
 
 import pmxbot
-from pmxbot.images import ImageCache
+from pmxbot.images import ImageCache, ImageError
 from pmxbot.music import MusicLibrary
 from pmxbot.web import viewer
 
@@ -435,6 +435,51 @@ def test_album_without_artwork(page):
     assert soup.select_one('h1').get_text() == 'Band — Unillustrated'
     assert soup.select_one('#album-heading')
     assert not soup.select('img, #details-heading, .image-cache-key')
+    assert cache.database.read_bytes() == before
+
+
+@pytest.mark.parametrize('with_artwork', [False, True])
+def test_album_failure_history_is_escaped_and_read_only(page, with_artwork):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    if with_artwork:
+        insert(cache)
+        album_id = 42
+    else:
+        album_id = library.create_album('Band', 'Album')['id']
+    library.record_image_failure(
+        album_id,
+        '<script>prompt</script>',
+        '<alice>',
+        '#test',
+        ImageError('<b>Failed</b>'),
+    )
+    library.record_image_failure(
+        album_id, 'retry prompt', 'bob', '#test', ImageError('Failed again')
+    )
+    before = cache.database.read_bytes()
+    response = request(f'/albums/{album_id}')
+    assert response['status'] == 200
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    history = soup.select_one('#failures-heading').parent
+    assert 'Failed again' in history.select('li')[0].get_text()
+    assert '<b>Failed</b>' in history.get_text()
+    assert '<alice>' in history.get_text()
+    assert history.pre.get_text() == 'retry prompt'
+    assert not history.select('script, b, alice')
+    assert bool(soup.select_one('.artwork-preview')) == with_artwork
+    assert cache.database.read_bytes() == before
+
+
+def test_album_page_before_failure_schema_is_read_only(page):
+    cache, request = page
+    insert(cache)
+    with sqlite3.connect(cache.database) as db:
+        db.execute('DROP TABLE album_image_failures')
+    before = cache.database.read_bytes()
+    response = request()
+    assert response['status'] == 200
+    assert 'failures-heading' not in response['body']
     assert cache.database.read_bytes() == before
 
 

@@ -360,6 +360,7 @@ class AlbumPage:
             cache = ImageCache(pmxbot.config)
             album, image = cache.get_album_page(int(value))
             neighbors = cache.album_neighbors(int(value))
+            failures = cache.album_image_failures(int(value))
         except LookupError:
             raise cherrypy.HTTPError(404, 'Unknown album ID') from None
         except (sqlite3.Error, ImageError):
@@ -370,6 +371,7 @@ class AlbumPage:
             image=image,
             album=album,
             neighbors=neighbors,
+            failures=failures,
             formats=sorted(pmxbot.albums.formats),
             format_descriptions=sorted(pmxbot.albums.format_desc),
             genres=sorted(

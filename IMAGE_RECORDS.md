@@ -43,3 +43,15 @@ The read-only album page is `/albums/<album ID>`, rendered by `album.html`.
 It displays album and band properties with the newest linked cached image,
 its prompt and metadata. Albums without cached artwork still display their
 properties. The page never generates images or changes storage.
+
+Failed album artwork requests are saved separately in `album_image_failures`,
+including the album ID, original prompt, requester, channel, timestamp, error
+type, and a message safe for display. Generation, configuration, and upload
+errors are recorded even when no image-cache row exists. Unexpected exceptions
+retain their type with a generic message; their raw text is never persisted.
+The album page displays this history alongside any existing artwork, and
+successful retries retain earlier failures. The music library automatically
+creates the new table for existing databases; read-only pages also support
+databases that predate it. Failures from before this change cannot be recovered
+unless they were recorded elsewhere. If database storage itself is unavailable,
+the bot logs that it could not save the failure and preserves the original error.

@@ -1,6 +1,7 @@
 """Persistent music library, independent of image generation and IRC commands."""
 
 import json
+import logging
 import re
 import sqlite3
 import unicodedata
@@ -51,6 +52,15 @@ class MusicLibrary:
             db.execute(
                 'CREATE UNIQUE INDEX IF NOT EXISTS album_images_unique_cache_key '
                 'ON album_images(cache_key)'
+            )
+            db.execute(
+                '''CREATE TABLE IF NOT EXISTS album_image_failures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+                prompt TEXT NOT NULL, requested_by TEXT, channel TEXT,
+                error_type TEXT NOT NULL, error TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )'''
             )
             db.commit()
         except Exception:
@@ -165,6 +175,23 @@ class MusicLibrary:
                 (album_id, cache_key),
             )
 
+    def record_image_failure(self, album_id, prompt, nick, channel, error):
+        """Keep failed requests, storing only error messages safe for display."""
+        from .images import ImageError
+
+        message = (
+            str(error)
+            if isinstance(error, ImageError)
+            else 'Image request failed; check the bot storage and configuration.'
+        )
+        with closing(self.connect()) as db, db:
+            db.execute(
+                '''INSERT INTO album_image_failures
+                (album_id, prompt, requested_by, channel, error_type, error)
+                VALUES (?, ?, ?, ?, ?, ?)''',
+                (album_id, prompt, nick, str(channel), type(error).__name__, message),
+            )
+
 
 # Match complete words, including hyphenated names, without matching "bass" or
 # "classic". These are contextual hints, not an API moderation blocklist.
@@ -247,6 +274,13 @@ def generate_album_image(
             album, genre=None, description=None, format=None, format_description=None
         )
     prompt = album_prompt(album)
-    url = cache.get(prompt, nick, channel)
+    try:
+        url = cache.get(prompt, nick, channel)
+    except Exception as exc:
+        try:
+            library.record_image_failure(album_id, prompt, nick, channel, exc)
+        except (sqlite3.Error, OSError):
+            logging.getLogger(__name__).error('Could not store album image failure')
+        raise
     library.record_image(album_id, cache.cache_key(prompt))
     return url
