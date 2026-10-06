@@ -45,12 +45,15 @@ class SQLiteNotify(Notify, storage.SQLiteStorage):
             for x in self.db.execute(query, [nick])
         ]
         ids = [x['notifyid'] for x in messages]
-        query = """
+        # Black 24.8 and Ruff disagree on multiline strings with percent formatting.
+        # fmt: off
+        query = (
+            """
             DELETE FROM notify
             WHERE notifyid IN (%s)
-            """ % ','.join(
-            '?' for x in ids
-        )
+            """
+        ) % ','.join('?' for x in ids)
+        # fmt: on
         self.db.execute(query, ids)
 
         return messages

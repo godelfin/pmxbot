@@ -508,8 +508,7 @@ def _start_image(rest, channel, nick, acknowledgement, album_data=None):
             )
             album_id = album['id']
             acknowledgement = (
-                f"Looking up or generating your album cover... "
-                f"{_album_details(album)}"
+                f"Looking up or generating your album cover... {_album_details(album)}"
             )
         threading.Thread(
             target=_generate,

@@ -20,12 +20,15 @@ class MusicLibrary:
         db.row_factory = sqlite3.Row
         try:
             db.execute('PRAGMA foreign_keys = ON')
-            db.execute('''CREATE TABLE IF NOT EXISTS artists (
+            db.execute(
+                '''CREATE TABLE IF NOT EXISTS artists (
                 id INTEGER PRIMARY KEY, name TEXT NOT NULL,
                 normalized_name TEXT NOT NULL UNIQUE, genre TEXT, description TEXT,
                 created_by TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )''')
-            db.execute('''CREATE TABLE IF NOT EXISTS albums (
+            )'''
+            )
+            db.execute(
+                '''CREATE TABLE IF NOT EXISTS albums (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 artist_id INTEGER NOT NULL REFERENCES artists(id),
                 title TEXT NOT NULL, normalized_title TEXT NOT NULL,
@@ -33,13 +36,16 @@ class MusicLibrary:
                 created_by TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (artist_id, normalized_title)
-            )''')
+            )'''
+            )
             db.execute('BEGIN IMMEDIATE')
-            db.execute("""CREATE TABLE IF NOT EXISTS album_images (
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS album_images (
                 album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
                 cache_key TEXT NOT NULL,
                 PRIMARY KEY (album_id, cache_key)
-            )""")
+            )"""
+            )
             db.execute(
                 'CREATE UNIQUE INDEX IF NOT EXISTS album_images_unique_cache_key '
                 'ON album_images(cache_key)'

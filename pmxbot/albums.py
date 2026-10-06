@@ -325,7 +325,7 @@ formats = {
     "PlayTape",
     "Reel-To-Reel",
     "VHD",
-    "Vinyl"
+    "Vinyl",
 }
 
 format_desc = {
@@ -397,5 +397,5 @@ format_desc = {
     'Multichannel',
     'DualDisc',
     'Hybrid',
-    'HDCD'
+    'HDCD',
 }

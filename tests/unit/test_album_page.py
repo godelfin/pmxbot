@@ -131,7 +131,10 @@ def test_render_and_read_only(page):
     assert 'event.preventDefault()' in script
     assert 'dialog.showModal()' in script
     assert 'dialog.close()' in script
-    assert [section.h2.get_text() for section in soup.select('.image-content section[aria-labelledby]')] == [
+    assert [
+        section.h2.get_text()
+        for section in soup.select('.image-content section[aria-labelledby]')
+    ] == [
         'Original prompt',
         'Album details',
         'Image details',
@@ -150,7 +153,10 @@ def test_render_and_read_only(page):
         ('format', pmxbot.albums.formats),
         ('format_description', pmxbot.albums.format_desc),
         ('genre', set(pmxbot.albums.genres).union(*pmxbot.albums.genres.values())),
-        ('artist_genre', set(pmxbot.albums.genres).union(*pmxbot.albums.genres.values())),
+        (
+            'artist_genre',
+            set(pmxbot.albums.genres).union(*pmxbot.albums.genres.values()),
+        ),
     ):
         select = soup.select_one(f'select[name="{name}"]')
         assert {option['value'] for option in select.select('option')} == choices | {''}
@@ -304,7 +310,10 @@ def test_album_navigation_and_columns(page):
     soup = BeautifulSoup(request(f'/albums/{first["id"]}')['body'], 'html.parser')
     main = soup.select_one('.image-main')
     assert main.select_one('section[aria-label="Artwork"]') is not None
-    assert [h.get_text() for h in main.select('h2')] == ['Original prompt', 'Album details']
+    assert [h.get_text() for h in main.select('h2')] == [
+        'Original prompt',
+        'Album details',
+    ]
     navigation = soup.select_one('.image-sidebar nav')
     assert navigation.select_one('button[disabled]').get_text() == 'Prev'
     assert navigation.select_one('a[rel=next]')['href'] == f'/bot/albums/{last["id"]}'
@@ -335,7 +344,10 @@ def test_malformed_metadata(page, data):
     response = request()
     assert response['status'] == 200
     soup = BeautifulSoup(response['body'], 'html.parser')
-    assert [section.h2.get_text() for section in soup.select('.image-content section[aria-labelledby]')] == [
+    assert [
+        section.h2.get_text()
+        for section in soup.select('.image-content section[aria-labelledby]')
+    ] == [
         'Original prompt',
         'Album details',
         'Image details',
@@ -393,11 +405,13 @@ def test_route_uses_album_id_and_newest_image(page):
     insert(cache)
     with sqlite3.connect(cache.database) as db:
         db.execute('UPDATE image_cache SET id = 100 WHERE id = 42')
-        db.execute('''INSERT INTO image_cache
+        db.execute(
+            '''INSERT INTO image_cache
             (id, cache_key, prompt, normalized_prompt, settings_json,
              local_filename, generation_metadata_json, created_at)
             VALUES (101, 'newer', 'new prompt', 'new prompt', '{}', '/private/newer.png', '{}',
-                    '2026-10-05 12:00:00')''')
+                    '2026-10-05 12:00:00')'''
+        )
     MusicLibrary(cache.database).record_image(42, 'newer')
     before = cache.database.read_bytes()
     response = request('/albums/42')
@@ -457,7 +471,9 @@ def test_homepage_lists_all_albums(page):
     soup = BeautifulSoup(response['body'], 'html.parser')
     links = soup.select('main li a')
     assert [link.get_text() for link in links] == [
-        '<Band> — <Album>', '<Band> — Second', 'Zulu — Last'
+        '<Band> — <Album>',
+        '<Band> — Second',
+        'Zulu — Last',
     ]
     assert [link['href'] for link in links] == [
         f'/bot/albums/{album["id"]}' for album in (first, second, last)

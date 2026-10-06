@@ -84,9 +84,10 @@ def test_music_prompt_and_shared_worker(
         assert album['images'] == []
         assert album['genre'] == genre
         assert album['created_by'] == ('original' if existing else 'alice')
-        assert album_prompt(
-            album
-        ) == 'an album cover for the band Second Band. the name of the album is First Album. ' 'this is the Vinyl, Remastered edition.' + (
+        assert album_prompt(album) == (
+            'an album cover for the band Second Band. the name of the album is First Album. '
+            'this is the Vinyl, Remastered edition.'
+        ) + (
             ' the genre of music is Jazz, but nowhere should the genre be mentioned.'
             if existing
             else ''
@@ -824,12 +825,14 @@ def test_existing_image_records_preserve_every_field_and_album_links(config, pos
     album = library.create_album('Band', 'Album')
     library.record_image(album['id'], 'old')
     with closing(cache.connect()) as db:
-        db.execute('''INSERT INTO image_cache VALUES (
+        db.execute(
+            '''INSERT INTO image_cache VALUES (
             42, 'old', 'original prompt', 'original prompt', '{"quality":"low"}',
             '/missing/original.png', 'https://old.example/image.png', 'imgbb',
             '{"host":"original"}', '{"usage":42}', 'alice', '#test',
             '2025-01-01', '2025-01-02', '2025-01-03', 7, 'upload error'
-        )''')
+        )'''
+        )
         before = dict(db.execute('SELECT * FROM image_cache').fetchone())
         identifier = db.execute('SELECT id FROM image_cache').fetchone()[0]
     saved = cache.get_image(identifier)
@@ -850,9 +853,11 @@ def test_concurrent_image_connections_preserve_one_stable_id(config):
 
     cache = images.ImageCache(config)
     with closing(cache.connect()) as db:
-        db.execute('''INSERT INTO image_cache
+        db.execute(
+            '''INSERT INTO image_cache
             (cache_key, prompt, normalized_prompt, settings_json, local_filename,
-             generation_metadata_json) VALUES ('key', 'x', 'x', '{}', 'x.png', '{}')''')
+             generation_metadata_json) VALUES ('key', 'x', 'x', '{}', 'x.png', '{}')'''
+        )
         identifier = db.execute('SELECT id FROM image_cache').fetchone()[0]
     with ThreadPoolExecutor(max_workers=4) as pool:
         records = list(pool.map(lambda _: cache.get_image(identifier), range(8)))

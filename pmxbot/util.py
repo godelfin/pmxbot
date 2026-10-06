@@ -84,28 +84,23 @@ def _limit_to_sentence(text, minimum=400, maximum=450):
         return text
 
     # Include common closing quotes/brackets after sentence punctuation.
-    endings = list(re.finditer(
-        r'[.!?](?:["\')\]]?)(?=\s|$)',
-        text,
-    ))
+    endings = list(
+        re.finditer(
+            r'[.!?](?:["\')\]]?)(?=\s|$)',
+            text,
+        )
+    )
 
-    valid_endings = [
-        match.end()
-        for match in endings
-        if match.end() <= maximum
-    ]
+    valid_endings = [match.end() for match in endings if match.end() <= maximum]
 
     if not valid_endings:
         # No complete sentence fits within the maximum.
         return text[:maximum].rsplit(' ', 1)[0].rstrip()
 
     # Prefer an ending in the requested 400–450 range.
-    preferred = [
-        ending for ending in valid_endings
-        if ending >= minimum
-    ]
+    preferred = [ending for ending in valid_endings if ending >= minimum]
 
-    return text[:max(preferred or valid_endings)]
+    return text[: max(preferred or valid_endings)]
 
 
 def urban_lookup(word):
@@ -124,6 +119,7 @@ def urban_lookup(word):
 
     definition = res['list'][0]['definition']
     return _limit_to_sentence(definition)
+
 
 def lookup_acronym(acronym, limit=3):
     acronym = acronym.strip().upper().replace('.', '')
