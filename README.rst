@@ -234,7 +234,7 @@ song quote library.
 
 
 Historical music database upgrades
----------------------------------
+----------------------------------
 
 The completed recovery and legacy-ID cleanup commands have been removed.
 Databases must already have album/image associations in ``album_images`` and
@@ -389,7 +389,7 @@ This project and the maintainers of thousands of other packages are working with
 `Learn more <https://tidelift.com/subscription/pkg/pypi-pmxbot?utm_source=pypi-pmxbot&utm_medium=referral&utm_campaign=github>`_.
 
 Quote libraries
-==============
+===============
 
 ``!quote`` and ``!q`` use the default ``pmx`` quote library. To add commands
 for other libraries, configure a command-to-library mapping in YAML::

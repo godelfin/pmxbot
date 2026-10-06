@@ -19,6 +19,16 @@ class EnvironmentLoader(yaml.SafeLoader):
     """Safe YAML with explicit environment-variable references."""
 
 
-EnvironmentLoader.add_constructor(
-    "!env", lambda loader, node: os.environ.get(loader.construct_scalar(node), "")
-)
+def construct_environment(loader: EnvironmentLoader, node: yaml.Node) -> str:
+    if not isinstance(node, yaml.ScalarNode):
+        node_type = getattr(node, 'id', type(node).__name__)
+        raise yaml.constructor.ConstructorError(
+            None,
+            None,
+            f"expected a scalar node, but found {node_type}",
+            node.start_mark,
+        )
+    return os.environ.get(loader.construct_scalar(node), "")
+
+
+EnvironmentLoader.add_constructor("!env", construct_environment)

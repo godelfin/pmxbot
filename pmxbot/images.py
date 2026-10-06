@@ -1,5 +1,7 @@
 """OpenAI image generation with a persistent local cache and Cloudflare R2 hosting."""
 
+from __future__ import annotations
+
 import base64
 import binascii
 import hashlib
@@ -30,7 +32,7 @@ from .music import MusicLibrary, generate_album_image
 
 log = logging.getLogger(__name__)
 _busy = threading.Lock()
-_results = queue.Queue()
+_results: queue.Queue[tuple[str, str]] = queue.Queue()
 
 
 class ImageError(Exception):
