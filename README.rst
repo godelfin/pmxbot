@@ -444,17 +444,35 @@ Acronym Finder, AutoInsult, Urban Dictionary, and Wordnik unit tests use fixed
 responses at the HTTP boundary and need no service credentials. To verify the
 affected modules without external HTTP access (excluding other live checks)::
 
-    pytest tests/unit/test_commands.py tests/unit/test_util.py --block-http -m "not network and not integration" -p no:ruff
+    tox -e py -- tests/unit/test_commands.py tests/unit/test_util.py --block-http
 
-The command disables the Ruff pytest plugin because these legacy command files
-have existing lint violations; run lint separately when reviewing changes.
+The default test selection excludes both ``network`` and ``integration`` tests.
+Quality plugins are disabled in pytest; CI runs Black, Ruff lint and formatting,
+MyPy, and the package-description check once with ``tox -e quality`` on Python
+3.11. Install the ``testing`` extra for direct pytest use, or the ``quality``
+extra for direct quality-tool use. ``tox -e py`` retains doctests and coverage
+across every supported Python/platform combination, including Python 3.8.
+The required ``check`` job succeeds only when quality, all matrix tests, and
+docs succeed; failures do not cancel the other matrix combinations.
 
 Live provider smoke checks are marked ``integration`` and excluded by default.
 Run them explicitly with network access::
 
-    pytest tests/integration/test_providers.py -m integration
+    tox -e integration
+
+On GitHub, open Actions, select ``live integration``, choose ``Run workflow``,
+and select the branch to test. Alternatively, use the GitHub CLI::
+
+    gh workflow run integration.yml --ref <branch>
+
+The manual workflow must be present on the default branch before GitHub offers
+it for dispatch. It runs only the marked tests in ``tests/integration`` and is
+outside the required ``check`` gate. It needs outbound HTTP/HTTPS access, but no
+GitHub repository secrets. Do not use ``--block-http`` for these live checks.
 
 These checks depend on provider availability and may fail on HTTP 403 or changed
 markup. Wordnik uses the existing provider configuration; no additional test key
 is required. Other existing ``network`` checks (such as Google and stock quotes)
-remain outside this provider cleanup. CI workflow separation is handled separately.
+remain excluded from the deterministic gate. They can be run locally with
+``tox -e py -- -m network``; Google checks need ``GOOGLE_API_KEY`` in the
+environment. The manual provider workflow does not run these older checks.
