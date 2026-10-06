@@ -436,3 +436,25 @@ The command uses the `OpenAI Costs API
 and includes all projects and usage types. Costs may lag recent requests.
 The command reports spending only and does not retrieve prepaid credit balances.
 It does not infer a balance from spending limits or token counts.
+
+Provider tests
+==============
+
+Acronym Finder, AutoInsult, Urban Dictionary, and Wordnik unit tests use fixed
+responses at the HTTP boundary and need no service credentials. To verify the
+affected modules without external HTTP access (excluding other live checks)::
+
+    pytest tests/unit/test_commands.py tests/unit/test_util.py --block-http -m "not network and not integration" -p no:ruff
+
+The command disables the Ruff pytest plugin because these legacy command files
+have existing lint violations; run lint separately when reviewing changes.
+
+Live provider smoke checks are marked ``integration`` and excluded by default.
+Run them explicitly with network access::
+
+    pytest tests/integration/test_providers.py -m integration
+
+These checks depend on provider availability and may fail on HTTP 403 or changed
+markup. Wordnik uses the existing provider configuration; no additional test key
+is required. Other existing ``network`` checks (such as Google and stock quotes)
+remain outside this provider cleanup. CI workflow separation is handled separately.

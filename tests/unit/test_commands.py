@@ -2,11 +2,8 @@ import re
 import os
 import string
 import uuid
-import urllib.error
 
 import pytest
-import requests
-import jaraco.test.http
 
 import pmxbot.dictlib
 import pmxbot.storage
@@ -391,62 +388,73 @@ class TestCommands:
         print(res)
         assert res.startswith("6.070566")
 
-    @pytest.mark.network
-    def test_insult(self):
-        commands.insult("")
+    def test_insult(self, autoinsult_http):
+        assert commands.insult("") == "Your silly hat."
 
-    @pytest.mark.network
-    def test_targeted_insult(self):
-        commands.insult("enemy")
+    @pytest.mark.parametrize('style', range(4))
+    def test_targeted_insult(self, provider_http, monkeypatch, style):
+        text = 'Your silly hat.' if style in (0, 2) else 'You wear a silly hat.'
+        provider_http(f'<div class="insult" id="insult">{text}</div>')
+        monkeypatch.setattr(commands.random, 'randrange', lambda limit: style)
+        before = karma.Karma.store.lookup('enemy')
+        expected = (
+            "enemy's silly hat." if style in (0, 2) else 'enemy, you wear a silly hat.'
+        )
+        assert commands.insult(" enemy ") == expected
+        assert karma.Karma.store.lookup('enemy') == before - 1
 
-    @pytest.mark.xfail(reason="#94")
-    def test_define_keyboard(self, needs_wordnik):
-        """
-        Test the dictionary with the word keyboard.
-        """
-        res = commands.define("keyboard")
-        assert isinstance(res, str)
-        assert res == (
-            "Wordnik says: A panel of buttons used for typing and performing "
-            "other functions on a computer or typewriter."
+    @pytest.mark.parametrize(
+        'body,status', [('', 200), ('<html></html>', 200), ('Forbidden', 403)]
+    )
+    def test_insult_unavailable(self, provider_http, body, status):
+        provider_http(body, status)
+        before = karma.Karma.store.lookup('enemy')
+        assert commands.insult('enemy') is None
+        assert karma.Karma.store.lookup('enemy') == before
+
+    def test_define(self, wordnik_http):
+        wordnik_http([{'text': 'A panel of buttons.'}])
+        assert commands.define(' keyboard \t') == 'Wordnik says: A panel of buttons.'
+
+    @pytest.mark.parametrize(
+        'body,status', [([], 200), (None, 200), ([{}], 200), ([], 403)]
+    )
+    def test_define_notaword(self, wordnik_http, body, status):
+        wordnik_http(body, status)
+        assert (
+            commands.define('notaword')
+            == 'Wordnik does not have a definition for that.'
         )
 
-    @pytest.mark.xfail(reason="#94")
-    def test_define_irc(self, needs_wordnik):
-        """
-        Test the dictionary with the word IRC.
-        """
-        res = commands.define("  IRC \t")
-        assert isinstance(res, str)
-        assert res == (
-            "Wordnik says: An international computer network of "
-            "Internet servers, using its own protocol through which "
-            "individual users can hold real-time online conversations."
+    def test_urb_irc(self, provider_http):
+        provider_http(
+            {'list': [{'definition': 'Internet relay chat.\n A chat protocol.'}]}
+        )
+        assert (
+            commands.urbandict(' irc ')
+            == 'Urban Dictionary says irc: Internet relay chat. A chat protocol.'
         )
 
-    def test_define_notaword(self, needs_wordnik):
-        """
-        Test the dictionary with a nonsense word.
-        """
-        res = commands.define("notaword")
-        assert isinstance(res, str)
-        assert res == "Wordnik does not have a definition for that."
+    @pytest.mark.parametrize('body', [{'list': []}, {}, {'list': [{}]}])
+    def test_urb_missing(self, provider_http, body):
+        provider_http(body)
+        assert (
+            commands.urbandict('unknown')
+            == "Arg!  I didn't find a definition for that."
+        )
 
-    @pytest.mark.network
-    def test_urb_irc(self):
-        """
-        Test the urban dictionary with the word IRC.
-        """
-        res = commands.urbandict("irc")
-        assert "It's a place where broken and odd people" in res
+    def test_acronym_irc(self, provider_http):
+        provider_http(
+            '<td class="result-list__body__meaning">Internet Relay Chat</td><td class="result-list__body__meaning">International Rescue Committee</td>'
+        )
+        assert (
+            commands.acit(' irc ')
+            == 'Internet Relay Chat | International Rescue Committee'
+        )
 
-    @pytest.mark.network
-    def test_acronym_irc(self):
-        """
-        Test acronym finder with the word IRC.
-        """
-        res = commands.acit("irc")
-        assert "|" in res
+    def test_acronym_missing(self, provider_http):
+        provider_http('<html></html>')
+        assert commands.acit('unknown') == "Arg!  I couldn't expand that..."
 
     def test_progress(self):
         """
@@ -482,14 +490,17 @@ class TestCommands:
         assert res == ("Quiet bitching is useless, foo'. Do something about it.")
 
     @pytest.mark.parametrize(["iter"], [[val] for val in range(100)])
-    def test_rand_bot(self, iter):
-        network_excs = urllib.error.URLError, requests.exceptions.RequestException
-        try:
-            res = commands.rand_bot('#test', 'testrunner', '')
-        except network_excs:
-            # Allow network errors to be skipped if offline
-            jaraco.test.http.check_internet()
-            raise
+    def test_rand_bot(self, iter, autoinsult_http, monkeypatch):
+        # The random command can also select the unrelated live compliment provider.
+        import io
+        import urllib.request
+
+        monkeypatch.setattr(
+            urllib.request,
+            'urlopen',
+            lambda url: io.BytesIO(b'<h2>\n\nYou have a fine hat.\n</h2>'),
+        )
+        res = commands.rand_bot('#test', 'testrunner', '')
         if res is None:
             return
         if not isinstance(res, str):

@@ -439,7 +439,7 @@ class Insult(str):
 
 
 # suppress exceptions because the site is unreliable
-@suppress(requests.exceptions.ConnectionError)
+@suppress(requests.exceptions.RequestException)
 def get_insult():
     """
     Load a random insult from autoinsult.
@@ -448,7 +448,9 @@ def get_insult():
     type_ = random.randrange(4)
     url = f'http://autoinsult.com/?style={type_}'
     insre = re.compile('<div class="insult" id="insult">(.*?)</div>')
-    return Insult(insre.search(http.open(url).text).group(1)).with_type(type_)
+    match = insre.search(http.open(url).text)
+    if match:
+        return Insult(match.group(1)).with_type(type_)
 
 
 @command()
@@ -780,7 +782,7 @@ def acit(rest):
     "Look up an acronym"
     word = rest.strip()
     res = util.lookup_acronym(word)
-    if res is None:
+    if not res:
         return "Arg!  I couldn't expand that..."
     else:
         return ' | '.join(res)

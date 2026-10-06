@@ -71,7 +71,8 @@ def lookup(word):
     except Exception:
         log.exception(f"Unhandled exception looking up {word}.")
         return
-    return str(definition.text)
+    if definition.text:
+        return str(definition.text)
 
 
 lookup.provider = 'Wordnik'  # type: ignore
@@ -114,10 +115,12 @@ def urban_lookup(word):
     resp.raise_for_status()
     res = resp.json()
 
-    if not res['list']:
+    if not res.get('list'):
         return
 
-    definition = res['list'][0]['definition']
+    definition = res['list'][0].get('definition')
+    if not definition:
+        return
     return _limit_to_sentence(definition)
 
 
