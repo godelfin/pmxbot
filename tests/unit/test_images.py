@@ -55,16 +55,6 @@ def test_music_prompt_and_shared_worker(
     )
     choose = Mock(side_effect=[1, 0])
     monkeypatch.setattr(quotes.random, 'randrange', choose)
-    monkeypatch.setattr(images.albums, 'formats', {'Vinyl'})
-    monkeypatch.setattr(images.albums, 'format_desc', {'Remastered'})
-    monkeypatch.setattr(images.albums, 'genres', {'Jazz': ['Fusion'], 'Anime': []})
-    choices = []
-
-    def select(options):
-        choices.append(options)
-        return options[0]
-
-    monkeypatch.setattr(images.random, 'choice', select)
     thread = Mock()
     monkeypatch.setattr(images.threading, 'Thread', thread)
     try:
@@ -83,16 +73,16 @@ def test_music_prompt_and_shared_worker(
         album = MusicLibrary(cache.database).get_album(1)
         assert album['images'] == []
         assert album['genre'] == genre
+        assert album['format'] is None
+        assert album['format_description'] is None
         assert album['created_by'] == ('original' if existing else 'alice')
         assert album_prompt(album) == (
-            'an album cover for the band Second Band. the name of the album is First Album. '
-            'this is the Vinyl, Remastered edition.'
+            'an album cover for the band Second Band. the name of the album is First Album.'
         ) + (
             ' the genre of music is Jazz, but nowhere should the genre be mentioned.'
             if existing
             else ''
         )
-        assert choices == [('Vinyl',), ('Remastered',)]
         assert (channel, nick) == ('#test', 'alice')
         assert choose.call_count == 2
         assert 'already running' in images._start_image(

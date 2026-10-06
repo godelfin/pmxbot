@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import queue
-import random
 import socket
 import sqlite3
 import tempfile
@@ -27,7 +26,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 import pmxbot
 
-from . import albums, quotes
+from . import quotes
 from .core import SwitchChannel, command, execdelay
 from .music import MusicLibrary, generate_album_image
 
@@ -486,8 +485,6 @@ def music(channel, nick, rest=''):
         if not value:
             return f'No {name} entries found. Add one with !{name} add: <text>.'
         selected[name] = value
-    album_format = random.choice(tuple(albums.formats))
-    format_description = random.choice(tuple(albums.format_desc))
     return _start_image(
         None,
         channel,
@@ -496,8 +493,6 @@ def music(channel, nick, rest=''):
         album_data={
             'artist': selected['band'],
             'title': selected['album'],
-            'format': album_format,
-            'format_description': format_description,
         },
     )
 
