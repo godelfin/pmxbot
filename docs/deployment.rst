@@ -121,3 +121,71 @@ administrator, then verify the bot and web viewer. To recover a bad release,
 revert it on ``main`` and redeploy, or have an administrator explicitly install
 a known-good revision and its dependencies. A hard reset does not migrate or
 restore runtime data; manage those backups separately.
+
+Production services
+-------------------
+
+IRC bot
+~~~~~~~
+
+``ircbot.service`` runs the IRC bot as the ``ircbot`` user.
+
+* Unit: ``/etc/systemd/system/ircbot.service``
+* Environment: ``/etc/ircbot.env``
+* Launcher: ``/home/ircbot/run``
+* Configuration: ``/home/ircbot/data/config.yaml``
+* Python environment: ``/home/ircbot/venv``
+
+Web viewer
+~~~~~~~~~~
+
+``pmxbotweb.service`` runs the web viewer as the ``ircbot`` user.
+
+* Unit: ``/etc/systemd/system/pmxbotweb.service``
+* Working directory: ``/home/ircbot/pmxbot``
+* Executable: ``/home/ircbot/venv/bin/pmxbotweb``
+* Configuration: ``/home/ircbot/data/config.yaml``
+* Port: ``8080``
+
+The public request path is::
+
+    Browser -> Cloudflare -> Caddy -> pmxbotweb:8080
+
+
+Service operations
+------------------
+
+Check service status::
+
+    sudo systemctl status ircbot
+    sudo systemctl status pmxbotweb
+
+Start services::
+
+    sudo systemctl start ircbot
+    sudo systemctl start pmxbotweb
+
+Stop services::
+
+    sudo systemctl stop ircbot
+    sudo systemctl stop pmxbotweb
+
+Restart services::
+
+    sudo systemctl restart ircbot
+    sudo systemctl restart pmxbotweb
+
+Follow logs::
+
+    sudo journalctl -u ircbot -f
+    sudo journalctl -u pmxbotweb -f
+
+Show the last 100 lines::
+
+    sudo journalctl -u ircbot -n 100 --no-pager
+    sudo journalctl -u pmxbotweb -n 100 --no-pager
+
+Show logs from the last seven days::
+
+    sudo journalctl -u ircbot --since "7 days ago"
+    sudo journalctl -u pmxbotweb --since "7 days ago"
