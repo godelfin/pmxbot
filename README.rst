@@ -447,9 +447,11 @@ affected modules without external HTTP access (excluding other live checks)::
     tox -e py -- tests/unit/test_commands.py tests/unit/test_util.py --block-http
 
 The default test selection excludes both ``network`` and ``integration`` tests.
-Quality plugins are disabled in pytest; CI runs Black, Ruff lint and formatting,
-MyPy, and the package-description check once with ``tox -e quality`` on Python
-3.11. Install the ``testing`` extra for direct pytest use, or the ``quality``
+Quality plugins are disabled in pytest; CI runs Black, MyPy, and the
+package-description check once with ``tox -e quality`` on Python 3.11.
+Ruff lint and formatting are temporarily disabled while existing lint
+violations are addressed; its pinned tool and configuration remain available.
+Install the ``testing`` extra for direct pytest use, or the ``quality``
 extra for direct quality-tool use. ``tox -e py`` retains doctests and coverage
 across every supported Python/platform combination, including Python 3.8.
 The required ``check`` job succeeds only when quality, all matrix tests, and

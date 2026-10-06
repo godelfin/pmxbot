@@ -88,7 +88,8 @@ class ImageCache:
             )
         # Match SQLiteStorage's URI path handling; only the connection is separate,
         # because the image worker cannot use the IRC thread's SQLite connection.
-        self.database = Path(parsed.path).resolve()
+        # Python 3.8 on Windows can leave a nonexistent relative path unresolved.
+        self.database = Path(parsed.path).absolute().resolve()
         self.settings = {
             'model': config.get('images_model', 'gpt-image-1'),
             'size': config.get('images_size', '1024x1024'),

@@ -480,7 +480,8 @@ def test_homepage_lists_all_albums(page):
     ]
     assert not soup.select('band, album')
     for link in links:
-        assert request(link['href'].removeprefix('/bot'))['status'] == 200
+        assert link['href'].startswith('/bot/')
+        assert request(link['href'][len('/bot') :])['status'] == 200
     assert request('/', method='HEAD')['body'] == ''
     assert cache.database.read_bytes() == before
 

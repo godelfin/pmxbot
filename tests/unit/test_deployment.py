@@ -2,6 +2,7 @@
 
 import os
 import pathlib
+import shutil
 import subprocess
 
 import pytest
@@ -9,10 +10,23 @@ import pytest
 
 @pytest.fixture
 def deployment(tmp_path):
+    bash = '/bin/bash'
+
+    def shell_path(path):
+        value = path.as_posix()
+        if os.name == 'nt':
+            # Git Bash uses /c/... paths in PATH and shell source text.
+            return '/' + value[0].lower() + value[2:]
+        return value
+
+    if os.name == 'nt':
+        bash = str(pathlib.Path(os.environ['ProgramFiles']) / 'Git/bin/bash.exe')
+        assert pathlib.Path(bash).is_file(), 'Git Bash is required for deployment tests'
+
     commands = tmp_path / 'commands'
     commands.mkdir()
     dispatcher = commands / 'dispatcher'
-    dispatcher.write_text(
+    dispatcher_source = (
         '#!/bin/bash\n'
         'command=${0##*/}\n'
         'if [[ $command == id ]]; then echo "${TEST_USER:-deploy}"; exit; fi\n'
@@ -21,30 +35,36 @@ def deployment(tmp_path):
         'printf "\\n" >> "$TEST_LOG"\n'
         'if [[ $command == "${TEST_FAIL:-}" ]]; then exit 1; fi\n'
         'if [[ ${TEST_FAIL_CHECK:-} == yes && $command == python3 '
-        '&& ${*: -1} == check ]]; then exit 1; fi\n',
-        encoding='utf-8',
+        '&& ${*: -1} == check ]]; then exit 1; fi\n'
     )
+    # Keep LF endings for Bash even when Python's native platform is Windows.
+    dispatcher.write_bytes(dispatcher_source.encode('utf-8'))
     dispatcher.chmod(0o755)
     for command in ('id', 'flock', 'git', 'python3', 'sudo'):
-        (commands / command).symlink_to(dispatcher)
+        shutil.copyfile(dispatcher, commands / command)
+        (commands / command).chmod(0o755)
     checkout = tmp_path / 'checkout'
     checkout.mkdir()
     source = pathlib.Path(__file__).parents[2] / 'deploy' / 'deploy-ircbot'
     # Substitute fixed production paths only in the temporary test copy.
     script = source.read_text(encoding='utf-8')
-    script = script.replace('/usr/bin:/bin', f'{commands}:/usr/bin:/bin')
-    script = script.replace('/home/deploy/.deploy-ircbot.lock', str(tmp_path / 'lock'))
-    script = script.replace('/home/ircbot/pmxbot', str(checkout))
-    script = script.replace('/home/ircbot/venv/bin/python3', str(commands / 'python3'))
+    script = script.replace('/usr/bin:/bin', f'{shell_path(commands)}:/usr/bin:/bin')
+    script = script.replace(
+        '/home/deploy/.deploy-ircbot.lock', shell_path(tmp_path / 'lock')
+    )
+    script = script.replace('/home/ircbot/pmxbot', shell_path(checkout))
+    script = script.replace(
+        '/home/ircbot/venv/bin/python3', shell_path(commands / 'python3')
+    )
     test_script = tmp_path / 'deploy-ircbot'
-    test_script.write_text(script, encoding='utf-8')
+    test_script.write_bytes(script.encode('utf-8'))
     log = tmp_path / 'log'
 
     def run(*args, **environment):
-        env = dict(os.environ, TEST_LOG=str(log), SSH_ORIGINAL_COMMAND='')
+        env = dict(os.environ, TEST_LOG=shell_path(log), SSH_ORIGINAL_COMMAND='')
         env.update(environment)
         result = subprocess.run(
-            ['/bin/bash', str(test_script), *args],
+            [bash, shell_path(test_script), *args],
             env=env,
             capture_output=True,
             text=True,
