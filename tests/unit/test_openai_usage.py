@@ -1,5 +1,6 @@
 import datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -23,7 +24,17 @@ def api(monkeypatch):
         def now(cls, tz=None):
             return cls(2026, 9, 29, 12, tzinfo=datetime.timezone.utc).astimezone(tz)
 
-    monkeypatch.setattr(openai_usage.datetime, 'datetime', FixedDatetime)
+    # PyPy's datetime arithmetic refers to the module's original datetime class.
+    # Patch only this application's clock, leaving the shared stdlib module intact.
+    monkeypatch.setattr(
+        openai_usage,
+        'datetime',
+        SimpleNamespace(
+            datetime=FixedDatetime,
+            timezone=datetime.timezone,
+            timedelta=datetime.timedelta,
+        ),
+    )
     monkeypatch.setattr(pmxbot, 'config', {'openai_admin_key': 'test-secret'})
     monkeypatch.delenv('OPENAI_ADMIN_KEY', raising=False)
     get = Mock()
