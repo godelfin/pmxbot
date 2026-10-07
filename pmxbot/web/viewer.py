@@ -394,6 +394,7 @@ class PmxbotPages:
         cherrypy.lib.cptools.allow(['GET', 'HEAD'])
         sort_options = (
             ('band', 'Alphabetical (Band)'),
+            ('album', 'Alphabetical (Album)'),
             ('date_asc', 'Date Ascending'),
             ('date_desc', 'Date Descending'),
             ('genre', 'Genre'),

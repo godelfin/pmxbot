@@ -256,6 +256,7 @@ class ImageCache:
         """Read one page of albums and their latest artwork without writes."""
         order = {
             'band': 'artists.normalized_name, albums.normalized_title, albums.id',
+            'album': 'albums.normalized_title, artists.normalized_name, albums.id',
             'date_asc': 'albums.created_at, albums.id',
             'date_desc': 'albums.created_at DESC, albums.id DESC',
             'genre': "NULLIF(TRIM(albums.genre), '') IS NULL, "

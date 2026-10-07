@@ -676,6 +676,7 @@ def test_gallery_without_image_schema_and_storage_error(page):
     ('sort', 'expected'),
     [
         ('band', [3, 2, 1, 4]),
+        ('album', [1, 3, 4, 2]),
         ('date_asc', [4, 1, 2, 3]),
         ('date_desc', [3, 2, 1, 4]),
         ('genre', [3, 2, 1, 4]),
@@ -709,6 +710,7 @@ def test_gallery_sorting(page, sort, expected):
     assert select.select_one('option[selected]')['value'] == sort
     assert [option.get_text() for option in select.select('option')] == [
         'Alphabetical (Band)',
+        'Alphabetical (Album)',
         'Date Ascending',
         'Date Descending',
         'Genre',

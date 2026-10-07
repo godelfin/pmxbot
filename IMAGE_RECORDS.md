@@ -62,8 +62,9 @@ album details. Albums without valid hosted artwork have a placeholder.
 Use `/gallery?page=2` for subsequent pages; the album index and details link to
 the gallery. Pagination is performed in SQLite, and viewing the gallery never
 initializes or changes storage.
-The sorting dropdown offers Alphabetical (Band), Date Ascending, Date Descending,
-and Genre. Genre uses the album genre, case-insensitively, with missing genres
+The sorting dropdown offers Alphabetical (Band), Alphabetical (Album),
+Date Ascending, Date Descending, and Genre. Genre uses the album genre,
+case-insensitively, with missing genres
 last. Date ties use album IDs, and alphabetical ties use title then ID for stable
 pagination. The `sort` query parameter persists in pagination links; changing
 the dropdown starts again on page one.
