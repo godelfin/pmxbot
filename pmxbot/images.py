@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import queue
+import re
 import socket
 import sqlite3
 import tempfile
@@ -43,15 +44,82 @@ def normalize_prompt(prompt):
     return ' '.join(unicodedata.normalize('NFKC', prompt).split()).casefold()
 
 
+def openai_error_message(response, secrets=()):
+    """Read only allowlisted diagnostics; never stringify an exception or body."""
+    fallback = 'OpenAI request failed; please try again later.'
+
+    def safe(value, token=False):
+        if not isinstance(value, str) or not value or len(value) > 400:
+            return None
+        if any(secret and secret in value for secret in secrets):
+            return None
+        # Reject credentials, dumps, binary payloads and multiline diagnostics.
+        if re.search(
+            r'authorization|bearer|cookie|api[ _-]?key|secret|password|'
+            r'credential|sk-|base64|b64_json|data:image|traceback|'
+            r'[A-Za-z0-9+/=]{80,}|[\r\n\x00-\x1f\x7f]|[{}<>]',
+            value,
+            re.IGNORECASE,
+        ):
+            return None
+        if token and not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', value):
+            return None
+        return value
+
+    details = []
+    message = None
+    try:
+        status = getattr(response, 'status_code', None)
+        if type(status) is int and 400 <= status <= 599:
+            details.append(f'HTTP {status}')
+        try:
+            body = response.json()
+        except (ValueError, AttributeError):
+            body = None
+        error = body.get('error') if isinstance(body, dict) else None
+        if isinstance(error, dict):
+            for name in ('code', 'type'):
+                value = safe(error.get(name), token=True)
+                if value:
+                    details.append(f'{name}={value}')
+            message = safe(error.get('message'))
+        headers = getattr(response, 'headers', {})
+        for header, label in (
+            ('x-request-id', 'request_id'),
+            ('Retry-After', 'retry_after'),
+        ):
+            value = safe(headers.get(header), token=True)
+            if value:
+                details.append(f'{label}={value}')
+    except Exception:
+        # Diagnostic extraction must never replace the original request failure.
+        pass
+    if not details and not message:
+        return fallback
+    suffix = f" ({', '.join(details)})" if details else ''
+    return f'OpenAI image request failed{suffix}' + (f': {message}' if message else '.')
+
+
 def post_json(url, provider, **kwargs):
+    response = None
     try:
         response = requests.post(url, **kwargs)
         response.raise_for_status()
         return response.json()
-    except (requests.RequestException, ValueError):
-        raise ImageError(
-            f'{provider} request failed; please try again later.'
-        ) from None
+    except (requests.RequestException, ValueError) as exc:
+        message = f'{provider} request failed; please try again later.'
+        if provider == 'OpenAI':
+            # requests.Response is falsey on HTTP errors; test explicitly for None.
+            error_response = getattr(exc, 'response', None)
+            if error_response is not None:
+                response = error_response
+            authorization = kwargs.get('headers', {}).get('Authorization', '')
+            message = openai_error_message(
+                response, secrets=(authorization, authorization.split(' ', 1)[-1])
+            )
+            # exc_info would also print arbitrary exception text and chained causes.
+            log.warning('%s', message)
+        raise ImageError(message) from exc
 
 
 def initialize_image_records(db):

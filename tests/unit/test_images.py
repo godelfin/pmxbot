@@ -1018,3 +1018,135 @@ def test_concurrent_fresh_image_schema_creation(config):
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         assert list(pool.map(primary_key, range(8))) == [['id']] * 8
+
+
+@pytest.mark.parametrize(
+    'status,code,message',
+    [
+        (400, 'invalid_request', 'Invalid image size.'),
+        (429, 'rate_limit_exceeded', 'Rate limit reached.'),
+        (500, None, 'Internal server error.'),
+    ],
+)
+def test_openai_http_diagnostics(config, post, caplog, status, code, message):
+    response = requests.Response()
+    response.status_code = status
+    response.headers.update(
+        {'x-request-id': 'req_123', 'Retry-After': '30', 'Set-Cookie': 'cookie-secret'}
+    )
+    response._content = json.dumps(
+        {
+            'error': {
+                'code': code,
+                'type': 'api_error',
+                'message': message,
+                'payload': 'secret credential',
+            },
+            'raw': 'secret credential',
+        }
+    ).encode()
+    original = requests.HTTPError('Authorization: secret credential', response=response)
+    post.side_effect = original
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
+    with pytest.raises(images.ImageError) as caught:
+        generate_album_image(library, cache, album['id'], 'alice')
+    diagnostic = str(caught.value)
+    assert f'HTTP {status}' in diagnostic
+    assert 'request_id=req_123' in diagnostic
+    assert 'retry_after=30' in diagnostic
+    assert message in diagnostic
+    if code:
+        assert f'code={code}' in diagnostic
+    assert caught.value.__cause__ is original
+    assert cache.album_image_failures(album['id'])[0]['error'] == diagnostic
+    assert diagnostic in caplog.text
+    assert 'secret' not in diagnostic + caplog.text
+
+
+@pytest.mark.parametrize(
+    'exception',
+    [requests.ConnectionError, requests.Timeout, requests.HTTPError, ValueError],
+)
+def test_openai_unstructured_failure(config, post, caplog, exception):
+    original = exception('secret credential')
+    post.side_effect = original
+    with pytest.raises(images.ImageError) as caught:
+        images.ImageCache(config).generate('cat')
+    assert str(caught.value) == 'OpenAI request failed; please try again later.'
+    assert caught.value.__cause__ is original
+    assert 'secret' not in caplog.text
+
+
+@pytest.mark.parametrize(
+    'message',
+    [
+        'Incorrect key: openai-secret',
+        'Authorization: Bearer abc',
+        'sk-abcdef',
+        'Cookie: abc',
+        'data:image/png;base64,abc',
+        'A' * 100,
+        {'dump': 'secret'},
+        'Traceback\nsecret',
+    ],
+)
+def test_openai_sensitive_fields_excluded(config, post, caplog, message):
+    response = requests.Response()
+    response.status_code = 401
+    response.headers['x-request-id'] = 'Bearer secret'
+    response._content = json.dumps(
+        {'error': {'message': message, 'code': 'sk-secret'}}
+    ).encode()
+    post.side_effect = requests.HTTPError('secret', response=response)
+    with pytest.raises(images.ImageError) as caught:
+        images.ImageCache(config).generate('cat')
+    assert str(caught.value) == 'OpenAI image request failed (HTTP 401).'
+    assert 'secret' not in caplog.text
+
+
+@pytest.mark.parametrize(
+    'body', [{'arbitrary': 'secret'}, ['secret'], {'error': 'secret'}, {'error': {}}]
+)
+def test_openai_arbitrary_body_excluded(body):
+    response = Mock(status_code=None, headers={})
+    response.json.return_value = body
+    assert (
+        images.openai_error_message(response)
+        == 'OpenAI request failed; please try again later.'
+    )
+
+
+def test_openai_broken_response_diagnostics():
+    class Broken:
+        @property
+        def status_code(self):
+            raise RuntimeError('secret')
+
+    assert (
+        images.openai_error_message(Broken())
+        == 'OpenAI request failed; please try again later.'
+    )
+
+
+def test_openai_transport_status_error(provider_http):
+    provider_http(
+        {'error': {'code': 'rate_limit_exceeded', 'message': 'Rate limit reached.'}},
+        status=429,
+    )
+    with pytest.raises(
+        images.ImageError, match='HTTP 429, code=rate_limit_exceeded'
+    ) as caught:
+        images.post_json('https://api.openai.com/v1/images/generations', 'OpenAI')
+    assert isinstance(caught.value.__cause__, requests.HTTPError)
+
+
+def test_openai_non_json_error_retains_headers():
+    response = requests.Response()
+    response.status_code = 502
+    response.headers['x-request-id'] = 'req_502'
+    response._content = b'<html>secret credential</html>'
+    assert images.openai_error_message(response) == (
+        'OpenAI image request failed (HTTP 502, request_id=req_502).'
+    )

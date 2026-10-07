@@ -49,6 +49,12 @@ including the album ID, original prompt, requester, channel, timestamp, error
 type, and a message safe for display. Generation, configuration, and upload
 errors are recorded even when no image-cache row exists. Unexpected exceptions
 retain their type with a generic message; their raw text is never persisted.
+OpenAI failures may include sanitized provider diagnostics: HTTP status, error
+code/type, a bounded API error message, request ID, and Retry-After. Only these
+allowlisted fields are read; credentials, headers other than request ID/retry
+information, raw responses, and arbitrary exception text are excluded from both
+the stored message and ordinary diagnostic logs. The original exception remains
+chained for debugging.
 The album page displays this history alongside any existing artwork, and
 successful retries retain earlier failures. The music library automatically
 creates the new table for existing databases; read-only pages also support
