@@ -85,10 +85,11 @@ def test_music_prompt_and_shared_worker(
         )
         assert (channel, nick) == ('#test', 'alice')
         assert choose.call_count == 2
-        assert 'already running' in images._start_image(
+        assert 'queued' in images._start_image(
             'cat', '#test', 'bob', 'Looking up your image…'
         )
     finally:
+        images._pending.get_nowait()
         images._busy.release()
 
 
@@ -256,6 +257,8 @@ def config(tmp_path, monkeypatch):
         'r2_public_url': 'https://images.example.com',
     }
     monkeypatch.setattr(pmxbot, 'config', config, raising=False)
+    # Most worker lifecycle tests use a single slot to exercise queue transitions.
+    monkeypatch.setattr(images, '_busy', threading.Lock())
     return config
 
 
@@ -730,7 +733,7 @@ def test_worker_runs_in_background_and_delivers_result(config, monkeypatch):
     )
     try:
         assert started.wait(5)
-        assert 'already running' in images._start_image(
+        assert 'queued' in images._start_image(
             'dog', '#test', 'bob', 'Looking up your image…'
         )
         assert list(images.image_results()) == []
@@ -741,6 +744,9 @@ def test_worker_runs_in_background_and_delivers_result(config, monkeypatch):
     output = list(images.image_results())
     assert isinstance(output[0], core.SwitchChannel)
     assert output == ['#test', f'alice: {URL}']
+    item = images._results.get(timeout=5)
+    images._results.put(item)
+    assert list(images.image_results()) == ['#test', f'bob: {URL}']
     assert not images._busy.locked()
 
 
@@ -804,7 +810,7 @@ def test_music_result_delivery_to_irc(config, post, monkeypatch):
     assert not images._busy.locked()
 
 
-def test_result_delivery_respects_silent_mode():
+def test_result_delivery_respects_silent_mode(config):
     class Bot(core.Bot):
         def transmit(self, channel, message):
             raise AssertionError('Silent bot must not transmit')
@@ -838,10 +844,12 @@ def test_album_upload_failure_can_be_retried_by_id(config, post, r2):
     assert cache.album_image_failures(album['id']) == failures
 
 
-def test_busy_worker_does_not_create_album(config):
+def test_full_queue_does_not_create_album(config, monkeypatch):
+    monkeypatch.setattr(images, '_pending', images.queue.Queue(maxsize=1))
+    images._pending.put({})
     images._busy.acquire()
     try:
-        assert 'already running' in images._start_image(
+        assert 'queue is full' in images._start_image(
             None,
             '#test',
             'alice',
@@ -1150,3 +1158,113 @@ def test_openai_non_json_error_retains_headers():
     assert images.openai_error_message(response) == (
         'OpenAI image request failed (HTTP 502, request_id=req_502).'
     )
+
+
+@pytest.mark.parametrize('startup_failure', [False, True])
+def test_queue_drains_in_order_after_failure(config, monkeypatch, startup_failure):
+    thread = Mock()
+    monkeypatch.setattr(images.threading, 'Thread', thread)
+    assert images._start_image('first', '#first', 'alice', 'Starting') == 'Starting'
+    for prompt, channel, nick in [
+        ('second', '#second', 'bob'),
+        ('third', '#third', 'carol'),
+    ]:
+        assert 'queued' in images._start_image(prompt, channel, nick, 'Starting')
+    assert thread.call_count == 1
+    if startup_failure:
+        thread.side_effect = [RuntimeError('secret'), thread.return_value]
+    images._results.put(('#first', 'alice: Image request failed'))
+    assert list(images.image_results()) == ['#first', 'alice: Image request failed']
+    assert images._busy.locked()
+    assert thread.call_args.kwargs['args'][1:] == ('second', '#second', 'bob')
+    if not startup_failure:
+        images._results.put(('#second', 'bob: Image request failed'))
+    output = list(images.image_results())
+    assert output[0] == '#second'
+    assert 'secret' not in output[1]
+    assert thread.call_args.kwargs['args'][1:] == ('third', '#third', 'carol')
+    images._results.put(('#third', 'carol: done'))
+    assert list(images.image_results()) == ['#third', 'carol: done']
+    assert not images._busy.locked()
+    assert images._pending.empty()
+
+
+def test_invalid_queued_request_keeps_active_worker(config, monkeypatch):
+    images._busy.acquire()
+    try:
+        monkeypatch.setattr(
+            images, 'ImageCache', Mock(side_effect=images.ImageError('HTTPS required'))
+        )
+        assert 'HTTPS' in images._start_image('cat', '#test', 'alice', 'Starting')
+        assert images._busy.locked()
+        assert images._pending.empty()
+    finally:
+        images._busy.release()
+
+
+def test_queued_music_keeps_album_metadata(config, monkeypatch):
+    monkeypatch.setattr(images.threading, 'Thread', Mock())
+    images._busy.acquire()
+    try:
+        result = images._start_image(
+            None,
+            '#music',
+            'bob',
+            None,
+            album_data={'artist': 'Queued Band', 'title': 'Queued Album'},
+        )
+        assert 'queued (1 waiting)' in result
+        assert 'Band: Queued Band; Album: Queued Album' in result
+        job = images._pending.get_nowait()
+        assert job['kwargs'] == {'album_id': 1}
+        assert job['args'][2:] == ('#music', 'bob')
+        album = MusicLibrary(job['args'][0].database).get_album(1)
+        assert album['created_by'] == 'bob'
+    finally:
+        images._busy.release()
+
+
+def test_three_concurrent_workers_and_queue(config, monkeypatch):
+    slots = threading.BoundedSemaphore(3)
+    monkeypatch.setattr(images, '_busy', slots)
+    started = images.queue.Queue()
+    finish = threading.Event()
+
+    def get(cache, prompt, nick, channel):
+        started.put(prompt)
+        assert finish.wait(5)
+        return URL
+
+    monkeypatch.setattr(images.ImageCache, 'get', get)
+    try:
+        for prompt in ('first', 'second', 'third'):
+            assert (
+                images._start_image(prompt, '#test', prompt, 'Starting') == 'Starting'
+            )
+        assert {started.get(timeout=5) for _ in range(3)} == {
+            'first',
+            'second',
+            'third',
+        }
+        assert not slots.acquire(blocking=False)
+        assert 'queued (1 waiting)' in images._start_image(
+            'fourth', '#fourth', 'bob', 'Starting'
+        )
+        assert started.empty()
+        assert list(images.image_results()) == []
+    finally:
+        finish.set()
+    outputs = []
+    for _ in range(4):
+        item = images._results.get(timeout=5)
+        images._results.put(item)
+        outputs.append(list(images.image_results()))
+    assert started.get(timeout=5) == 'fourth'
+    assert ['#fourth', f'bob: {URL}'] in outputs
+    assert images._pending.empty()
+    # Every slot is restored, including the one reused for the queued job.
+    for _ in range(3):
+        assert slots.acquire(blocking=False)
+    assert not slots.acquire(blocking=False)
+    for _ in range(3):
+        slots.release()

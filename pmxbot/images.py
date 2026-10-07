@@ -32,8 +32,10 @@ from .core import SwitchChannel, command, execdelay
 from .music import MusicLibrary, generate_album_image
 
 log = logging.getLogger(__name__)
-_busy = threading.Lock()
+_busy = threading.BoundedSemaphore(3)
 _results: queue.Queue[tuple[str, str]] = queue.Queue()
+# Commands and result delivery run on the bot thread. Keep provider load bounded.
+_pending: queue.Queue[dict] = queue.Queue(maxsize=10)
 
 
 class ImageError(Exception):
@@ -629,11 +631,12 @@ def _album_details(album):
 
 
 def _start_image(rest, channel, nick, acknowledgement, album_data=None):
-    "Start the shared image worker with a command-specific acknowledgement."
+    "Start or queue an image request with a command-specific acknowledgement."
     if not pmxbot.config.get('images_enabled', False):
         return 'Image generation is disabled; configure images_enabled to enable it.'
-    if not _busy.acquire(blocking=False):
-        return 'An image request is already running; please try again shortly.'
+    started = _busy.acquire(blocking=False)
+    if not started and _pending.full():
+        return 'The image request queue is full; please try again shortly.'
     try:
         cache = ImageCache(pmxbot.config)
         album_id = None
@@ -645,17 +648,27 @@ def _start_image(rest, channel, nick, acknowledgement, album_data=None):
             acknowledgement = (
                 f"Looking up or generating your album cover... {_album_details(album)}"
             )
-        threading.Thread(
+        job = dict(
             target=_generate,
             args=(cache, rest, channel, nick),
             kwargs={'album_id': album_id},
             daemon=True,
-        ).start()
+        )
+        if started:
+            threading.Thread(**job).start()
+        else:
+            _pending.put_nowait(job)
+            acknowledgement = (
+                f'Image request queued ({_pending.qsize()} waiting). '
+                f'{acknowledgement}'
+            )
     except ImageError as exc:
-        _busy.release()
+        if started:
+            _busy.release()
         return str(exc)
     except Exception:  # noqa: BLE001 - release the worker slot on startup failure
-        _busy.release()
+        if started:
+            _busy.release()
         return 'Could not start image request; check the image configuration.'
     return acknowledgement
 
@@ -667,6 +680,20 @@ def image_results():
         channel, result = _results.get_nowait()
     except queue.Empty:
         return
-    _busy.release()
+    try:
+        job = _pending.get_nowait()
+    except queue.Empty:
+        _busy.release()
+    else:
+        try:
+            threading.Thread(**job).start()
+        except Exception:  # noqa: BLE001 - keep draining after a startup failure
+            _, _, next_channel, nick = job['args']
+            _results.put(
+                (
+                    next_channel,
+                    f'{nick}: Could not start image request; check the image configuration.',
+                )
+            )
     yield SwitchChannel(channel)
     yield from result.splitlines()

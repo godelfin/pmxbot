@@ -121,6 +121,11 @@ Enable album cover generation with ``!music`` using::
     images_size: 1024x1024
     images_quality: low
 
+Image generation runs up to three requests concurrently, with up to ten additional
+requests queued in arrival order. Queued requests receive an acknowledgement
+and their results are delivered to the requesting channel. The queue is held
+in memory and does not survive a bot restart.
+
 Set ``OPENAI_API_KEY`` and the five ``R2_*`` environment variables above,
 then restart the bot. Install updated dependencies with ``pip install -e .``.
 Create an R2 bucket and an R2 S3 access key with Object Read & Write permissions
