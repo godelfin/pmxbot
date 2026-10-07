@@ -43,7 +43,7 @@ a:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
 {% for album in albums %}
 <li>
 <a class="gallery-card" href="{{ base }}/albums/{{ album.id }}">
-<span class="gallery-artwork">
+<span class="gallery-artwork"{% if sort == 'genre' %} title="Genre: {{ (album.genre or '')|trim or 'No genre' }}"{% endif %}>
 {% if album.image_url %}<img src="{{ album.image_url }}" alt="Artwork for {{ album.artist_name }} — {{ album.title }}" loading="lazy" decoding="async" referrerpolicy="no-referrer" />{% else %}<span>Artwork unavailable</span>{% endif %}
 </span>
 <span class="gallery-caption"><strong>{{ album.title }}</strong><span>{{ album.artist_name }}</span></span>

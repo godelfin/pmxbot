@@ -717,6 +717,16 @@ def test_gallery_sorting(page, sort, expected):
     assert form['method'] == 'get'
     assert form['action'] == '/bot/gallery'
     assert not form.select('input[name=page]')
+    artwork = soup.select('.gallery-artwork')
+    if sort == 'genre':
+        assert [thumbnail['title'] for thumbnail in artwork] == [
+            'Genre: Jazz',
+            'Genre: rock',
+            'Genre: Rock',
+            'Genre: No genre',
+        ]
+    else:
+        assert all('title' not in thumbnail.attrs for thumbnail in artwork)
     assert cache.database.read_bytes() == before
 
 

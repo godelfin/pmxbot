@@ -284,7 +284,8 @@ class ImageCache:
                 else 'NULL'
             )
             rows = db.execute(
-                f'''SELECT albums.id, albums.title, artists.name AS artist_name,
+                f'''SELECT albums.id, albums.title, albums.genre,
+                artists.name AS artist_name,
                 {artwork} AS hosted_url
                 FROM albums JOIN artists ON artists.id = albums.artist_id
                 ORDER BY {order} LIMIT ? OFFSET ?''',
