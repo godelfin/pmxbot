@@ -390,8 +390,16 @@ class PmxbotPages:
     albums = AlbumPage()
 
     @cherrypy.expose
-    def gallery(self, page='1'):
+    def gallery(self, page='1', sort='date_desc'):
         cherrypy.lib.cptools.allow(['GET', 'HEAD'])
+        sort_options = (
+            ('band', 'Alphabetical (Band)'),
+            ('date_asc', 'Date Ascending'),
+            ('date_desc', 'Date Descending'),
+            ('genre', 'Genre'),
+        )
+        if not isinstance(sort, str) or sort not in dict(sort_options):
+            raise cherrypy.HTTPError(400, 'Invalid gallery sort')
         if (
             not isinstance(page, str)
             or not page.isascii()
@@ -404,7 +412,7 @@ class PmxbotPages:
         page_size = 24
         try:
             albums, total = ImageCache(pmxbot.config).gallery_albums(
-                page_number, page_size
+                page_number, page_size, sort
             )
         except (sqlite3.Error, ImageError):
             raise cherrypy.HTTPError(503, 'Album storage is unavailable') from None
@@ -419,6 +427,8 @@ class PmxbotPages:
             page_number=page_number,
             page_count=page_count,
             total=total,
+            sort=sort,
+            sort_options=sort_options,
             **get_context(),
         ).encode('utf-8')
 

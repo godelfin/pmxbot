@@ -587,12 +587,16 @@ def test_gallery_pagination_and_album_links(page):
     assert cards[0].img['referrerpolicy'] == 'no-referrer'
     assert '<Band>' in cards[0].get_text()
     assert not soup.select('band')
-    assert soup.select_one('a[rel=next]')['href'] == '/bot/gallery?page=2'
+    assert (
+        soup.select_one('a[rel=next]')['href'] == '/bot/gallery?page=2&sort=date_desc'
+    )
     assert not soup.select_one('a[rel=prev]')
     last = BeautifulSoup(request('/gallery?page=2')['body'], 'html.parser')
     assert len(last.select('.gallery-card')) == 1
     assert last.select_one('.gallery-card')['href'] == f'/bot/albums/{albums[0]["id"]}'
-    assert last.select_one('a[rel=prev]')['href'] == '/bot/gallery?page=1'
+    assert (
+        last.select_one('a[rel=prev]')['href'] == '/bot/gallery?page=1&sort=date_desc'
+    )
     assert not last.select_one('a[rel=next]')
     assert request('/gallery?page=3')['status'] == 404
     assert request('/gallery', method='HEAD')['body'] == ''
@@ -666,3 +670,75 @@ def test_gallery_without_image_schema_and_storage_error(page):
     response = request('/gallery')
     assert response['status'] == 503
     assert str(cache.database) not in response['body']
+
+
+@pytest.mark.parametrize(
+    ('sort', 'expected'),
+    [
+        ('band', [3, 2, 1, 4]),
+        ('date_asc', [4, 1, 2, 3]),
+        ('date_desc', [3, 2, 1, 4]),
+        ('genre', [3, 2, 1, 4]),
+    ],
+)
+def test_gallery_sorting(page, sort, expected):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    for band, title, genre in (
+        ('Zulu', 'Album', 'Rock'),
+        ('alpha', 'Zebra', 'rock'),
+        ('alpha', 'apple', 'Jazz'),
+        ('Zulu', 'Other', None),
+    ):
+        library.create_album(band, title, genre=genre)
+    with sqlite3.connect(cache.database) as db:
+        for album_id, timestamp in enumerate(
+            ['2026-01-02', '2026-01-03', '2026-01-03', '2026-01-01'], start=1
+        ):
+            db.execute(
+                'UPDATE albums SET created_at = ? WHERE id = ?', (timestamp, album_id)
+            )
+    before = cache.database.read_bytes()
+    response = request(f'/gallery?sort={sort}')
+    assert response['status'] == 200
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    assert [card['href'] for card in soup.select('.gallery-card')] == [
+        f'/bot/albums/{album_id}' for album_id in expected
+    ]
+    select = soup.select_one('select[name=sort]')
+    assert select.select_one('option[selected]')['value'] == sort
+    assert [option.get_text() for option in select.select('option')] == [
+        'Alphabetical (Band)',
+        'Date Ascending',
+        'Date Descending',
+        'Genre',
+    ]
+    form = soup.select_one('form.gallery-sort')
+    assert form['method'] == 'get'
+    assert form['action'] == '/bot/gallery'
+    assert not form.select('input[name=page]')
+    assert cache.database.read_bytes() == before
+
+
+def test_gallery_sort_preserved_between_pages(page):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    for i in range(25):
+        library.create_album(f'Band {i:02}', 'Album')
+    first = BeautifulSoup(request('/gallery?sort=band')['body'], 'html.parser')
+    next_url = first.select_one('a[rel=next]')['href']
+    assert next_url == '/bot/gallery?page=2&sort=band'
+    second = BeautifulSoup(request(next_url[len('/bot') :])['body'], 'html.parser')
+    assert second.select_one('option[selected]')['value'] == 'band'
+    assert second.select_one('.gallery-card')['href'] == '/bot/albums/25'
+    assert second.select_one('a[rel=prev]')['href'] == '/bot/gallery?page=1&sort=band'
+
+
+@pytest.mark.parametrize(
+    'sort', ['', 'invalid', 'genre&sort=band', 'id%3BDROP+TABLE+albums']
+)
+def test_gallery_invalid_sort_does_not_create_storage(page, sort):
+    cache, request = page
+    assert request(f'/gallery?sort={sort}')['status'] == 400
+    assert not cache.database.exists()
+    assert not cache.directory.exists()

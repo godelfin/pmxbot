@@ -252,8 +252,16 @@ class ImageCache:
                 )
             ]
 
-    def gallery_albums(self, page, page_size=24):
+    def gallery_albums(self, page, page_size=24, sort='date_desc'):
         """Read one page of albums and their latest artwork without writes."""
+        order = {
+            'band': 'artists.normalized_name, albums.normalized_title, albums.id',
+            'date_asc': 'albums.created_at, albums.id',
+            'date_desc': 'albums.created_at DESC, albums.id DESC',
+            'genre': "NULLIF(TRIM(albums.genre), '') IS NULL, "
+            'LOWER(TRIM(albums.genre)), artists.normalized_name, '
+            'albums.normalized_title, albums.id',
+        }[sort]
         if not self.database.is_file():
             return [], 0
         with closing(self.read_connection()) as db:
@@ -279,7 +287,7 @@ class ImageCache:
                 f'''SELECT albums.id, albums.title, artists.name AS artist_name,
                 {artwork} AS hosted_url
                 FROM albums JOIN artists ON artists.id = albums.artist_id
-                ORDER BY albums.id DESC LIMIT ? OFFSET ?''',
+                ORDER BY {order} LIMIT ? OFFSET ?''',
                 (page_size, (page - 1) * page_size),
             )
             return [dict(row) for row in rows], total

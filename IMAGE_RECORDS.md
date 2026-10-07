@@ -56,9 +56,14 @@ databases that predate it. Failures from before this change cannot be recovered
 unless they were recorded elsewhere. If database storage itself is unavailable,
 the bot logs that it could not save the failure and preserves the original error.
 
-The read-only `/gallery` page shows 24 albums per page, newest album ID first,
+The read-only `/gallery` page shows 24 albums per page, newest creation date first,
 with the newest linked image as a lazy-loaded thumbnail. Each card opens its
 album details. Albums without valid hosted artwork have a placeholder.
 Use `/gallery?page=2` for subsequent pages; the album index and details link to
 the gallery. Pagination is performed in SQLite, and viewing the gallery never
 initializes or changes storage.
+The sorting dropdown offers Alphabetical (Band), Date Ascending, Date Descending,
+and Genre. Genre uses the album genre, case-insensitively, with missing genres
+last. Date ties use album IDs, and alphabetical ties use title then ID for stable
+pagination. The `sort` query parameter persists in pagination links; changing
+the dropdown starts again on page one.
