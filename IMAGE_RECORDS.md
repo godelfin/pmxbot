@@ -41,8 +41,11 @@ ownership before retrying. Existing links are never silently reassigned or delet
 
 The read-only album page is `/albums/<album ID>`, rendered by `album.html`.
 It displays album and band properties with the newest linked cached image,
-its prompt and metadata. Albums without cached artwork still display their
-properties. The page never generates images or changes storage.
+its prompt and metadata. Artwork history shows every linked image newest first;
+hosted images are selectable previews, and selecting any version updates the
+displayed prompt and metadata. Missing hosted artwork has a text placeholder.
+Albums without cached artwork still display their properties. The page never
+generates images or changes storage.
 
 Failed album artwork requests are saved separately in `album_image_failures`,
 including the album ID, original prompt, requester, channel, timestamp, error

@@ -376,6 +376,7 @@ class AlbumPage:
             cache = ImageCache(pmxbot.config)
             album, image = cache.get_album_page(int(value), source_id)
             neighbors = cache.album_neighbors(int(value))
+            image_history = cache.album_image_history(int(value))
             failures = cache.album_image_failures(int(value))
         except LookupError:
             raise cherrypy.HTTPError(404, 'Unknown album ID') from None
@@ -387,6 +388,10 @@ class AlbumPage:
             image=image,
             album=album,
             neighbors=neighbors,
+            image_history=[
+                dict(item, image_url=safe_image_url(item['hosted_url']))
+                for item in image_history
+            ],
             failures=failures,
             formats=sorted(pmxbot.albums.formats),
             format_descriptions=sorted(pmxbot.albums.format_desc),

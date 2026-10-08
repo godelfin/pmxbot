@@ -139,6 +139,7 @@ def test_render_and_read_only(page):
         section.h2.get_text()
         for section in soup.select('.image-content section[aria-labelledby]')
     ] == [
+        'Artwork history',
         'Original prompt',
         'Prepare an image variation',
         'Image details',
@@ -351,6 +352,7 @@ def test_malformed_metadata(page, data):
         section.h2.get_text()
         for section in soup.select('.image-content section[aria-labelledby]')
     ] == [
+        'Artwork history',
         'Original prompt',
         'Prepare an image variation',
         'Image details',
@@ -438,6 +440,65 @@ def test_album_without_artwork(page):
     assert soup.select_one('h1').get_text() == 'Band — Unillustrated'
     assert soup.select_one('#album-heading')
     assert not soup.select('img, #details-heading, .image-cache-key')
+    assert cache.database.read_bytes() == before
+
+
+def test_album_selectable_image_history_updates_prompt_and_metadata(page):
+    cache, request = page
+    insert(cache)
+    with closing(cache.connect()) as db:
+        db.execute(
+            '''INSERT INTO image_cache
+            (id, cache_key, prompt, normalized_prompt, settings_json,
+             local_filename, hosted_url, generation_metadata_json,
+             requested_by, channel, created_at)
+            VALUES (43, 'newer', 'new prompt', 'new prompt',
+             '{"model":"gpt-image-2"}', '/private/newer.png',
+             'https://albums.example/newer.png', '{"revised_prompt":"new details"}',
+             'bob', '#new', '2026-01-03 03:04:05')'''
+        )
+        db.execute(
+            '''INSERT INTO image_cache
+            (id, cache_key, prompt, normalized_prompt, settings_json,
+             local_filename, hosted_url, generation_metadata_json, created_at)
+            VALUES (44, 'unhosted', 'unhosted prompt', 'unhosted prompt', '{}',
+             '/private/unhosted.png', NULL, '{}', '2026-01-04 03:04:05')'''
+        )
+    library = MusicLibrary(cache.database)
+    library.record_image(42, 'newer')
+    library.record_image(42, 'unhosted')
+    before = cache.database.read_bytes()
+
+    response = request()
+    assert response['status'] == 200
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    entries = soup.select('#image-history-heading ~ ul li')
+    assert len(entries) == 3
+    assert 'Currently viewing image #44' in entries[0].get_text()
+    assert entries[0].select_one('img') is None
+    assert entries[1].select_one('a')['href'] == (
+        '/bot/albums/42?source_image_id=43'
+    )
+    assert entries[1].select_one('img')['src'] == (
+        'https://albums.example/newer.png'
+    )
+    assert entries[2].select_one('a')['href'] == (
+        '/bot/albums/42?source_image_id=42'
+    )
+    assert cache.database.read_bytes() == before
+
+    selected = request('/albums/42?source_image_id=43')
+    selected_soup = BeautifulSoup(selected['body'], 'html.parser')
+    assert selected['status'] == 200
+    assert selected_soup.select_one('#prompt-heading ~ pre').get_text() == (
+        'new prompt'
+    )
+    assert '"revised_prompt": "new details"' in selected_soup.select_one(
+        '#metadata-heading-2 ~ pre'
+    ).get_text()
+    assert selected_soup.select_one(
+        '#image-history-heading ~ ul li .current-image'
+    ).get_text(strip=True) == 'Currently viewing image #43'
     assert cache.database.read_bytes() == before
 
 
