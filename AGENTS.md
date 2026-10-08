@@ -1,0 +1,1 @@
+Unless told otherwise, begin work in a new branch. When finished with a task, commit the changes and push to the remote repository. Watch that the GitHub Actions finish successfully before asking to merge to main.
