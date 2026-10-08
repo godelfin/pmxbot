@@ -305,6 +305,39 @@ class ImageCache:
                 )
             ]
 
+    def generation_leaderboard(self, limit=10):
+        """Count persisted generations linked to albums, using historical requesters."""
+        if not self.database.is_file():
+            return []
+        with closing(self.read_connection()) as db:
+            tables = {
+                row[0]
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if not {'albums', 'album_images', 'image_cache'} <= tables:
+                return []
+            # Cache records are written only after successful generation. Hosting
+            # errors and cache hits do not change that generation's attribution.
+            # EXISTS also avoids counting duplicate historical album links twice.
+            return [
+                dict(row)
+                for row in db.execute(
+                    '''SELECT TRIM(requested_by, ?) AS username, COUNT(*) AS image_count
+                    FROM image_cache
+                    WHERE TRIM(requested_by, ?) != '' AND EXISTS (
+                        SELECT 1 FROM album_images JOIN albums
+                        ON albums.id = album_images.album_id
+                        WHERE album_images.cache_key = image_cache.cache_key
+                    )
+                    GROUP BY username
+                    ORDER BY image_count DESC, username COLLATE BINARY
+                    LIMIT ?''',
+                    (' \t\r\n\v\f', ' \t\r\n\v\f', limit),
+                )
+            ]
+
     def album_image_failures(self, album_id):
         """Read failure history, including databases predating failure logging."""
         with closing(self.read_connection()) as db:
