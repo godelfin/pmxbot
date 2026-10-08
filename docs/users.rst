@@ -4,9 +4,9 @@ Application users
 ``pmxbot.users.UserStore`` provides canonical application identity in the main
 SQLite database. It uses the existing ``SQLiteStorage`` lifecycle and accepts
 the same SQLite URI (or a filename). Opening the store creates the ``users``
-table if absent; opening it repeatedly preserves all existing records. No
-historical nicknames or attribution strings are imported. There is no separate
-database, migration framework, authentication handler, or bot startup hook.
+and ``user_passwords`` tables if absent; opening it repeatedly preserves all
+existing records. No historical nicknames or attribution strings are imported.
+There is no separate database, migration framework, web route, or bot startup hook.
 
 For example, code independent of either the bot or web process can use::
 
@@ -14,8 +14,9 @@ For example, code independent of either the bot or web process can use::
 
     store = UserStore('sqlite:pmxbot.sqlite')
     try:
-        user = store.create('Alice', display_name='Alice Example')
+        user = store.create('Alice', display_name='Alice Example', password='example passphrase')
         assert store.get_by_username(' alice ').id == user.id
+        assert store.authenticate('alice', 'example passphrase').id == user.id
         store.update(user.id, enabled=False)
     finally:
         store.close()
@@ -41,7 +42,32 @@ Accounts default to enabled, with ``can_pair_irc=False``. Future pairing code
 must check ``user.may_pair_irc``, which requires both ``enabled`` and the explicit
 ``can_pair_irc`` grant. Future authentication must reject disabled accounts.
 This is a narrow permission policy; granting it does not authenticate an IRC
-session. F7 must decide how credentials or external authentication IDs attach
-to users. F30 must store authenticated session bindings separately and refer to
+session. F7 must provide web login, sessions, and any external authentication
+identifiers. F30 must store authenticated session bindings separately and refer to
 ``users.id``. Nicknames, hostmasks, ``created_by``, and ``requested_by`` strings
 are unverified attribution and must never serve as canonical user references.
+
+Passwords
+---------
+
+``create(..., password=...)`` can attach local credentials atomically, and
+``set_password(user.id, password)`` sets or replaces them later. Accounts without
+a password cannot authenticate locally. ``authenticate(username, password)``
+returns a public ``User`` record only when the password matches and the account
+is enabled. Wrong passwords, missing accounts, missing credentials, malformed
+hashes, and disabled accounts raise the same ``InvalidCredentials`` error.
+Valid password inputs perform the same derivation even for unknown accounts.
+
+Passwords are stored as one-way salted hashes, never recoverable encryption or
+plaintext. The standard-library PBKDF2-HMAC-SHA256 implementation uses 600,000
+iterations and an independent random 16-byte salt for each assignment. Algorithm,
+work factor, salt, and digest are stored in ``user_passwords`` with a foreign key
+to ``users.id``. Hashes are excluded from public user records and listings.
+Verification uses a constant-time digest comparison. The credential table is
+added safely to databases that already contain users; existing users retain
+their IDs and have no password until explicitly assigned one.
+
+Passwords accept 1–1024 Unicode characters, including spaces, without trimming,
+normalization, or truncation. This is a storage limit; F7 must define signup
+password strength requirements, rate limiting, password reset, secure transport,
+and session handling before exposing authentication over the web.

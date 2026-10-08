@@ -1,6 +1,9 @@
 """Canonical application users, independent of IRC and web authentication."""
 
+import hashlib
+import hmac
 import re
+import secrets
 import sqlite3
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -22,6 +25,56 @@ class UsernameTaken(UserError):
 
 class UserNotFound(UserError):
     """No user has the requested ID or username."""
+
+
+class InvalidCredentials(UserError):
+    """Authentication failed without disclosing account existence or state."""
+
+
+_PASSWORD_ITERATIONS = 600_000
+_USER_COLUMNS = (
+    'id, username, normalized_username, display_name, created_at, enabled, can_pair_irc'
+)
+
+
+def _password_bytes(password):
+    if not isinstance(password, str) or not 1 <= len(password) <= 1024:
+        raise UserError('Password must contain 1–1024 characters.')
+    try:
+        return password.encode('utf-8')
+    except UnicodeEncodeError:
+        raise UserError('Password must be valid Unicode text.') from None
+
+
+def _hash_password(password):
+    value = _password_bytes(password)
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac('sha256', value, salt, _PASSWORD_ITERATIONS)
+    return f'pbkdf2_sha256${_PASSWORD_ITERATIONS}${salt.hex()}${digest.hex()}'
+
+
+def _verify_password(password, encoded):
+    try:
+        value = _password_bytes(password)
+    except UserError:
+        return False
+    # Perform the same expensive derivation for missing or malformed credentials.
+    salt, expected, valid = bytes(16), bytes(32), False
+    if isinstance(encoded, str):
+        try:
+            algorithm, iterations, salt_hex, digest_hex = encoded.split('$')
+            if (
+                algorithm == 'pbkdf2_sha256'
+                and iterations == str(_PASSWORD_ITERATIONS)
+                and len(salt_hex) == 32
+                and len(digest_hex) == 64
+            ):
+                salt, expected = bytes.fromhex(salt_hex), bytes.fromhex(digest_hex)
+                valid = len(salt) == 16 and len(expected) == 32
+        except ValueError:
+            pass
+    actual = hashlib.pbkdf2_hmac('sha256', value, salt, _PASSWORD_ITERATIONS)
+    return hmac.compare_digest(actual, expected) and valid
 
 
 def normalize_username(username):
@@ -60,6 +113,9 @@ class UserStore(SQLiteStorage):
     """
 
     def __init__(self, uri):
+        # Prefix bare filenames before parsing, including Windows drive letters.
+        if self.uri_matches(uri) and not uri.startswith('sqlite:'):
+            uri = 'sqlite:' + uri
         parsed = urlparse(uri)
         if parsed.scheme not in ('', 'sqlite') or not parsed.path:
             raise UserError('User storage requires a SQLite database URI.')
@@ -67,6 +123,8 @@ class UserStore(SQLiteStorage):
 
     def init_tables(self):
         try:
+            self.db.execute('PRAGMA foreign_keys = ON')
+            self.db.execute('BEGIN IMMEDIATE')
             self.db.execute(
                 '''CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,7 +143,15 @@ class UserStore(SQLiteStorage):
                     CHECK (can_pair_irc IN (0, 1))
             )'''
             )
+            self.db.execute(
+                '''CREATE TABLE IF NOT EXISTS user_passwords (
+                user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                password_hash TEXT NOT NULL
+            )'''
+            )
+            self.db.commit()
         except Exception:
+            self.db.rollback()
             self.close()
             raise
 
@@ -97,13 +163,15 @@ class UserStore(SQLiteStorage):
 
     def get_by_id(self, user_id):
         return self._user(
-            self.db.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone()
+            self.db.execute(
+                f'SELECT {_USER_COLUMNS} FROM users WHERE id = ?', (user_id,)
+            ).fetchone()
         )
 
     def get_by_username(self, username):
         return self._user(
             self.db.execute(
-                'SELECT * FROM users WHERE normalized_username = ?',
+                f'SELECT {_USER_COLUMNS} FROM users WHERE normalized_username = ?',
                 (normalize_username(username),),
             ).fetchone()
         )
@@ -112,7 +180,7 @@ class UserStore(SQLiteStorage):
         """Return users in stable ID order, including disabled accounts."""
         return [
             self._user(row)
-            for row in self.db.execute('SELECT * FROM users ORDER BY id')
+            for row in self.db.execute(f'SELECT {_USER_COLUMNS} FROM users ORDER BY id')
         ]
 
     @staticmethod
@@ -122,10 +190,20 @@ class UserStore(SQLiteStorage):
         if type(enabled) is not bool or type(can_pair_irc) is not bool:
             raise UserError('Enabled and IRC pairing permission must be booleans.')
 
-    def create(self, username, *, display_name=None, enabled=True, can_pair_irc=False):
+    def create(
+        self,
+        username,
+        *,
+        display_name=None,
+        enabled=True,
+        can_pair_irc=False,
+        password=None,
+    ):
         normalized = normalize_username(username)
         self._validate_fields(display_name, enabled, can_pair_irc)
+        password_hash = _hash_password(password) if password is not None else None
         try:
+            self.db.execute('BEGIN IMMEDIATE')
             cursor = self.db.execute(
                 '''INSERT INTO users
                 (username, normalized_username, display_name, enabled, can_pair_irc)
@@ -138,12 +216,50 @@ class UserStore(SQLiteStorage):
                     can_pair_irc,
                 ),
             )
+            if password_hash is not None:
+                self.db.execute(
+                    'INSERT INTO user_passwords VALUES (?, ?)',
+                    (cursor.lastrowid, password_hash),
+                )
+            self.db.commit()
         except sqlite3.IntegrityError as exc:
+            self.db.rollback()
             # The INSERT's unique constraint arbitrates concurrent creates.
             if 'UNIQUE constraint failed: users.normalized_username' not in str(exc):
                 raise
             raise UsernameTaken('Username already exists.') from exc
+        except Exception:
+            self.db.rollback()
+            raise
         return self.get_by_id(cursor.lastrowid)
+
+    def set_password(self, user_id, password):
+        """Set or replace a salted hash; the plaintext is never persisted."""
+        password_hash = _hash_password(password)
+        self.get_by_id(user_id)
+        self.db.execute(
+            '''INSERT INTO user_passwords (user_id, password_hash) VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET password_hash = excluded.password_hash''',
+            (user_id, password_hash),
+        )
+
+    def authenticate(self, username, password):
+        """Verify credentials and enabled state; return only public user fields."""
+        try:
+            user = self.get_by_username(username)
+        except (InvalidUsername, UserNotFound):
+            user = None
+        row = (
+            self.db.execute(
+                'SELECT password_hash FROM user_passwords WHERE user_id = ?', (user.id,)
+            ).fetchone()
+            if user is not None
+            else None
+        )
+        verified = _verify_password(password, row[0] if row else None)
+        if not verified or user is None or not user.enabled:
+            raise InvalidCredentials('Invalid username or password.')
+        return user
 
     def update(self, user_id, *, display_name=None, enabled=None, can_pair_irc=None):
         """Update supplied fields without changing identity or creation time."""

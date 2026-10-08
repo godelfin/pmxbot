@@ -8,6 +8,7 @@ import pytest
 
 from pmxbot.music import MusicLibrary
 from pmxbot.users import (
+    InvalidCredentials,
     InvalidUsername,
     UserError,
     UserNotFound,
@@ -216,3 +217,115 @@ def test_ids_not_reused(store):
 def test_unsupported_database(uri):
     with pytest.raises(UserError, match='SQLite'):
         UserStore(uri)
+
+
+def test_windows_filename(monkeypatch):
+    from pmxbot.storage import SQLiteStorage
+
+    monkeypatch.setattr(
+        SQLiteStorage, '__init__', lambda self, uri: setattr(self, 'uri', uri)
+    )
+    filename = r'C:\data\bot.sqlite'
+    assert UserStore(filename).uri == 'sqlite:' + filename
+
+
+def test_password_persistence_and_replacement(store, uri):
+    password = ' unusual pässword 🔐 '
+    alice = store.create('Alice', password=password)
+    bob = store.create('bob', password=password)
+    hashes = [
+        row[0] for row in store.db.execute('SELECT password_hash FROM user_passwords')
+    ]
+    assert len(set(hashes)) == 2
+    assert all(value.startswith('pbkdf2_sha256$600000$') for value in hashes)
+    assert all(password not in value for value in hashes)
+    assert not hasattr(alice, 'password_hash')
+    assert password not in repr(store.list_users())
+    with closing(UserStore(uri)) as reopened:
+        assert reopened.authenticate(' ALICE ', password) == alice
+        assert reopened.authenticate('bob', password) == bob
+        with pytest.raises(InvalidCredentials):
+            reopened.authenticate('Alice', password.strip())
+        reopened.set_password(alice.id, 'replacement password')
+        assert reopened.authenticate('Alice', 'replacement password') == alice
+        with pytest.raises(InvalidCredentials):
+            reopened.authenticate('Alice', password)
+        assert reopened.authenticate('bob', password) == bob
+
+
+def test_authentication_rejects_unusable_accounts(store):
+    alice = store.create('alice', password='correct password')
+    store.create('no-password')
+    store.update(alice.id, enabled=False)
+    for username, password in (
+        ('alice', 'correct password'),
+        ('alice', 'wrong password'),
+        ('missing', 'correct password'),
+        ('no-password', 'correct password'),
+        ('bad username', 'correct password'),
+        ('alice', None),
+        ('alice', ''),
+        ('alice', 'a' * 1025),
+    ):
+        with pytest.raises(InvalidCredentials, match='^Invalid username or password.$'):
+            store.authenticate(username, password)
+    store.update(alice.id, enabled=True)
+    assert store.authenticate('alice', 'correct password') == store.get_by_id(alice.id)
+
+
+@pytest.mark.parametrize(
+    'encoded',
+    [
+        'garbage',
+        'pbkdf2_sha256$999999999999$a$b',
+        'pbkdf2_sha256$600000$' + 'z' * 32 + '$' + '0' * 64,
+    ],
+)
+def test_corrupt_password_hash_fails_closed(store, encoded):
+    user = store.create('alice')
+    store.db.execute('INSERT INTO user_passwords VALUES (?, ?)', (user.id, encoded))
+    with pytest.raises(InvalidCredentials):
+        store.authenticate('alice', 'password')
+
+
+@pytest.mark.parametrize('password', ['', 123, 'a' * 1025, '\ud800'])
+def test_invalid_password_writes(store, password):
+    alice = store.create('alice', password='original password')
+    with pytest.raises(UserError):
+        store.set_password(alice.id, password)
+    with pytest.raises(UserError):
+        store.create('bob', password=password)
+    assert store.authenticate('alice', 'original password') == alice
+    assert store.list_users() == [alice]
+
+
+def test_credentials_added_to_existing_users(store, uri):
+    original = store.create('alice')
+    store.db.execute('DROP TABLE user_passwords')
+    with closing(UserStore(uri)) as reopened:
+        assert reopened.get_by_id(original.id) == original
+        assert reopened.db.execute('SELECT * FROM user_passwords').fetchall() == []
+        reopened.set_password(original.id, 'new password')
+        assert reopened.authenticate('alice', 'new password') == original
+    with closing(UserStore(uri)) as reopened:
+        assert reopened.authenticate('alice', 'new password') == original
+
+
+def test_credentials_require_canonical_user(store):
+    with pytest.raises(UserNotFound):
+        store.set_password(999, 'password')
+    with pytest.raises(sqlite3.IntegrityError, match='FOREIGN KEY'):
+        store.db.execute("INSERT INTO user_passwords VALUES (999, 'hash')")
+
+
+def test_password_and_user_creation_are_atomic(store):
+    store.db.execute(
+        "CREATE TRIGGER reject_password BEFORE INSERT ON user_passwords "
+        "BEGIN SELECT RAISE(ABORT, 'credential write failed'); END"
+    )
+    with pytest.raises(sqlite3.IntegrityError, match='credential write failed'):
+        store.create('alice', password='password')
+    assert store.list_users() == []
+    store.db.execute('DROP TRIGGER reject_password')
+    user = store.create('alice', password='password')
+    assert store.authenticate('alice', 'password') == user
