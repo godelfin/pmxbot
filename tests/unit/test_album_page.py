@@ -534,6 +534,84 @@ def test_homepage_lists_all_albums(page):
     assert cache.database.read_bytes() == before
 
 
+def test_generation_leaderboard(page):
+    cache, request = page
+    insert(cache)
+    library = MusicLibrary(cache.database)
+    # Simulate historical duplicate links without schema migration on reads.
+    other = library.create_album('Other', 'Album')
+    with sqlite3.connect(cache.database) as db:
+        db.execute('DROP INDEX album_images_unique_cache_key')
+        db.execute('INSERT INTO album_images VALUES (?, ?)', (other['id'], 'key'))
+        for index, nick in enumerate(
+            [' alice ', 'alice', 'Bob', 'bob', None, '', ' \t\n', 'unlinked'], 100
+        ):
+            key = str(index)
+            db.execute(
+                '''INSERT INTO image_cache
+                (cache_key, prompt, normalized_prompt, settings_json,
+                local_filename, generation_metadata_json, requested_by)
+                VALUES (?, '', '', '{}', 'image.png', '{}', ?)''',
+                (key, nick),
+            )
+            if nick != 'unlinked':
+                db.execute('INSERT INTO album_images VALUES (42, ?)', (key,))
+        library_failure = (
+            42,
+            'failed prompt',
+            'unlinked',
+            'ImageError',
+            'generation failed',
+        )
+        db.execute(
+            '''INSERT INTO album_image_failures
+            (album_id, prompt, requested_by, error_type, error)
+            VALUES (?, ?, ?, ?, ?)''',
+            library_failure,
+        )
+    before = cache.database.read_bytes()
+    expected = [
+        {'username': 'alice', 'image_count': 2},
+        {'username': '<alice>', 'image_count': 1},
+        {'username': 'Bob', 'image_count': 1},
+        {'username': 'bob', 'image_count': 1},
+    ]
+    assert cache.generation_leaderboard() == expected
+    assert cache.generation_leaderboard(limit=2) == expected[:2]
+    response = request('/')
+    assert response['status'] == 200
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    section = soup.select_one('.leaderboard')
+    assert section.h2.get_text() == 'Top album image generators'
+    assert [
+        [cell.get_text() for cell in row.select('td')]
+        for row in section.select('tbody tr')
+    ] == [['alice', '2'], ['<alice>', '1'], ['Bob', '1'], ['bob', '1']]
+    assert '&lt;alice&gt;' in response['body']
+    assert soup.select_one('a[href="/bot/albums/42"]') is not None
+    assert cache.database.read_bytes() == before
+
+
+@pytest.mark.parametrize('storage', ['missing', 'legacy', 'empty', 'unattributed'])
+def test_empty_generation_leaderboard(page, storage):
+    cache, request = page
+    if storage == 'legacy':
+        with sqlite3.connect(cache.database) as db:
+            db.execute('CREATE TABLE legacy (id INTEGER)')
+    elif storage == 'empty':
+        MusicLibrary(cache.database).create_album('Band', 'Album')
+        with closing(cache.connect()):
+            pass
+    elif storage == 'unattributed':
+        insert(cache)
+        with sqlite3.connect(cache.database) as db:
+            db.execute('UPDATE image_cache SET requested_by = NULL')
+    assert cache.generation_leaderboard() == []
+    response = request('/')
+    assert response['status'] == 200
+    assert 'leaderboard-heading' not in response['body']
+
+
 def test_empty_homepage_does_not_create_storage(page):
     cache, request = page
     response = request('/')

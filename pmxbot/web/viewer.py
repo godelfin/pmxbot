@@ -473,11 +473,15 @@ class PmxbotPages:
     def index(self):
         cherrypy.lib.cptools.allow(['GET', 'HEAD'])
         try:
-            albums = ImageCache(pmxbot.config).list_albums()
+            cache = ImageCache(pmxbot.config)
+            albums = cache.list_albums()
+            leaderboard = cache.generation_leaderboard()
         except (sqlite3.Error, ImageError):
             raise cherrypy.HTTPError(503, 'Album storage is unavailable') from None
         page = jenv.overlay(autoescape=True).get_template('album_index.html')
-        return page.render(albums=albums, **get_context()).encode('utf-8')
+        return page.render(
+            albums=albums, leaderboard=leaderboard, **get_context()
+        ).encode('utf-8')
 
 
 def patch_compat(config):

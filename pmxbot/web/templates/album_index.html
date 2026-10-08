@@ -12,12 +12,32 @@ ul { padding: 1.25rem 1.25rem 1.25rem 2.5rem; background: white; border: 1px sol
 li + li { margin-top: .5rem; }
 a { color: #135ba1; }
 a:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
+.leaderboard { max-width: 28rem; margin: 1.25rem 0; padding: 1rem; background: white; border: 1px solid #d4dbe2; border-radius: .5rem; }
+.leaderboard h2 { margin: 0; font-size: 1.125rem; }
+.leaderboard p { margin: .25rem 0 .75rem; }
+table { width: 100%; border-collapse: collapse; overflow-wrap: anywhere; }
+th, td { padding: .25rem .5rem; text-align: left; }
+th:last-child, td:last-child { text-align: right; }
 </style>
 </head>
 <body>
 <main>
 <h1>Albums</h1>
 <p><a href="{{ base }}/gallery">View artwork gallery</a></p>
+{% if leaderboard %}
+<section class="leaderboard" aria-labelledby="leaderboard-heading">
+<h2 id="leaderboard-heading">Top album image generators</h2>
+<p>Top 10 by successfully generated album images since requester tracking began.</p>
+<table>
+<thead><tr><th scope="col">Username</th><th scope="col">Images generated</th></tr></thead>
+<tbody>
+{% for entry in leaderboard %}
+<tr><td>{{ entry.username }}</td><td>{{ entry.image_count }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</section>
+{% endif %}
 {% if albums %}
 <ul>
 {% for album in albums %}
