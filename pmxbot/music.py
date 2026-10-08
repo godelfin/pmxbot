@@ -6,11 +6,73 @@ import re
 import sqlite3
 import unicodedata
 from contextlib import closing
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
 def normalize(value):
     return ' '.join(unicodedata.normalize('NFKC', value).split()).casefold()
+
+
+@dataclass(frozen=True)
+class GenerationInputs:
+    """One artwork interpretation of a canonical release; never writes storage.
+
+    ``album_properties`` is consumed directly by the shared ``album_prompt``
+    builder. Source identity and creative properties can be persisted by F13.
+    """
+
+    album_id: int
+    artist_id: int
+    source_image_id: int
+    artist_name: str
+    title: str
+    format: str
+    format_description: str
+    genre: str
+    artist_genre: str
+    description: str
+    artist_description: str
+
+    creative_fields = (
+        'format',
+        'format_description',
+        'genre',
+        'artist_genre',
+        'description',
+        'artist_description',
+    )
+
+    @classmethod
+    def from_source(cls, album, image):
+        return cls(
+            album_id=album['id'],
+            artist_id=album['artist_id'],
+            source_image_id=image['id'],
+            artist_name=album['artist_name'],
+            title=album['title'],
+            **{field: album.get(field) or '' for field in cls.creative_fields},
+        )
+
+    def prepare(self, values, choices):
+        """Validate a complete draft, allowing configured or canonical choices."""
+        if set(values) != set(self.creative_fields):
+            raise ValueError('Submit all six creative fields only.')
+        for field, value in values.items():
+            if not isinstance(value, str) or len(value) > 10000 or '\x00' in value:
+                raise ValueError(
+                    'Creative fields must be text of at most 10000 characters.'
+                )
+            if field in choices and value not in (
+                '',
+                getattr(self, field),
+                *choices[field],
+            ):
+                raise ValueError(f'Invalid choice for {field}.')
+        return type(self)(**dict(asdict(self), **values))
+
+    def album_properties(self):
+        return dict(asdict(self), id=self.album_id)
 
 
 class MusicLibrary:

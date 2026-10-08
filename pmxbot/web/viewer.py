@@ -22,6 +22,7 @@ import pmxbot.albums
 import pmxbot.logging
 import pmxbot.util
 from pmxbot.images import ImageCache, ImageError
+from pmxbot.music import GenerationInputs
 
 jenv = jinja2.Environment(loader=jinja2.loaders.PackageLoader('pmxbot.web'))
 TIMEOUT = 10.0
@@ -349,16 +350,31 @@ def image_metadata(image):
 class AlbumPage:
     @cherrypy.expose
     def default(self, *path, **params):
-        cherrypy.lib.cptools.allow(['GET', 'HEAD'])
+        cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
         if len(path) != 1 or not path[0].isascii() or not path[0].isdecimal():
             raise cherrypy.HTTPError(404, 'Unknown album ID')
         # SQLite IDs are positive signed 64-bit integers. Bound before conversion.
         value = path[0].lstrip('0')
         if not value or len(value) > 19 or int(value) > 2**63 - 1:
             raise cherrypy.HTTPError(404, 'Unknown album ID')
+        source_id = params.pop('source_image_id', None)
+        if source_id is not None:
+            if (
+                not isinstance(source_id, str)
+                or not source_id.isascii()
+                or not source_id.isdecimal()
+                or len(source_id) > 19
+                or not 0 < int(source_id) <= 2**63 - 1
+            ):
+                raise cherrypy.HTTPError(400, 'Invalid source image ID')
+            source_id = int(source_id)
+        if cherrypy.request.method == 'POST' and source_id is None:
+            raise cherrypy.HTTPError(400, 'A source image is required')
+        if cherrypy.request.method != 'POST' and params:
+            raise cherrypy.HTTPError(400, 'Unexpected variation fields')
         try:
             cache = ImageCache(pmxbot.config)
-            album, image = cache.get_album_page(int(value))
+            album, image = cache.get_album_page(int(value), source_id)
             neighbors = cache.album_neighbors(int(value))
             failures = cache.album_image_failures(int(value))
         except LookupError:
@@ -379,6 +395,26 @@ class AlbumPage:
             ),
             image_url=safe_image_url(image['hosted_url']) if image else None,
         )
+        draft = GenerationInputs.from_source(album, image) if image else None
+        context.update(draft=draft, prepared=False, variation_error=None)
+        if cherrypy.request.method == 'POST':
+            if draft is None:
+                raise cherrypy.HTTPError(400, 'A source image is required')
+            try:
+                draft = draft.prepare(
+                    params,
+                    {
+                        'format': context['formats'],
+                        'format_description': context['format_descriptions'],
+                        'genre': context['genres'],
+                        'artist_genre': context['genres'],
+                    },
+                )
+            except ValueError as exc:
+                cherrypy.response.status = 400
+                context['variation_error'] = str(exc)
+            else:
+                context.update(draft=draft, prepared=True)
         # Escape the entire inherited layout too, without changing legacy pages.
         page = jenv.overlay(autoescape=True).get_template('album.html')
         return page.render(**context).encode('utf-8')

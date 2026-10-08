@@ -238,6 +238,24 @@ them with ``!band add: <band name>`` and ``!album add: <album title>``.
 song quote library.
 
 
+Preparing artwork variations
+----------------------------
+
+On an album page with artwork, the variation form starts from the canonical
+album and artist properties. Band name and album title remain fixed. Format,
+format description, both genres, and both descriptions describe one visual
+interpretation of that release. Retired configured choices remain selectable
+when they are source values.
+
+``Prepare variation`` validates the structured inputs without saving changes
+or generating artwork. The source image ID stays attached to the draft; an
+existing image can be selected with ``?source_image_id=<id>`` on its album page.
+Drafts last only for the current response. The page shows the source image's
+existing prompt, but never builds or previews the variation prompt. F13 can
+consume ``GenerationInputs.album_properties()`` with the shared ``album_prompt``
+builder when generation is implemented.
+
+
 Historical music database upgrades
 ----------------------------------
 

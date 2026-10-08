@@ -30,7 +30,7 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 .image-details { display: grid; grid-template-columns: minmax(0, 8rem) minmax(0, 1fr); gap: .5rem 1rem; margin: 0; }
 .image-details dt { font-weight: bold; }
 .image-details dd { margin: 0; }
-.album-details input[type="text"], .album-details select { box-sizing: border-box; width: 100%; min-width: 0; padding: .4rem .5rem; font: inherit; color: inherit; border: 1px solid #d4dbe2; border-radius: .25rem; }
+.album-details input[type="text"], .album-details select, .album-details textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: .4rem .5rem; font: inherit; color: inherit; border: 1px solid #d4dbe2; border-radius: .25rem; }
 .music-description { white-space: pre-wrap; }
 .album-page ul { margin: 0; padding-left: 1.25rem; }
 .album-page li + li { margin-top: .5rem; }
@@ -85,22 +85,33 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 </section>
 {% if album %}
 <section class="image-section" aria-labelledby="album-heading">
-<h2 id="album-heading">Album details</h2>
+<h2 id="album-heading">{% if draft %}Prepare an image variation{% else %}Album details{% endif %}</h2>
 <div class="album-details">
+{% if draft %}
+<p>Source image #{{ draft.source_image_id }}. Creative changes apply only to a variation of this release.</p>
+{% if variation_error %}<p role="alert">{{ variation_error }}</p>{% endif %}
+{% if prepared %}<p role="status">Variation inputs validated. Image generation is not available yet.</p>{% endif %}
+<form method="POST" action="{{ base }}/albums/{{ album.id }}">
+<input type="hidden" name="source_image_id" value="{{ draft.source_image_id }}" />
+{% endif %}
 <dl class="image-details">
-<dt><label for="album-band">Band</label></dt><dd><input type="text" id="album-band" name="artist_name" value="{{ album.artist_name }}" /></dd>
-<dt><label for="album-title">Title</label></dt><dd><input type="text" id="album-title" name="title" value="{{ album.title }}" /></dd>
+<dt>Band</dt><dd id="album-band">{{ album.artist_name }}</dd>
+<dt>Title</dt><dd id="album-title">{{ album.title }}</dd>
+{% set properties = draft.album_properties() if draft else album %}
 {% for name, label, options in [('format', 'Format', formats), ('format_description', 'Format description', format_descriptions), ('genre', 'Album genre', genres), ('artist_genre', 'Band genre', genres)] %}
-<dt><label for="album-{{ name }}">{{ label }}</label></dt>
-<dd><select id="album-{{ name }}" name="{{ name }}">
-<option value=""{% if not album[name] %} selected{% endif %}>{% if name in ['genre', 'artist_genre'] %}None{% else %}Select {{ label|lower }}{% endif %}</option>
-{% if album[name] and album[name] not in options %}<option value="{{ album[name] }}" selected>{{ album[name] }}</option>{% endif %}
-{% for option in options %}<option value="{{ option }}"{% if option == album[name] %} selected{% endif %}>{{ option }}</option>{% endfor %}
-</select></dd>
+<dt>{% if draft %}<label for="album-{{ name }}">{{ label }}</label>{% else %}{{ label }}{% endif %}</dt>
+<dd>{% if draft %}<select id="album-{{ name }}" name="{{ name }}">
+<option value=""{% if not properties[name] %} selected{% endif %}>None</option>
+{% if properties[name] and properties[name] not in options %}<option value="{{ properties[name] }}" selected>{{ properties[name] }}</option>{% endif %}
+{% for option in options %}<option value="{{ option }}"{% if option == properties[name] %} selected{% endif %}>{{ option }}</option>{% endfor %}
+</select>{% else %}{{ properties[name] or '' }}{% endif %}</dd>
 {% endfor %}
-{% if album.description %}<dt>Album description</dt><dd class="music-description">{{ album.description }}</dd>{% endif %}
-{% if album.artist_description %}<dt>Band description</dt><dd class="music-description">{{ album.artist_description }}</dd>{% endif %}
+{% for name, label in [('description', 'Album description'), ('artist_description', 'Band description')] %}
+<dt>{% if draft %}<label for="album-{{ name }}">{{ label }}</label>{% else %}{{ label }}{% endif %}</dt>
+<dd class="music-description">{% if draft %}<textarea id="album-{{ name }}" name="{{ name }}" rows="4" maxlength="10000">{{ properties[name] or '' }}</textarea>{% else %}{{ properties[name] or '' }}{% endif %}</dd>
+{% endfor %}
 </dl>
+{% if draft %}<button type="submit">Prepare variation</button></form>{% endif %}
 </div>
 </section>
 {% endif %}
