@@ -2,6 +2,7 @@ import io
 import sqlite3
 from contextlib import closing
 from unittest.mock import Mock
+from urllib.parse import urlencode
 
 import cherrypy
 import pytest
@@ -32,7 +33,8 @@ def page(tmp_path, monkeypatch):
     )
     app = cherrypy.Application(viewer.PmxbotPages(), '/bot')
 
-    def request(path='/albums/42', method='GET'):
+    def request(path='/albums/42', method='GET', data=None):
+        payload = urlencode(data or {}).encode()
         path, _, query = path.partition('?')
         env = {
             'REQUEST_METHOD': method,
@@ -41,12 +43,13 @@ def page(tmp_path, monkeypatch):
             'QUERY_STRING': query,
             'SERVER_NAME': 'localhost',
             'HTTP_HOST': 'localhost',
-            'CONTENT_LENGTH': '0',
+            'CONTENT_LENGTH': str(len(payload)),
+            'CONTENT_TYPE': 'application/x-www-form-urlencoded',
             'SERVER_PORT': '80',
             'SERVER_PROTOCOL': 'HTTP/1.1',
             'wsgi.version': (1, 0),
             'wsgi.url_scheme': 'http',
-            'wsgi.input': io.BytesIO(),
+            'wsgi.input': io.BytesIO(payload),
             'wsgi.errors': io.StringIO(),
             'wsgi.multithread': False,
             'wsgi.multiprocess': False,
@@ -137,7 +140,7 @@ def test_render_and_read_only(page):
         for section in soup.select('.image-content section[aria-labelledby]')
     ] == [
         'Original prompt',
-        'Album details',
+        'Prepare an image variation',
         'Image details',
         'Settings',
         'Generation metadata',
@@ -147,9 +150,10 @@ def test_render_and_read_only(page):
     assert soup.select_one('#prompt-heading').parent.pre.get_text() == (
         '  exact <script> & "prompt"\nsecond line  '
     )
-    assert not soup.select('form, textarea')
-    assert soup.select_one('#album-band')['value'] == '<Band>'
-    assert soup.select_one('#album-title')['value'] == '<Album>'
+    assert soup.select_one('form')['method'] == 'POST'
+    assert not soup.select('[name=prompt], [name=artist_name], [name=title]')
+    assert soup.select_one('#album-band').get_text() == '<Band>'
+    assert soup.select_one('#album-title').get_text() == '<Album>'
     for name, choices in (
         ('format', pmxbot.albums.formats),
         ('format_description', pmxbot.albums.format_desc),
@@ -177,14 +181,12 @@ def test_render_and_read_only(page):
     ):
         assert value in body
     assert '/private/secret.png' not in body
-    assert 'hidden' not in body
+    assert 'hidden' not in soup.select_one('#metadata-heading-1').parent.get_text()
     assert '<script> & ' not in body
     assert request(method='HEAD')['body'] == ''
     assert request(method='HEAD')['status'] == 200
     assert cache.database.read_bytes() == before
-    assert not any(
-        word in body for word in ('method="POST"', 'Customize', 'Delete', 'Rate')
-    )
+    assert not any(word in body for word in ('Customize', 'Delete', 'Rate'))
 
 
 @pytest.mark.parametrize(
@@ -210,12 +212,12 @@ def test_invalid_and_unknown_do_not_create_storage(page, path):
     assert not cache.directory.exists()
 
 
-@pytest.mark.parametrize('method', ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
+@pytest.mark.parametrize('method', ['PUT', 'PATCH', 'DELETE', 'OPTIONS'])
 def test_methods_rejected_before_lookup(page, method):
     cache, request = page
     response = request(method=method)
     assert response['status'] == 405
-    assert response['headers']['Allow'] == 'GET, HEAD'
+    assert response['headers']['Allow'] == 'GET, HEAD, POST'
     assert not cache.database.exists()
 
 
@@ -282,7 +284,7 @@ def test_album_and_band_properties(page):
     details = {}
     for term in cards[0].select('dt'):
         value = term.find_next_sibling('dd')
-        control = value.select_one('input, option[selected]')
+        control = value.select_one('option[selected]')
         details[term.get_text()] = control['value'] if control else value.get_text()
     assert details == {
         'Title': '<Album>',
@@ -350,19 +352,19 @@ def test_malformed_metadata(page, data):
         for section in soup.select('.image-content section[aria-labelledby]')
     ] == [
         'Original prompt',
-        'Album details',
+        'Prepare an image variation',
         'Image details',
     ]
 
 
-@pytest.mark.parametrize('method', ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
+@pytest.mark.parametrize('method', ['PUT', 'PATCH', 'DELETE', 'OPTIONS'])
 def test_existing_image_rejects_writes(page, method):
     cache, request = page
     insert(cache)
     before = cache.database.read_bytes()
     response = request(method=method)
     assert response['status'] == 405
-    assert response['headers']['Allow'] == 'GET, HEAD'
+    assert response['headers']['Allow'] == 'GET, HEAD, POST'
     assert cache.database.read_bytes() == before
 
 
@@ -754,3 +756,89 @@ def test_gallery_invalid_sort_does_not_create_storage(page, sort):
     assert request(f'/gallery?sort={sort}')['status'] == 400
     assert not cache.database.exists()
     assert not cache.directory.exists()
+
+
+def test_preparation_is_immutable_and_has_no_generation(page):
+    cache, request = page
+    insert(cache)
+    before = cache.database.read_bytes()
+    values = {
+        'source_image_id': '42',
+        'format': '',
+        'format_description': '',
+        'genre': '',
+        'artist_genre': '',
+        'description': '<b>new interpretation</b>',
+        'artist_description': 'Band interpretation',
+    }
+    response = request(method='POST', data=values)
+    assert response['status'] == 200
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    assert 'validated' in soup.select_one('[role=status]').get_text()
+    assert soup.select_one('[name=description]').get_text() == values['description']
+    assert not soup.select('form pre, form [name=prompt], form b')
+    assert cache.database.read_bytes() == before
+    for changes in (
+        {'genre': 'invented choice'},
+        {'title': 'rename'},
+        {'source_image_id': '999'},
+        {'description': 'x' * 10001},
+    ):
+        assert request(method='POST', data=dict(values, **changes))['status'] in (
+            400,
+            404,
+        )
+    assert request(method='POST')['status'] == 400
+    assert cache.database.read_bytes() == before
+
+
+def test_shared_generation_inputs(page):
+    from pmxbot.music import GenerationInputs, album_prompt
+
+    cache, _ = page
+    insert(cache)
+    album, image = cache.get_album_page(42)
+    source = GenerationInputs.from_source(album, image)
+    values = {field: getattr(source, field) for field in source.creative_fields}
+    draft = source.prepare(dict(values, artist_description='Artist visual cue'), {})
+    assert draft.source_image_id == 42
+    assert draft.album_id == album['id']
+    assert draft.artist_id == album['artist_id']
+    assert source.artist_description == ''
+    assert 'Artist visual cue' in album_prompt(draft.album_properties())
+    with pytest.raises(ValueError):
+        source.prepare(dict(values, description=['duplicate']), {})
+
+
+def test_legacy_values_prepare_and_selected_source_stays_fixed(page):
+    cache, request = page
+    insert(cache)
+    with sqlite3.connect(cache.database) as db:
+        db.execute("UPDATE albums SET format = 'Retired format' WHERE id = 42")
+        db.execute("UPDATE artists SET genre = 'Retired genre'")
+        db.execute(
+            """INSERT INTO image_cache
+            (id, cache_key, prompt, normalized_prompt, settings_json,
+             local_filename, generation_metadata_json, created_at)
+            VALUES (43, 'newer', 'do not parse', 'normalized', '{}', 'new.png', '{}', '2099-01-01')"""
+        )
+    MusicLibrary(cache.database).record_image(42, 'newer')
+    before = cache.database.read_bytes()
+    soup = BeautifulSoup(
+        request('/albums/42?source_image_id=42')['body'], 'html.parser'
+    )
+    form = soup.form
+    values = {
+        control['name']: control.get('value', control.get_text())
+        for control in form.select('input, textarea')
+    }
+    for control in form.select('select'):
+        values[control['name']] = control.select_one('option[selected]')['value']
+    assert values['source_image_id'] == '42'
+    assert values['format'] == 'Retired format'
+    assert values['artist_genre'] == 'Retired genre'
+    response = request(method='POST', data=values)
+    assert response['status'] == 200
+    assert 'Source image #42' in response['body']
+    assert 'validated' in response['body']
+    assert cache.database.read_bytes() == before

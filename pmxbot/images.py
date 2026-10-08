@@ -251,8 +251,8 @@ class ImageCache:
                 raise LookupError('Unknown image ID')
             return dict(row)
 
-    def get_album_page(self, album_id):
-        """Read an album and its newest cached artwork without modifying storage."""
+    def get_album_page(self, album_id, source_image_id=None):
+        """Read an album and its selected or newest artwork without modifying storage."""
         with closing(self.read_connection()) as db:
             tables = {
                 row[0]
@@ -277,9 +277,12 @@ class ImageCache:
                 image = db.execute(
                     '''SELECT image_cache.* FROM image_cache
                     JOIN album_images USING (cache_key) WHERE album_id = ?
+                    AND (? IS NULL OR image_cache.id = ?)
                     ORDER BY image_cache.created_at DESC, image_cache.id DESC LIMIT 1''',
-                    (album_id,),
+                    (album_id, source_image_id, source_image_id),
                 ).fetchone()
+            if source_image_id is not None and image is None:
+                raise LookupError('Unknown source image ID')
             return dict(row), dict(image) if image is not None else None
 
     def list_albums(self):
