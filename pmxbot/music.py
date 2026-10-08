@@ -309,10 +309,6 @@ def album_prompt(album):
             f" the genre of music is {album['genre']}, "
             "but nowhere should the genre be mentioned."
         )
-    if album.get('artist_genre'):
-        prompt += f" the band's genre of music is {album['artist_genre']}."
-    if album.get('artist_description'):
-        prompt += f" {album['artist_description']}"
     if album['description']:
         prompt += f" {album['description']}"
     if re.search(r'\btortas?\b', normalize(album['title'])):

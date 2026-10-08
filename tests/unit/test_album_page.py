@@ -793,7 +793,7 @@ def test_preparation_is_immutable_and_has_no_generation(page):
 
 
 def test_shared_generation_inputs(page):
-    from pmxbot.music import GenerationInputs, album_prompt
+    from pmxbot.music import GenerationInputs
 
     cache, _ = page
     insert(cache)
@@ -805,7 +805,7 @@ def test_shared_generation_inputs(page):
     assert draft.album_id == album['id']
     assert draft.artist_id == album['artist_id']
     assert source.artist_description == ''
-    assert 'Artist visual cue' in album_prompt(draft.album_properties())
+    assert draft.album_properties()['artist_description'] == 'Artist visual cue'
     with pytest.raises(ValueError):
         source.prepare(dict(values, description=['duplicate']), {})
 
