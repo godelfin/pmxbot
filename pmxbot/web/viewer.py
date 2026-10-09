@@ -568,17 +568,68 @@ class PmxbotPages:
         ).encode('utf-8')
 
     @cherrypy.expose
-    def index(self):
+    def index(
+        self,
+        q='',
+        artist='',
+        album_title='',
+        sort='chronology',
+        order='desc',
+        page='1',
+        **params,
+    ):
         cherrypy.lib.cptools.allow(['GET', 'HEAD'])
+        if (
+            params
+            or any(
+                not isinstance(value, str)
+                for value in (q, artist, album_title, sort, order, page)
+            )
+            or sort not in ('artist', 'album', 'chronology')
+            or order not in ('asc', 'desc')
+            or not page.isascii()
+            or not page.isdecimal()
+            or len(page) > 9
+            or int(page) < 1
+        ):
+            raise cherrypy.HTTPError(400, 'Invalid catalog parameters')
+        q = q.strip()
+        page_number = int(page)
+
         try:
             cache = ImageCache(pmxbot.config)
-            albums = cache.list_albums()
+            albums, total = cache.catalog_albums(
+                page_number, 24, q, artist, album_title, sort, order
+            )
             leaderboard = cache.generation_leaderboard()
         except (sqlite3.Error, ImageError):
             raise cherrypy.HTTPError(503, 'Album storage is unavailable') from None
+        page_count = max(1, (total + 23) // 24)
+        if page_number > page_count:
+            raise cherrypy.HTTPError(404, 'Unknown catalog page')
+        for album in albums:
+            album['image_url'] = safe_image_url(album.pop('hosted_url'))
+        filters = dict(
+            q=q, artist=artist, album_title=album_title, sort=sort, order=order
+        )
+
+        def page_url(number):
+            return (
+                pmxbot.config.web_base
+                + '/?'
+                + urllib.parse.urlencode(dict(filters, page=number))
+            )
+
         page = jenv.overlay(autoescape=True).get_template('album_index.html')
         return page.render(
-            albums=albums, leaderboard=leaderboard, **get_context()
+            albums=albums,
+            leaderboard=leaderboard,
+            total=total,
+            page_number=page_number,
+            page_count=page_count,
+            page_url=page_url,
+            **filters,
+            **get_context(),
         ).encode('utf-8')
 
 

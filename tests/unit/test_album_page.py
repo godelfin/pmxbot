@@ -583,12 +583,12 @@ def test_homepage_lists_all_albums(page):
     soup = BeautifulSoup(response['body'], 'html.parser')
     links = soup.select('main li a')
     assert [link.get_text() for link in links] == [
-        '<Band> — <Album>',
         '<Band> — Second',
+        '<Band> — <Album>',
         'Zulu — Last',
     ]
     assert [link['href'] for link in links] == [
-        f'/bot/albums/{album["id"]}' for album in (first, second, last)
+        f'/bot/albums/{album["id"]}' for album in (second, first, last)
     ]
     assert not soup.select('band, album')
     for link in links:
@@ -984,3 +984,189 @@ def test_legacy_values_prepare_and_selected_source_stays_fixed(page):
     assert 'Source image #42' in response['body']
     assert 'validated' in response['body']
     assert cache.database.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ('sort', 'order', 'expected'),
+    [
+        ('chronology', 'desc', [3, 2, 1]),
+        ('chronology', 'asc', [1, 2, 3]),
+        ('artist', 'asc', [2, 3, 1]),
+        ('artist', 'desc', [1, 3, 2]),
+        ('album', 'asc', [1, 3, 2]),
+        ('album', 'desc', [2, 3, 1]),
+    ],
+)
+def test_catalog_sort(page, sort, order, expected):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    for artist, title in [('Zulu', 'Apple'), ('alpha', 'Zoo'), ('alpha', 'Apple')]:
+        library.create_album(artist, title)
+    with sqlite3.connect(cache.database) as db:
+        db.execute("UPDATE albums SET created_at = '2026-01-01'")
+    soup = BeautifulSoup(request(f'/?sort={sort}&order={order}')['body'], 'html.parser')
+    assert [link['href'] for link in soup.select('.catalog li a')] == [
+        f'/bot/albums/{value}' for value in expected
+    ]
+
+
+@pytest.mark.parametrize(
+    ('query', 'expected'),
+    [
+        ('q=APPLE', [3, 1]),
+        ('q=ALPHA', [3, 2]),
+        ('q=+++', [3, 2, 1]),
+        ('album_title=Apple', [3, 1]),
+        ('artist=alpha', [3, 2]),
+        ('artist=Alpha', []),
+        ('q=%25', []),
+        ('q=%27+OR+1%3D1', []),
+    ],
+)
+def test_catalog_filters(page, query, expected):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    for artist, title in [('Zulu', 'Apple'), ('alpha', 'Zoo'), ('alpha', 'Apple')]:
+        library.create_album(artist, title)
+    soup = BeautifulSoup(request('/?' + query)['body'], 'html.parser')
+    assert [link['href'] for link in soup.select('.catalog li a')] == [
+        f'/bot/albums/{value}' for value in expected
+    ]
+    if not expected:
+        assert 'No albums match' in soup.get_text()
+
+
+def test_catalog_exact_links_and_pagination(page):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    artist, title = '<B & / + ü>', '<A & / + ü>'
+    for index in range(25):
+        library.create_album(artist, title + str(index))
+    library.create_album('Other', title + '0')
+    soup = BeautifulSoup(request('/albums/1')['body'], 'html.parser')
+    links = soup.select('h1 a')
+    assert [link['href'] for link in links] == [
+        '/bot/?' + urlencode({'artist': artist}),
+        '/bot/?' + urlencode({'album_title': title + '0'}),
+    ]
+    title_results = BeautifulSoup(request(links[1]['href'][4:])['body'], 'html.parser')
+    assert len(title_results.select('.catalog li')) == 2
+    query = urlencode(dict(q='<A', artist=artist, sort='album', order='asc'))
+    first = BeautifulSoup(request('/?' + query)['body'], 'html.parser')
+    assert len(first.select('.catalog li')) == 24
+    next_url = first.select_one('[rel=next]')['href']
+    assert next_url.startswith('/bot/?')
+    from urllib.parse import parse_qs, urlsplit
+
+    assert parse_qs(urlsplit(next_url).query) == dict(
+        q=['<A'], artist=[artist], sort=['album'], order=['asc'], page=['2']
+    )
+    second = BeautifulSoup(request(next_url[4:])['body'], 'html.parser')
+    assert len(second.select('.catalog li')) == 1
+    assert not second.select_one('[rel=next]')
+    assert second.select_one('[rel=prev]')
+    assert not first.select('b, aü')
+    assert first.select_one('[name=artist]')['value'] == artist
+    assert first.select_one('form.catalog-controls')['action'] == '/bot/'
+    assert request('/?' + query + '&page=3')['status'] == 404
+
+
+@pytest.mark.parametrize(
+    'query',
+    [
+        'page=0',
+        'page=-1',
+        'page=abc',
+        'page=',
+        'page=1&page=2',
+        'page=' + '9' * 100,
+        'sort=bad',
+        'order=bad',
+        'q=a&q=b',
+        'unknown=a',
+    ],
+)
+def test_catalog_invalid_parameters(page, query):
+    cache, request = page
+    assert request('/?' + query)['status'] == 400
+    assert not cache.database.exists()
+
+
+def test_catalog_artwork_and_unicode(page):
+    cache, request = page
+    insert(cache)
+    library = MusicLibrary(cache.database)
+    library.create_album('Straße', 'No artwork')
+    library.create_album('Other', 'No artwork')
+    with closing(cache.connect()) as db:
+        db.execute(
+            """INSERT INTO image_cache
+            (cache_key, prompt, normalized_prompt, settings_json, local_filename,
+             hosted_url, generation_metadata_json, created_at)
+            VALUES ('new', '', '', '{}', 'private.png', 'javascript:bad', '{}', '2099')"""
+        )
+    library.record_image(42, 'new')
+    before = cache.database.read_bytes()
+    soup = BeautifulSoup(request('/')['body'], 'html.parser')
+    assert len(soup.select('.catalog li')) == 3
+    assert not soup.select('.catalog img')
+    assert 'Artwork unavailable' in soup.get_text()
+    assert 'Straße' in request('/?q=STRASSE')['body']
+    assert cache.database.read_bytes() == before
+
+
+def test_catalog_existing_artwork(page):
+    cache, request = page
+    insert(cache)
+    soup = BeautifulSoup(request('/')['body'], 'html.parser')
+    assert len(soup.select('.catalog li')) == 1
+    assert (
+        soup.select_one('.catalog img')['src']
+        == 'https://albums.example/art.png?x=1&y=2'
+    )
+
+
+@pytest.mark.parametrize('order', ['asc', 'desc'])
+def test_catalog_tied_pagination_and_query_count(page, monkeypatch, order):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    albums = [library.create_album('Band', f'Title {index}') for index in range(49)]
+    with sqlite3.connect(cache.database) as db:
+        db.execute("UPDATE albums SET created_at = '2026-01-01'")
+    statements = []
+    original = ImageCache.read_connection
+
+    def traced_connection(self):
+        db = original(self)
+        db.set_trace_callback(statements.append)
+        return db
+
+    monkeypatch.setattr(ImageCache, 'read_connection', traced_connection)
+    ids = []
+    for number in range(1, 4):
+        soup = BeautifulSoup(
+            request(f'/?order={order}&page={number}')['body'], 'html.parser'
+        )
+        rows = soup.select('.catalog li a')
+        assert len(rows) == (24 if number < 3 else 1)
+        ids.extend(int(row['href'].rsplit('/', 1)[1]) for row in rows)
+    expected = [album['id'] for album in albums]
+    assert ids == (expected if order == 'asc' else expected[::-1])
+    # Schema, count, result and leaderboard schema queries: constant per page.
+    assert len([sql for sql in statements if sql.startswith('SELECT')]) == 12
+
+
+def test_catalog_creation_dates_precede_ids(page):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    library.create_album('Band', 'Newest')
+    library.create_album('Band', 'Oldest')
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            "UPDATE albums SET created_at = CASE id WHEN 1 THEN '2026-02-01' ELSE '2026-01-01' END"
+        )
+    soup = BeautifulSoup(request('/')['body'], 'html.parser')
+    assert [row['href'] for row in soup.select('.catalog li a')] == [
+        '/bot/albums/1',
+        '/bot/albums/2',
+    ]
