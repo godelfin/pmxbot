@@ -975,7 +975,7 @@ def test_existing_image_records_preserve_every_field_and_album_links(config, pos
             42, 'old', 'original prompt', 'original prompt', '{"quality":"low"}',
             '/missing/original.png', 'https://old.example/image.png', 'imgbb',
             '{"host":"original"}', '{"usage":42}', 'alice', '#test',
-            '2025-01-01', '2025-01-02', '2025-01-03', 7, 'upload error'
+            '2025-01-01', '2025-01-02', '2025-01-03', 7, 'upload error', NULL
         )'''
         )
         before = dict(db.execute('SELECT * FROM image_cache').fetchone())
@@ -1268,3 +1268,128 @@ def test_three_concurrent_workers_and_queue(config, monkeypatch):
     assert not slots.acquire(blocking=False)
     for _ in range(3):
         slots.release()
+
+
+@pytest.mark.parametrize('existing', [False, True])
+def test_image_ancestry_initialization(config, existing):
+    from contextlib import closing
+
+    cache = images.ImageCache(config)
+    with closing(sqlite3.connect(cache.database, isolation_level=None)) as db:
+        db.row_factory = sqlite3.Row
+        if existing:
+            # Construct the actual pre-F4 schema, including all metadata columns.
+            images.initialize_image_records(db)
+            for name in ('insert', 'update', 'delete', 'replace'):
+                db.execute('DROP TRIGGER image_ancestry_' + name)
+            schema = db.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'image_cache'"
+            ).fetchone()[0]
+            db.execute('DROP TABLE image_cache')
+            db.execute(
+                schema.replace(
+                    ',\n            parent_image_id INTEGER REFERENCES image_cache(id)',
+                    '',
+                )
+            )
+            db.execute(
+                """INSERT INTO image_cache (cache_key, prompt, normalized_prompt,
+                settings_json, local_filename, generation_metadata_json, requested_by)
+                VALUES ('old', 'original', 'original', '{}', 'old.png', '{\"usage\":42}', 'alice')"""
+            )
+            before = dict(db.execute('SELECT * FROM image_cache').fetchone())
+        for _ in range(3):
+            images.initialize_image_records(db)
+        columns = {
+            row['name']: row for row in db.execute('PRAGMA table_info(image_cache)')
+        }
+        assert columns['parent_image_id']['notnull'] == 0
+        foreign_key = db.execute('PRAGMA foreign_key_list(image_cache)').fetchone()
+        assert (foreign_key['table'], foreign_key['from'], foreign_key['to']) == (
+            'image_cache',
+            'parent_image_id',
+            'id',
+        )
+        if existing:
+            after = dict(db.execute('SELECT * FROM image_cache').fetchone())
+            assert after.pop('parent_image_id') is None
+            assert after == before
+
+
+def test_image_ancestry_persistence_and_retries(config, post):
+    from contextlib import closing
+
+    cache = images.ImageCache(config)
+    with closing(cache.connect()) as db:
+        cache.persist_image(db, 'root', 'root', 'root.png', {})
+        root = db.execute('SELECT * FROM image_cache').fetchone()
+        assert root['parent_image_id'] is None
+        cache.persist_image(
+            db, 'child', 'child', 'child.png', {}, parent_image_id=root['id']
+        )
+        child = db.execute(
+            "SELECT * FROM image_cache WHERE cache_key = 'child'"
+        ).fetchone()
+        cache.persist_image(
+            db, 'grandchild', 'grandchild', 'g.png', {}, parent_image_id=child['id']
+        )
+        for parent in (None, root['id']):
+            cache.persist_image(
+                db, 'child', 'retry', 'child.png', {}, parent_image_id=parent
+            )
+        with pytest.raises(sqlite3.IntegrityError, match='immutable'):
+            cache.persist_image(
+                db, 'child', 'retry', 'child.png', {}, parent_image_id=child['id']
+            )
+        with pytest.raises(sqlite3.IntegrityError, match='Invalid image parent'):
+            cache.persist_image(
+                db, 'invalid', 'invalid', 'x.png', {}, parent_image_id=99999
+            )
+        assert db.execute('SELECT COUNT(*) FROM image_cache').fetchone()[0] == 3
+    assert cache.get_image(child['id'])['parent_image_id'] == root['id']
+    post.assert_not_called()
+
+
+@pytest.mark.parametrize('foreign_keys', [False, True])
+def test_image_ancestry_sql_constraints(config, foreign_keys):
+    from contextlib import closing
+
+    cache = images.ImageCache(config)
+    with closing(cache.connect()) as db:
+        db.execute('PRAGMA foreign_keys = ' + str(int(foreign_keys)))
+        cache.persist_image(db, 'root', 'root', 'root.png', {})
+        cache.persist_image(db, 'child', 'child', 'child.png', {}, parent_image_id=1)
+        # Self-parenting with an explicit ID and a two-node cycle cannot be inserted.
+        for identifier, parent in [(3, 3), (3, 999), (3, 4), (4, 3)]:
+            with pytest.raises(sqlite3.IntegrityError):
+                db.execute(
+                    """INSERT INTO image_cache
+                    (id, cache_key, prompt, normalized_prompt, settings_json,
+                     local_filename, generation_metadata_json, parent_image_id)
+                    VALUES (?, ?, 'x', 'x', '{}', 'x.png', '{}', ?)""",
+                    (identifier, str(identifier), parent),
+                )
+        for identifier, parent in [(1, 2), (1, 1), (1, 999), (2, None)]:
+            with pytest.raises(sqlite3.IntegrityError, match='immutable'):
+                db.execute(
+                    'UPDATE image_cache SET parent_image_id = ? WHERE id = ?',
+                    (parent, identifier),
+                )
+        with pytest.raises(sqlite3.IntegrityError, match='immutable'):
+            db.execute('UPDATE image_cache SET id = 99 WHERE id = 1')
+        with pytest.raises(sqlite3.IntegrityError, match='children'):
+            db.execute('DELETE FROM image_cache WHERE id = 1')
+        with pytest.raises(sqlite3.IntegrityError, match='already persisted'):
+            db.execute(
+                """INSERT OR REPLACE INTO image_cache
+                (id, cache_key, prompt, normalized_prompt, settings_json,
+                 local_filename, generation_metadata_json)
+                VALUES (2, 'child', 'x', 'x', '{}', 'x.png', '{}')"""
+            )
+        db.execute('UPDATE image_cache SET parent_image_id = parent_image_id')
+        assert (
+            db.execute(
+                'SELECT parent_image_id FROM image_cache WHERE id = 2'
+            ).fetchone()[0]
+            == 1
+        )
