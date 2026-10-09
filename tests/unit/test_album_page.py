@@ -70,14 +70,15 @@ def page(tmp_path, monkeypatch):
     return cache, request
 
 
-def insert(cache, url='https://albums.example/art.png?x=1&y=2'):
+def insert(cache, url='https://albums.example/art.png?x=1&y=2', image_id=42):
     with closing(cache.connect()) as db:
         db.execute(
             '''INSERT INTO image_cache
             (id, cache_key, prompt, normalized_prompt, settings_json, local_filename,
              hosted_url, generation_metadata_json, requested_by, channel, created_at)
-            VALUES (42, 'key', ?, 'normalized', ?, '/private/secret.png', ?, ?, ?, ?, '2026-01-02 03:04:05')''',
+            VALUES (?, 'key', ?, 'normalized', ?, '/private/secret.png', ?, ?, ?, ?, '2026-01-02 03:04:05')''',
             (
+                image_id,
                 '  exact <script> & "prompt"\nsecond line  ',
                 '{"model":"gpt-image-1","quality":"low","secret":"hidden"}',
                 url,
@@ -408,9 +409,8 @@ def test_storage_failure_is_clean(page):
 
 def test_route_uses_album_id_and_newest_image(page):
     cache, request = page
-    insert(cache)
+    insert(cache, image_id=100)
     with sqlite3.connect(cache.database) as db:
-        db.execute('UPDATE image_cache SET id = 100 WHERE id = 42')
         db.execute(
             '''INSERT INTO image_cache
             (id, cache_key, prompt, normalized_prompt, settings_json,

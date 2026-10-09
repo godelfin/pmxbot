@@ -125,7 +125,7 @@ def post_json(url, provider, **kwargs):
 
 
 def initialize_image_records(db):
-    """Create the current image schema for a fresh database."""
+    """Initialize image storage and add immutable ancestry to existing records."""
     db.execute(
         '''CREATE TABLE IF NOT EXISTS image_cache (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,9 +136,66 @@ def initialize_image_records(db):
             generation_metadata_json TEXT NOT NULL, requested_by TEXT,
             channel TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             uploaded_at TEXT, last_accessed_at TEXT,
-            hit_count INTEGER NOT NULL DEFAULT 0, last_error TEXT
+            hit_count INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+            parent_image_id INTEGER REFERENCES image_cache(id)
         )'''
     )
+
+    # CREATE above obtains the schema write lock for fresh databases. Serialize
+    # migration checks too, including connections in autocommit mode.
+    db.execute('SAVEPOINT image_ancestry')
+    try:
+        db.execute('UPDATE image_cache SET id = id WHERE 0')
+        columns = {row[1] for row in db.execute('PRAGMA table_info(image_cache)')}
+        if 'parent_image_id' not in columns:
+            db.execute(
+                'ALTER TABLE image_cache ADD COLUMN '
+                'parent_image_id INTEGER REFERENCES image_cache(id)'
+            )
+        db.execute(
+            '''CREATE TRIGGER IF NOT EXISTS image_ancestry_insert
+            AFTER INSERT ON image_cache WHEN NEW.parent_image_id IS NOT NULL
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid image parent')
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM image_cache WHERE id = NEW.parent_image_id
+                );
+                SELECT RAISE(ABORT, 'Image ancestry cycle') WHERE NEW.id IN (
+                    WITH RECURSIVE ancestors(id) AS (
+                        SELECT NEW.parent_image_id
+                        UNION
+                        SELECT image_cache.parent_image_id FROM image_cache
+                        JOIN ancestors ON image_cache.id = ancestors.id
+                        WHERE image_cache.parent_image_id IS NOT NULL
+                    ) SELECT id FROM ancestors
+                );
+            END'''
+        )
+        db.execute(
+            '''CREATE TRIGGER IF NOT EXISTS image_ancestry_replace
+            BEFORE INSERT ON image_cache
+            WHEN EXISTS (SELECT 1 FROM image_cache WHERE id = NEW.id)
+            OR EXISTS (SELECT 1 FROM image_cache WHERE cache_key = NEW.cache_key
+                AND parent_image_id IS NOT NEW.parent_image_id)
+            BEGIN SELECT RAISE(ABORT, 'Image ID is already persisted'); END'''
+        )
+        db.execute(
+            '''CREATE TRIGGER IF NOT EXISTS image_ancestry_update
+            BEFORE UPDATE OF parent_image_id, id ON image_cache
+            WHEN NEW.parent_image_id IS NOT OLD.parent_image_id OR NEW.id != OLD.id
+            BEGIN SELECT RAISE(ABORT, 'Image ancestry is immutable'); END'''
+        )
+        db.execute(
+            '''CREATE TRIGGER IF NOT EXISTS image_ancestry_delete
+            BEFORE DELETE ON image_cache
+            WHEN EXISTS (SELECT 1 FROM image_cache WHERE parent_image_id = OLD.id)
+            BEGIN SELECT RAISE(ABORT, 'Image has children'); END'''
+        )
+    except Exception:
+        db.execute('ROLLBACK TO image_ancestry')
+        raise
+    finally:
+        db.execute('RELEASE image_ancestry')
 
 
 class ImageCache:
@@ -473,30 +530,7 @@ class ImageCache:
                 image, metadata = self.generate(prompt)
                 filename = self.directory / f'{key}.png'
                 self.save(filename, image)
-                db.execute(
-                    '''INSERT INTO image_cache
-                    (cache_key, prompt, normalized_prompt, settings_json,
-                     local_filename, generation_metadata_json, requested_by, channel, host)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'r2')
-                    ON CONFLICT(cache_key) DO UPDATE SET
-                        prompt = excluded.prompt,
-                        normalized_prompt = excluded.normalized_prompt,
-                        settings_json = excluded.settings_json,
-                        local_filename = excluded.local_filename,
-                        generation_metadata_json = excluded.generation_metadata_json,
-                        hosted_url = NULL, host_metadata_json = NULL,
-                        uploaded_at = NULL, last_error = NULL, host = 'r2' ''',
-                    (
-                        key,
-                        prompt,
-                        normalize_prompt(prompt),
-                        json.dumps(self.settings),
-                        str(filename),
-                        json.dumps(metadata),
-                        nick,
-                        str(channel),
-                    ),
-                )
+                self.persist_image(db, key, prompt, filename, metadata, nick, channel)
             try:
                 metadata = self.upload(filename, destination)
             except ImageError as exc:
@@ -514,6 +548,56 @@ class ImageCache:
                 (url, json.dumps(metadata), key),
             )
             return url
+
+    def persist_image(
+        self,
+        db,
+        key,
+        prompt,
+        filename,
+        metadata,
+        nick='',
+        channel='',
+        parent_image_id=None,
+    ):
+        """Persist image bytes' metadata; retries retain the original ancestry.
+
+        A supplied parent must already exist. An existing key may only be
+        reused with the same parent (or omitted parent for ordinary retries).
+        Invalid ancestry raises sqlite3.IntegrityError.
+        """
+        row = db.execute(
+            'SELECT parent_image_id FROM image_cache WHERE cache_key = ?', (key,)
+        ).fetchone()
+        if row is not None:
+            if parent_image_id is not None and row[0] != parent_image_id:
+                raise sqlite3.IntegrityError('Image ancestry is immutable')
+            parent_image_id = row[0]
+        db.execute(
+            '''INSERT INTO image_cache
+            (cache_key, prompt, normalized_prompt, settings_json,
+             local_filename, generation_metadata_json, requested_by, channel, host, parent_image_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'r2', ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                prompt = excluded.prompt,
+                normalized_prompt = excluded.normalized_prompt,
+                settings_json = excluded.settings_json,
+                local_filename = excluded.local_filename,
+                generation_metadata_json = excluded.generation_metadata_json,
+                hosted_url = NULL, host_metadata_json = NULL,
+                uploaded_at = NULL, last_error = NULL, host = 'r2' ''',
+            (
+                key,
+                prompt,
+                normalize_prompt(prompt),
+                json.dumps(self.settings),
+                str(filename),
+                json.dumps(metadata),
+                nick,
+                str(channel),
+                parent_image_id,
+            ),
+        )
 
     def generate(self, prompt):
         data = post_json(
