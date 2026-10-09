@@ -22,6 +22,8 @@ import pmxbot.albums
 import pmxbot.logging
 import pmxbot.util
 from pmxbot.images import ImageCache, ImageError
+from pmxbot.users import InvalidCredentials, UserError, UserStore
+from pmxbot.web import auth
 from pmxbot.music import GenerationInputs
 
 jenv = jinja2.Environment(loader=jinja2.loaders.PackageLoader('pmxbot.web'))
@@ -67,6 +69,8 @@ def get_context():
         base=c.web_base,
         logo=c.logo,
     )
+    d['current_user'] = auth.current_user()
+    d['csrf_token'] = auth.csrf_token()
     if 'web byline' in c:
         d['byline'] = c['web byline']
     return d
@@ -224,7 +228,6 @@ class HelpPage:
         return page.render(**self.get_context()).encode('utf-8')
 
     @staticmethod
-    @functools.lru_cache
     def get_context():
         context = get_context()
         commands = []
@@ -426,6 +429,40 @@ class PmxbotPages:
     albums = AlbumPage()
 
     @cherrypy.expose
+    def login(self, username='', password='', csrf_token='', return_to=''):
+        cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
+        error = None
+        if cherrypy.request.method == 'POST':
+            # Credentials and tokens must be in the form body, never the URL.
+            if cherrypy.request.query_string:
+                raise cherrypy.HTTPError(400, 'Use a form body.')
+            auth.require_csrf(csrf_token)
+            auth.login_throttle.check()
+            try:
+                with contextlib.closing(UserStore(pmxbot.config.database)) as store:
+                    user = store.authenticate(username, password)
+            except InvalidCredentials:
+                cherrypy.response.status = 401
+                error = 'Invalid username or password.'
+            except (sqlite3.Error, UserError):
+                raise cherrypy.HTTPError(503, 'User storage is unavailable') from None
+            else:
+                cherrypy.session.clear()
+                cherrypy.session.regenerate()
+                cherrypy.session['user_id'] = user.id
+                auth.redirect(auth.safe_return_to(return_to))
+        page = jenv.overlay(autoescape=True).get_template('login.html')
+        return page.render(
+            error=error, return_to=auth.safe_return_to(return_to), **get_context()
+        ).encode('utf-8')
+
+    @cherrypy.expose
+    def logout(self, csrf_token=''):
+        auth.require_csrf(csrf_token)
+        auth.invalidate_session()
+        auth.redirect(pmxbot.config.web_base + '/')
+
+    @cherrypy.expose
     def gallery(self, page='1', sort='date_desc'):
         cherrypy.lib.cptools.allow(['GET', 'HEAD'])
         sort_options = (
@@ -551,6 +588,7 @@ def startup(config):
             # 'tools.encode.on': True,
             'tools.encode.encoding': 'utf-8',
         },
+        '/': auth.session_config(config),
         '/pmxbot.png': {
             'tools.staticfile.on': True,
             'tools.staticfile.filename': static('pmxbot.png'),

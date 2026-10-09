@@ -6,7 +6,8 @@ SQLite database. It uses the existing ``SQLiteStorage`` lifecycle and accepts
 the same SQLite URI (or a filename). Opening the store creates the ``users``
 and ``user_passwords`` tables if absent; opening it repeatedly preserves all
 existing records. No historical nicknames or attribution strings are imported.
-There is no separate database, migration framework, web route, or bot startup hook.
+There is no separate database, migration framework, or bot startup hook.
+The web viewer uses this service for login; see :doc:`deployment`.
 
 For example, code independent of either the bot or web process can use::
 
@@ -40,10 +41,10 @@ Display names are human-facing text and need not be unique.
 
 Accounts default to enabled, with ``can_pair_irc=False``. Future pairing code
 must check ``user.may_pair_irc``, which requires both ``enabled`` and the explicit
-``can_pair_irc`` grant. Future authentication must reject disabled accounts.
+``can_pair_irc`` grant. Web authentication rejects disabled accounts.
 This is a narrow permission policy; granting it does not authenticate an IRC
-session. F7 must provide web login, sessions, and any external authentication
-identifiers. F30 must store authenticated session bindings separately and refer to
+session. The web viewer provides local login and server-side sessions. F30 must
+store authenticated session bindings separately and refer to
 ``users.id``. Nicknames, hostmasks, ``created_by``, and ``requested_by`` strings
 are unverified attribution and must never serve as canonical user references.
 
@@ -68,6 +69,6 @@ added safely to databases that already contain users; existing users retain
 their IDs and have no password until explicitly assigned one.
 
 Passwords accept 1–1024 Unicode characters, including spaces, without trimming,
-normalization, or truncation. This is a storage limit; F7 must define signup
-password strength requirements, rate limiting, password reset, secure transport,
-and session handling before exposing authentication over the web.
+normalization, or truncation. This is a storage limit, not a password strength
+policy. Administrators provision strong passwords; web transport, rate limiting, and sessions are documented in
+:doc:`deployment`. There is no self-service signup or password reset.

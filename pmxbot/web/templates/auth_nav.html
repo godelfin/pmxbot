@@ -1,0 +1,11 @@
+<nav aria-label="Account" style="padding: .75rem 1.25rem;">
+{% if current_user %}
+<span>Signed in as {{ current_user.username|e }}</span>
+<form action="{{ base|e }}/logout" method="post" style="display: inline;">
+<input type="hidden" name="csrf_token" value="{{ csrf_token|e }}" />
+<button type="submit">Sign out</button>
+</form>
+{% else %}
+<a href="{{ base|e }}/login">Sign in</a>
+{% endif %}
+</nav>

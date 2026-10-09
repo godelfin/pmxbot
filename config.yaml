@@ -25,6 +25,9 @@ feeds:
 librarypaste: http://a.libpa.st/
 
 web_base: /
+# Keep true for HTTPS, including TLS termination at the trusted reverse proxy.
+# Set false explicitly for isolated local HTTP development only.
+web_session_secure: true
 web_port: 8080
 web_host: 0.0.0.0
 # Public URL of the album list; generated images link to their album beneath it.
