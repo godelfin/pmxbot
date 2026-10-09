@@ -599,11 +599,11 @@ def test_homepage_lists_all_albums(page):
     response = request('/')
     assert response['status'] == 200
     soup = BeautifulSoup(response['body'], 'html.parser')
-    links = soup.select('main li a')
+    links = soup.select('.catalog-album a')
     assert [link.get_text() for link in links] == [
-        '<Band> — Second',
-        '<Band> — <Album>',
-        'Zulu — Last',
+        'Second',
+        '<Album>',
+        'Last',
     ]
     assert [link['href'] for link in links] == [
         f'/bot/albums/{album["id"]}' for album in (second, first, last)
@@ -1023,7 +1023,7 @@ def test_catalog_sort(page, sort, order, expected):
     with sqlite3.connect(cache.database) as db:
         db.execute("UPDATE albums SET created_at = '2026-01-01'")
     soup = BeautifulSoup(request(f'/?sort={sort}&order={order}')['body'], 'html.parser')
-    assert [link['href'] for link in soup.select('.catalog li a')] == [
+    assert [link['href'] for link in soup.select('.catalog-album a')] == [
         f'/bot/albums/{value}' for value in expected
     ]
 
@@ -1047,7 +1047,7 @@ def test_catalog_filters(page, query, expected):
     for artist, title in [('Zulu', 'Apple'), ('alpha', 'Zoo'), ('alpha', 'Apple')]:
         library.create_album(artist, title)
     soup = BeautifulSoup(request('/?' + query)['body'], 'html.parser')
-    assert [link['href'] for link in soup.select('.catalog li a')] == [
+    assert [link['href'] for link in soup.select('.catalog-album a')] == [
         f'/bot/albums/{value}' for value in expected
     ]
     if not expected:
@@ -1068,10 +1068,10 @@ def test_catalog_exact_links_and_pagination(page):
         '/bot/?' + urlencode({'album_title': title + '0'}),
     ]
     title_results = BeautifulSoup(request(links[1]['href'][4:])['body'], 'html.parser')
-    assert len(title_results.select('.catalog li')) == 2
+    assert len(title_results.select('.catalog-album')) == 2
     query = urlencode(dict(q='<A', artist=artist, sort='album', order='asc'))
     first = BeautifulSoup(request('/?' + query)['body'], 'html.parser')
-    assert len(first.select('.catalog li')) == 24
+    assert len(first.select('.catalog-album')) == 24
     next_url = first.select_one('[rel=next]')['href']
     assert next_url.startswith('/bot/?')
     from urllib.parse import parse_qs, urlsplit
@@ -1080,7 +1080,7 @@ def test_catalog_exact_links_and_pagination(page):
         q=['<A'], artist=[artist], sort=['album'], order=['asc'], page=['2']
     )
     second = BeautifulSoup(request(next_url[4:])['body'], 'html.parser')
-    assert len(second.select('.catalog li')) == 1
+    assert len(second.select('.catalog-album')) == 1
     assert not second.select_one('[rel=next]')
     assert second.select_one('[rel=prev]')
     assert not first.select('b, aü')
@@ -1126,9 +1126,8 @@ def test_catalog_artwork_and_unicode(page):
     library.record_image(42, 'new')
     before = cache.database.read_bytes()
     soup = BeautifulSoup(request('/')['body'], 'html.parser')
-    assert len(soup.select('.catalog li')) == 3
+    assert len(soup.select('.catalog-album')) == 3
     assert not soup.select('.catalog img')
-    assert 'Artwork unavailable' in soup.get_text()
     assert 'Straße' in request('/?q=STRASSE')['body']
     assert cache.database.read_bytes() == before
 
@@ -1137,11 +1136,9 @@ def test_catalog_existing_artwork(page):
     cache, request = page
     insert(cache)
     soup = BeautifulSoup(request('/')['body'], 'html.parser')
-    assert len(soup.select('.catalog li')) == 1
-    assert (
-        soup.select_one('.catalog img')['src']
-        == 'https://albums.example/art.png?x=1&y=2'
-    )
+    assert len(soup.select('.catalog-album')) == 1
+    assert not soup.select('.catalog img')
+    assert soup.select_one('.catalog-variations').get_text() == '1'
 
 
 @pytest.mark.parametrize('order', ['asc', 'desc'])
@@ -1165,7 +1162,7 @@ def test_catalog_tied_pagination_and_query_count(page, monkeypatch, order):
         soup = BeautifulSoup(
             request(f'/?order={order}&page={number}')['body'], 'html.parser'
         )
-        rows = soup.select('.catalog li a')
+        rows = soup.select('.catalog-album a')
         assert len(rows) == (24 if number < 3 else 1)
         ids.extend(int(row['href'].rsplit('/', 1)[1]) for row in rows)
     expected = [album['id'] for album in albums]
@@ -1184,7 +1181,7 @@ def test_catalog_creation_dates_precede_ids(page):
             "UPDATE albums SET created_at = CASE id WHEN 1 THEN '2026-02-01' ELSE '2026-01-01' END"
         )
     soup = BeautifulSoup(request('/')['body'], 'html.parser')
-    assert [row['href'] for row in soup.select('.catalog li a')] == [
+    assert [row['href'] for row in soup.select('.catalog-album a')] == [
         '/bot/albums/1',
         '/bot/albums/2',
     ]

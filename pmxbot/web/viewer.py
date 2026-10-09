@@ -646,7 +646,7 @@ class PmxbotPages:
                 not isinstance(value, str)
                 for value in (q, artist, album_title, sort, order, page)
             )
-            or sort not in ('artist', 'album', 'chronology')
+            or sort not in ('artist', 'album', 'chronology', 'variations')
             or order not in ('asc', 'desc')
             or not page.isascii()
             or not page.isdecimal()
@@ -681,6 +681,18 @@ class PmxbotPages:
                 + urllib.parse.urlencode(dict(filters, page=number))
             )
 
+        def sort_url(column):
+            direction = 'asc' if column in ('artist', 'album') else 'desc'
+            if sort == column:
+                direction = 'desc' if order == 'asc' else 'asc'
+            return (
+                pmxbot.config.web_base
+                + '/?'
+                + urllib.parse.urlencode(
+                    dict(filters, sort=column, order=direction, page=1)
+                )
+            )
+
         page = jenv.overlay(autoescape=True).get_template('album_index.html')
         return page.render(
             albums=albums,
@@ -689,6 +701,7 @@ class PmxbotPages:
             page_number=page_number,
             page_count=page_count,
             page_url=page_url,
+            sort_url=sort_url,
             **filters,
             **get_context(),
         ).encode('utf-8')

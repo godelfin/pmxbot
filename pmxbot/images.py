@@ -607,6 +607,7 @@ class ImageCache:
             'artist': 'artists.normalized_name',
             'album': 'albums.normalized_title',
             'chronology': 'albums.created_at',
+            'variations': 'image_count',
         }
         direction = {'asc': 'ASC', 'desc': 'DESC'}[order]
         ordering = f'{columns[sort]} {direction}, albums.id {direction}'
@@ -650,8 +651,16 @@ class ImageCache:
                 if {'album_images', 'image_cache'} <= tables
                 else 'NULL'
             )
+            image_count = (
+                """(SELECT COUNT(DISTINCT image_cache.id) FROM image_cache
+                JOIN album_images USING (cache_key)
+                WHERE album_images.album_id = albums.id)"""
+                if {'album_images', 'image_cache'} <= tables
+                else '0'
+            )
             rows = db.execute(
                 f'SELECT albums.id, albums.title, artists.name AS artist_name, '
+                f'albums.created_at, {image_count} AS image_count, '
                 f'{artwork} AS hosted_url {source}{where} '
                 f'ORDER BY {ordering} LIMIT ? OFFSET ?',
                 values + [page_size, (page - 1) * page_size],
