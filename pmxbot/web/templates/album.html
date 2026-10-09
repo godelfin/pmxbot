@@ -37,6 +37,7 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 .image-cache-key { margin: 1.25rem 0 0; color: #000; font-size: .625rem; overflow-wrap: anywhere; }
 @media (max-width: 48rem) {
   .album-page { padding: .75rem; }
+  nav.account-nav { padding-right: .75rem; padding-left: .75rem; }
   .image-layout { grid-template-columns: minmax(0, 1fr); }
   .image-section { padding: 1rem; }
 }
@@ -47,6 +48,7 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 </style>
 </head>
 <body>
+{% set login_url = base ~ "/login?return_to=" ~ ((base ~ "/albums/" ~ album.id)|urlencode) %}
 {% include "auth_nav.html" %}
 {% block body %}
 <main class="album-page">
@@ -112,7 +114,11 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 <dd class="music-description">{% if draft %}<textarea id="album-{{ name }}" name="{{ name }}" rows="4" maxlength="10000">{{ properties[name] or '' }}</textarea>{% else %}{{ properties[name] or '' }}{% endif %}</dd>
 {% endfor %}
 </dl>
-{% if draft %}<button type="submit">Prepare variation</button></form>{% endif %}
+{% if draft %}
+{% if current_user %}<button type="submit">Generate a new version</button>
+{% else %}<a href="{{ login_url }}">Sign in to regenerate</a>{% endif %}
+</form>
+{% endif %}
 </div>
 </section>
 {% endif %}

@@ -134,7 +134,7 @@ def test_login_rotation_identity_navigation_and_logout(web):
     for path in ('/', '/gallery', f'/albums/{web.album_id}', '/login'):
         response = web.request(path)
         assert response['status'] == 200
-        assert 'Signed in as Alice' in response['body']
+        assert 'Hi, Alice.' in response['body']
         soup = BeautifulSoup(response['body'], 'html.parser')
         assert (
             soup.select_one('form[action$="/logout"]')['action'] == web.base + '/logout'
@@ -149,7 +149,7 @@ def test_login_rotation_identity_navigation_and_logout(web):
     assert 'expires=' in response['headers']['Set-Cookie'].lower()
     assert session_id(signed_cookie) not in RamSession.cache
     assert web.request('/protected', cookie=signed_cookie)['status'] == 401
-    assert 'Signed in as' not in web.request('/')['body']
+    assert 'Hi, Alice.' not in web.request('/')['body']
 
 
 @pytest.mark.parametrize(
@@ -250,8 +250,16 @@ def test_cookie_defaults_anonymous_browsing_and_expiry(web):
     for path in ('/', '/gallery', f'/albums/{web.album_id}'):
         response = web.request(path)
         assert response['status'] == 200
-        assert 'Sign in' in response['body']
-        assert f'href="{web.base}/login"' in response['body']
+        soup = BeautifulSoup(response['body'], 'html.parser')
+        assert not soup.select('nav[aria-label=Account]')
+        if path == '/':
+            form = soup.select_one('.signin-card form')
+            assert form['action'] == web.base + '/login'
+            assert form['method'] == 'post'
+            assert form.select_one('input[name=return_to]')['value'] == web.base + '/'
+            assert form.select_one('input[name=csrf_token]')['value']
+        else:
+            assert not soup.select('.signin-card')
         assert response['headers']['Cache-Control'] == 'no-store'
     cookie = SimpleCookie(response['headers']['Set-Cookie'])[auth.COOKIE_NAME]
     assert cookie['secure'] and cookie['httponly']

@@ -297,7 +297,10 @@ def test_album_and_band_properties(page):
         'Band description': '<b>Band description</b>',
     }
     assert not cards[0].select('script, b, edition')
-    assert not cards[0].select('a')
+    link = cards[0].select_one('a')
+    assert link.get_text() == 'Sign in to regenerate'
+    assert link['href'] == '/bot/login?return_to=/bot/albums/42'
+    assert not cards[0].select('button[type=submit]')
     assert cache.database.read_bytes() == before
 
 

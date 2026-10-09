@@ -11,10 +11,19 @@ h1 { margin: 0 0 1.25rem; font-size: 1.5rem; }
 ul { padding: 1.25rem 1.25rem 1.25rem 2.5rem; background: white; border: 1px solid #d4dbe2; border-radius: .5rem; overflow-wrap: anywhere; }
 li + li { margin-top: .5rem; }
 a { color: #135ba1; }
-a:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
-.leaderboard { max-width: 28rem; margin: 1.25rem 0; padding: 1rem; background: white; border: 1px solid #d4dbe2; border-radius: .5rem; }
-.leaderboard h2 { margin: 0; font-size: 1.125rem; }
+a:focus-visible, button:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
+.homepage-panels { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 1.25rem; margin: 1.25rem 0; }
+.leaderboard { box-sizing: border-box; flex: 1 1 24rem; min-width: 0; max-width: 28rem; margin: 0; padding: 1rem; background: white; border: 1px solid #d4dbe2; border-radius: .5rem; }
+.leaderboard h2, .signin-card h2 { margin: 0; font-size: 1.125rem; }
 .leaderboard p { margin: .25rem 0 .75rem; }
+.signin-card { box-sizing: border-box; flex: 1 1 20rem; min-width: 0; max-width: 24rem; padding: 1rem; background: #fff; border: 1px solid #d4dbe2; border-radius: .5rem; }
+.signin-card p { margin: .25rem 0 1rem; color: #596574; }
+.login-field { margin-bottom: 1rem; }
+.login-field label { display: block; margin-bottom: .35rem; font-weight: bold; }
+.login-field input { box-sizing: border-box; width: 100%; min-width: 0; padding: .65rem .75rem; border: 1px solid #b8c2ce; border-radius: .25rem; color: inherit; background: #fff; font: inherit; font-size: 1rem; }
+.login-field input:focus { border-color: #135ba1; outline: 2px solid #135ba1; outline-offset: 1px; }
+.login-submit { width: 100%; padding: .65rem .75rem; border: 1px solid #135ba1; border-radius: .25rem; color: #fff; background: #135ba1; font: inherit; font-weight: bold; cursor: pointer; }
+.login-submit:hover { background: #104b85; border-color: #104b85; }
 table { width: 100%; border-collapse: collapse; overflow-wrap: anywhere; }
 th, td { padding: .25rem .5rem; text-align: left; }
 th:last-child, td:last-child { text-align: right; }
@@ -25,6 +34,7 @@ th:last-child, td:last-child { text-align: right; }
 <main>
 <h1>Albums</h1>
 <p><a href="{{ base }}/gallery">View artwork gallery</a></p>
+<div class="homepage-panels">
 {% if leaderboard %}
 <section class="leaderboard" aria-labelledby="leaderboard-heading">
 <h2 id="leaderboard-heading">Top album image generators</h2>
@@ -39,6 +49,14 @@ th:last-child, td:last-child { text-align: right; }
 </table>
 </section>
 {% endif %}
+{% if not current_user %}
+<section class="signin-card" aria-labelledby="signin-heading">
+<h2 id="signin-heading">Sign in</h2>
+<p>Sign in to your pmxbot account.</p>
+{% include "login_form.html" %}
+</section>
+{% endif %}
+</div>
 {% if albums %}
 <ul>
 {% for album in albums %}
