@@ -65,6 +65,11 @@ r2_bucket: !env R2_BUCKET
 # Public bucket custom domain (or r2.dev URL for development), not the S3 endpoint.
 r2_public_url: !env R2_PUBLIC_URL
 images_directory: images
+image_api: images # images (default) or responses
+# Required in Responses mode: a mainline model supporting the image_generation tool.
+# responses_model: gpt-5
+# Keep true for previous_response_id continuation; account retention policies apply.
+responses_store: true
 # Image cache metadata uses the main SQLite database configured above.
 images_model: gpt-image-1
 images_size: 1024x1024

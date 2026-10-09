@@ -1,4 +1,5 @@
 import io
+import json
 import sqlite3
 from contextlib import closing
 from unittest.mock import Mock
@@ -191,6 +192,69 @@ def test_render_and_read_only(page):
 
 
 @pytest.mark.parametrize(
+    'mode,metadata,available,reason',
+    [
+        (
+            'responses',
+            {'api': 'responses', 'response_id': 'resp_selected', 'store': True},
+            True,
+            'subject to OpenAI context retention',
+        ),
+        (
+            'images',
+            {'api': 'responses', 'response_id': 'resp_selected', 'store': True},
+            False,
+            'configure image_api',
+        ),
+        ('responses', {'api': 'images'}, False, 'Images API'),
+        ('responses', {}, False, 'legacy image'),
+        (
+            'responses',
+            {'api': 'responses', 'store': True},
+            False,
+            'no stored response context',
+        ),
+        (
+            'responses',
+            {'api': 'responses', 'response_id': 'resp_selected', 'store': False},
+            False,
+            'no stored response context',
+        ),
+    ],
+)
+def test_selected_image_continuation_capability(
+    page, mode, metadata, available, reason
+):
+    cache, request = page
+    insert(cache)
+    pmxbot.config.update(image_api=mode, responses_model='gpt-5')
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            'UPDATE image_cache SET generation_metadata_json = ? WHERE id = 42',
+            (json.dumps(metadata),),
+        )
+        db.execute(
+            """INSERT INTO image_cache
+            (id, cache_key, prompt, normalized_prompt, settings_json,
+             local_filename, generation_metadata_json, created_at)
+            VALUES (43, 'newer', 'newer', 'newer', '{}', 'new.png', '{}', '2099-01-01')"""
+        )
+    MusicLibrary(cache.database).record_image(42, 'newer')
+    before = cache.database.read_bytes()
+    soup = BeautifulSoup(
+        request('/albums/42?source_image_id=42')['body'], 'html.parser'
+    )
+    status = soup.select_one('#continuation-capability')
+    assert status['data-available'] == str(available).lower()
+    assert reason in status.get_text()
+    assert soup.select_one('button[type=submit]').get_text() == 'Prepare variation'
+    assert 'Generate a new version' not in soup.get_text()
+    latest = BeautifulSoup(request()['body'], 'html.parser')
+    assert latest.select_one('#continuation-capability')['data-available'] == 'false'
+    assert cache.database.read_bytes() == before
+
+
+@pytest.mark.parametrize(
     'path',
     [
         '/albums',
@@ -298,10 +362,7 @@ def test_album_and_band_properties(page):
         'Band description': '<b>Band description</b>',
     }
     assert not cards[0].select('script, b, edition')
-    link = cards[0].select_one('a')
-    assert link.get_text() == 'Sign in to regenerate'
-    assert link['href'] == '/bot/login?return_to=/bot/albums/42'
-    assert not cards[0].select('button[type=submit]')
+    assert cards[0].select_one('button[type=submit]').get_text() == 'Prepare variation'
     assert cache.database.read_bytes() == before
 
 

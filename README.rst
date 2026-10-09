@@ -146,11 +146,98 @@ access or create buckets. See `R2 public buckets
 OpenAI generation is billed to your API account; images are uploaded to R2
 and the public link is returned to the requesting channel or private
 conversation. Credentials are redacted from startup configuration logs.
-The implementation follows the `OpenAI Images API
+The implementation follows the `OpenAI image generation guide
 <https://developers.openai.com/api/docs/guides/image-generation>`_.
 Use a GPT Image model supporting PNG output; model, size, and quality are
-passed to the API. Requests run in a background worker, one at a time;
-additional requests receive a busy response instead of being queued.
+passed to the API. Requests run in background workers with the queue described above.
+
+Images and Responses API configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``image_api: images`` is the default and preserves the existing Images API
+request and cache keys. Only ``images`` and ``responses`` are accepted.
+Responses mode uses the same credentials, PNG storage, R2 hosting, and SQLite
+database. Configure an image-tool-capable mainline model separately from the
+image model, for example::
+
+    image_api: responses
+    responses_model: gpt-5
+    images_model: gpt-image-1
+    images_size: 1024x1024
+    images_quality: low
+    responses_store: true
+
+``responses_model`` is required in Responses mode; there is no implicit
+conversation-model default. ``images_model`` is passed as the image generation
+tool's model. Choose models and size/quality settings supported by your project
+and the current `image generation documentation
+<https://developers.openai.com/api/docs/guides/image-generation>`_. Model/tool
+availability and supported options vary; this configuration does not guarantee
+account access. Unsupported combinations return sanitized OpenAI errors rather
+than switching APIs. The image tool is explicitly selected, without forcing an
+``action`` option that is unavailable on some image models.
+
+``responses_store`` must be a YAML boolean and defaults to ``true``. Setting it
+to ``false`` permits standalone generation but disables continuation from those
+results. Responses caching uses exact input text (including whitespace), API,
+conversation model, storage policy, and image settings. API switching creates
+separate cache entries and never converts historical records.
+
+Responses persistence and continuation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each Responses image stores its response ID, previous response ID, actual and
+requested conversation model, storage flag, image tool settings, output call ID,
+returned image settings, revised prompt, creation time, and usage in the existing
+``generation_metadata_json`` column. No new database table or migration is needed.
+The exact input text remains in ``prompt``; rewritten tool prompts are separate.
+Payload bytes and the entire conversation are not duplicated in metadata.
+
+``ImageCache.continue_image(source_image_id, prompt, nick, channel)`` returns the
+new image record, including its numeric ID. It sends only the new text input and
+the source image's stored ``previous_response_id`` reference to Responses. It
+does not open, upload, or send the source bitmap or URL. Every call creates a
+distinct child with ``parent_image_id`` pointing to the chosen source. Its new
+response ID supports another turn, or callers can branch again from an earlier
+image. Only one valid completed image output is accepted; unrelated outputs and
+unsuccessful image calls are ignored. Multiple successful images are rejected
+because a single response reference would not identify an unambiguous source.
+
+``pmxbot.music.continue_album_image(library, cache, source_image_id, inputs, nick,
+channel)`` consumes an F12 ``GenerationInputs`` draft, validates release/source
+identity, builds final instructions, and saves the structured inputs with the
+child. The child and its album association are inserted in one SQLite transaction.
+Canonical album properties, source records, and prior links remain unchanged.
+The album-detail page reports local continuation eligibility for the selected
+image. ``Prepare variation`` still only validates inputs: F13 must connect form
+submission to generation. There is no prompt editing or pre-generation preview.
+
+Images API records, legacy records, missing response IDs, unstored responses,
+and a configured Images backend explicitly reject Responses continuation.
+Local eligibility cannot establish remote availability. According to OpenAI's
+`conversation state guide
+<https://developers.openai.com/api/docs/guides/conversation-state>`_, responses
+have a default 30-day retention period. The `data controls documentation
+<https://developers.openai.com/api/docs/guides/your-data>`_ describes storage
+exceptions, including Zero Data Retention overriding ``store=true``. Deleted or
+expired responses, project/account changes, retention policies, and lost model
+access can prevent reuse. The returned storage flag is recorded conservatively;
+no guarantee of future access is inferred from an ID. A failed continuation
+reports the failure and never silently falls back to uploading old artwork.
+No Conversations API objects are created. Prior input tokens in a response chain
+are billed again, in addition to image generation and conversation-model costs.
+Top-level Responses instructions are not inherited; each turn supplies its own
+complete input text.
+
+Responses generation records cannot be replaced during retries. If hosting
+fails, the new record and response ID remain saved; use
+``ImageCache.retry_upload(image_id)`` to retry hosting without generating again.
+For album continuations, the pending child is already linked to its album.
+A missing local Responses bitmap is reported rather than regenerating under
+the old ID. Failed database writes do not publish a hosted result; an atomic
+local PNG may remain orphaned if persistence fails. Back up the SQLite database
+and image directory together. Local records and files outlive OpenAI retention;
+keeping them does not preserve remote conversation context.
 
 PNG files are saved atomically under ``images_directory`` (relative to the
 bot's working directory, or an absolute path). The ``image_cache`` table uses

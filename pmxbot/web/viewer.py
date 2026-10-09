@@ -317,7 +317,19 @@ def image_metadata(image):
     """Expose useful provider fields, keeping paths and hosting credentials private."""
     sections = []
     for label, field, keys in (
-        ('Settings', 'settings_json', ('model', 'size', 'quality', 'output_format')),
+        (
+            'Settings',
+            'settings_json',
+            (
+                'model',
+                'size',
+                'quality',
+                'output_format',
+                'api',
+                'responses_model',
+                'store',
+            ),
+        ),
         (
             'Generation metadata',
             'generation_metadata_json',
@@ -329,6 +341,14 @@ def image_metadata(image):
                 'size',
                 'quality',
                 'output_format',
+                'api',
+                'response_id',
+                'previous_response_id',
+                'store',
+                'requested_model',
+                'tool',
+                'image_generation_call_id',
+                'image_settings',
             ),
         ),
     ):
@@ -400,6 +420,11 @@ class AlbumPage:
         )
         draft = GenerationInputs.from_source(album, image) if image else None
         context.update(draft=draft, prepared=False, variation_error=None)
+        if image:
+            available, message = cache.continuation_capability(image)
+            context.update(
+                continuation_available=available, continuation_message=message
+            )
         if cherrypy.request.method == 'POST':
             if draft is None:
                 raise cherrypy.HTTPError(400, 'A source image is required')
