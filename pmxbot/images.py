@@ -457,6 +457,72 @@ class ImageCache:
             )
             return [dict(row) for row in rows], total
 
+    def catalog_albums(
+        self,
+        page,
+        page_size=24,
+        q='',
+        artist='',
+        album_title='',
+        sort='chronology',
+        order='desc',
+    ):
+        """Read a filtered album page and count in one consistent read snapshot."""
+        columns = {
+            'artist': 'artists.normalized_name',
+            'album': 'albums.normalized_title',
+            'chronology': 'albums.created_at',
+        }
+        direction = {'asc': 'ASC', 'desc': 'DESC'}[order]
+        ordering = f'{columns[sort]} {direction}, albums.id {direction}'
+        if not self.database.is_file():
+            return [], 0
+        with closing(self.read_connection()) as db:
+            db.execute('BEGIN')
+            tables = {
+                row[0]
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if not {'albums', 'artists'} <= tables:
+                return [], 0
+            # Python casefold supports Unicode case-insensitive search, and
+            # instr treats SQL wildcard characters as ordinary keyword text.
+            db.create_function('casefold', 1, lambda value: value.casefold())
+            conditions, values = [], []
+            if q:
+                conditions.append(
+                    '(instr(casefold(albums.title), ?) > 0 OR '
+                    'instr(casefold(artists.name), ?) > 0)'
+                )
+                values.extend([q.casefold(), q.casefold()])
+            for column, value in (
+                ('artists.name', artist),
+                ('albums.title', album_title),
+            ):
+                if value:
+                    conditions.append(f'{column} = ? COLLATE BINARY')
+                    values.append(value)
+            source = 'FROM albums JOIN artists ON artists.id = albums.artist_id'
+            where = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
+            total = db.execute(f'SELECT COUNT(*) {source}{where}', values).fetchone()[0]
+            artwork = (
+                """(SELECT image_cache.hosted_url FROM image_cache
+                JOIN album_images USING (cache_key)
+                WHERE album_images.album_id = albums.id
+                ORDER BY image_cache.created_at DESC, image_cache.id DESC LIMIT 1)"""
+                if {'album_images', 'image_cache'} <= tables
+                else 'NULL'
+            )
+            rows = db.execute(
+                f'SELECT albums.id, albums.title, artists.name AS artist_name, '
+                f'{artwork} AS hosted_url {source}{where} '
+                f'ORDER BY {ordering} LIMIT ? OFFSET ?',
+                values + [page_size, (page - 1) * page_size],
+            )
+            return [dict(row) for row in rows], total
+
     def album_neighbors(self, album_id):
         """Return adjacent stored album IDs, skipping gaps in the sequence."""
         with closing(self.read_connection()) as db:

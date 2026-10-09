@@ -53,7 +53,7 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 {% block body %}
 <main class="album-page">
 <p><a href="{{ base }}/gallery">Artwork gallery</a></p>
-<h1>{{ album.artist_name }} — {{ album.title }}</h1>
+<h1><a href="{{ base }}/?{{ {'artist': album.artist_name}|urlencode }}">{{ album.artist_name }}</a> — <a href="{{ base }}/?{{ {'album_title': album.title}|urlencode }}">{{ album.title }}</a></h1>
 <div class="image-layout">
 <div class="image-content image-main">
 <section class="image-section" aria-label="Artwork">
