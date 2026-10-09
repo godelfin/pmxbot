@@ -189,3 +189,84 @@ Show logs from the last seven days::
 
     sudo journalctl -u ircbot --since "7 days ago"
     sudo journalctl -u pmxbotweb --since "7 days ago"
+
+Web authentication
+------------------
+
+Provision accounts in the main SQLite database before using web login. From an
+administrator's interactive Python session on the server (using the service
+venv), prompt for the initial password rather than putting it in a shell command,
+configuration file, or source code::
+
+    from contextlib import closing
+    from getpass import getpass
+    from pmxbot.users import UserStore
+
+    with closing(UserStore('sqlite:/home/ircbot/data/pmxbot.sqlite')) as store:
+        user = store.create('Alice', password=getpass('Initial password: '))
+        # For an existing account:
+        # store.set_password(store.get_by_username('Alice').id, getpass())
+
+Use the same ``database`` URI in the bot, viewer, and provisioning session.
+See :doc:`users` for account naming, password storage, and disabling accounts.
+There is no registration or password reset UI. Administrators should assign
+strong, unique passwords and communicate them through a trusted private channel.
+
+The viewer enables CherryPy RAM sessions in its single server process. Only
+``users.id`` is stored as authentication data; the browser receives an opaque
+session identifier. Successful login deletes the previous session and rotates
+its identifier. Logout is a CSRF-protected POST that clears the session, rotates
+its identifier, and expires the cookie. Sessions expire after 30 minutes of
+inactivity, and server restarts log everyone out. Each identity lookup re-reads
+the account; disabled or deleted users lose authorization on the next lookup.
+Password replacement alone does not revoke existing sessions; disable the account
+and restart the viewer if all existing sessions must be revoked immediately.
+
+Cookies are host-only, ``HttpOnly``, ``SameSite=Lax``, scoped to ``web_base``
+(or ``/``), and ``Secure`` by default. Keep ``web_session_secure: true`` in
+production, including when Caddy terminates TLS and forwards HTTP internally.
+The viewer deliberately does not infer cookie security from forwarded headers.
+For isolated local HTTP development only, explicitly set
+``web_session_secure: false``. A quoted string such as ``"false"`` is rejected.
+The following production configuration works with a prefixed mount::
+
+    database: sqlite:/home/ircbot/data/pmxbot.sqlite
+    web_base: /bot
+    web_session_secure: true
+
+Serve the public site exclusively over HTTPS. At Cloudflare, use verified TLS to
+Caddy; Caddy must redirect public HTTP to HTTPS and preserve the ``/bot`` prefix
+when proxying. Bind CherryPy to loopback (``web_host: 127.0.0.1``), or firewall
+its port so only the trusted proxy can reach it. Verify in browser developer tools
+that the ``pmxbot_session`` cookie has Secure, HttpOnly, SameSite=Lax, and the
+expected Path after signing in. A successful login redirects to a relative
+same-application path, so the viewer does not need to trust ``X-Forwarded-Host``
+or ``X-Forwarded-Proto``. Configure HSTS at the public HTTPS proxy. Never log
+request bodies, cookies, or authorization headers at the proxy, viewer, or APM
+layer. Credentials must be submitted in form bodies; CherryPy authentication
+access logs omit query strings even for rejected requests. Configure the proxy
+to omit query strings on login/logout access logs as well.
+
+All existing browsing routes remain public. A shared account navigation fragment
+shows the active username and a POST logout form. Responses containing session
+state use ``Cache-Control: no-store``; Cloudflare/Caddy must honor it and must not
+cache HTML with ``Set-Cookie``. CSRF tokens use a random process-local HMAC key
+and the session identifier; they rotate with the identifier and are never stored
+in cookies or the database. The key needs no deployment secret or persistent
+file, and disappears with RAM sessions on restart.
+
+The viewer allows at most 30 login attempts per rolling minute across all clients,
+including successes, before returning 429 with Retry-After. This deliberately
+bounds password derivation work without trusting forwarded IP addresses; shared
+traffic can exhaust the allowance and temporarily deny other users login. Public
+browsing remains available. Add per-client limiting at the trusted proxy if
+needed. RAM sessions, the CSRF key, and the throttle are process-local: run one
+viewer process. Multiple workers or replicas require a reviewed shared session
+and rate-limit design before deployment.
+
+Future protected endpoints can call
+``pmxbot.web.auth.require_authenticated_user()`` for a canonical User (including
+``may_pair_irc``), or receive HTTP 401. ``current_user()`` returns a User or None
+for public rendering. Future form mutations must accept POST only and call
+``require_csrf(token)`` in addition to the authentication helper. This feature
+does not pair IRC sessions or grant access based on IRC attribution strings.
