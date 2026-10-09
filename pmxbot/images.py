@@ -15,6 +15,7 @@ import sqlite3
 import tempfile
 import threading
 import unicodedata
+import uuid
 from collections.abc import Mapping
 from contextlib import closing
 from pathlib import Path
@@ -40,6 +41,28 @@ _pending: queue.Queue[dict] = queue.Queue(maxsize=10)
 
 class ImageError(Exception):
     """An error safe to display in IRC (no provider response or credentials)."""
+
+
+def generation_metadata(image):
+    """Read optional metadata without reinterpreting legacy image identifiers."""
+    try:
+        value = json.loads(image.get('generation_metadata_json') or '{}')
+    except (ValueError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def response_reference(image):
+    metadata = generation_metadata(image)
+    identifier = metadata.get('response_id')
+    if (
+        metadata.get('api') == 'responses'
+        and metadata.get('store') is True
+        and isinstance(identifier, str)
+        and re.fullmatch(r'resp_[A-Za-z0-9_-]+', identifier)
+    ):
+        return identifier
+    return None
 
 
 def normalize_prompt(prompt):
@@ -223,6 +246,48 @@ class ImageCache:
             'quality': config.get('images_quality', 'low'),
             'output_format': 'png',
         }
+        self.image_api = config.get('image_api', 'images')
+        if self.image_api not in ('images', 'responses'):
+            raise ImageError('image_api must be images or responses.')
+        self.responses_model = config.get('responses_model')
+        self.responses_store = config.get('responses_store', True)
+        if self.image_api == 'responses':
+            if (
+                not isinstance(self.responses_model, str)
+                or not self.responses_model.strip()
+            ):
+                raise ImageError(
+                    'Configure responses_model with an image-tool-capable model.'
+                )
+            if type(self.responses_store) is not bool:
+                raise ImageError('responses_store must be true or false.')
+        self._credentials(config)
+
+    def continuation_capability(self, image):
+        """Local eligibility only: remote retention/access is checked by OpenAI."""
+        metadata = generation_metadata(image)
+        if metadata.get('api') != 'responses':
+            return False, (
+                'Responses continuation unavailable: this image uses the Images API.'
+                if metadata.get('api') == 'images'
+                else 'Responses continuation unavailable: this legacy image has no Responses context.'
+            )
+        if not response_reference(image):
+            return (
+                False,
+                'Responses continuation unavailable: no stored response context.',
+            )
+        if self.image_api != 'responses':
+            return (
+                False,
+                'Responses continuation unavailable: configure image_api: responses.',
+            )
+        return True, (
+            'Responses continuation available from this image, subject to OpenAI context retention '
+            'and project access. Generation is not connected to this form yet.'
+        )
+
+    def _credentials(self, config):
         self.openai_key = config.get('openai_api_key') or os.environ.get(
             'OPENAI_API_KEY'
         )
@@ -266,6 +331,14 @@ class ImageCache:
 
     def cache_key(self, prompt):
         value = dict(self.settings, prompt=normalize_prompt(prompt), version=1)
+        if self.image_api == 'responses':
+            value.update(
+                api='responses',
+                responses_model=self.responses_model,
+                store=self.responses_store,
+                prompt=prompt,
+                version=2,
+            )
         return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
     def connect(self):
@@ -490,9 +563,68 @@ class ImageCache:
             return row['hosted_url']
 
     def get(self, prompt, nick='', channel=''):
+        return self._get(prompt, nick, channel, self.cache_key(prompt))
+
+    def continue_image(
+        self, source_image_id, prompt, nick='', channel='', *, inputs=None
+    ):
+        """Create a distinct child using only the source's Responses reference.
+
+        Returns its numeric image record. No source bitmap is opened or sent.
+        Structured album inputs, when supplied, are linked in the insert transaction.
+        """
+        if type(source_image_id) is not int or not 0 < source_image_id <= 2**63 - 1:
+            raise ImageError('Invalid source image ID.')
+        try:
+            source = self.get_image(source_image_id)
+        except LookupError:
+            raise ImageError('Unknown source image ID.') from None
+        except (sqlite3.Error, OSError):
+            raise ImageError(
+                'Could not read the source; check image storage.'
+            ) from None
+        available, message = self.continuation_capability(source)
+        if not available:
+            raise ImageError(message)
+        key = uuid.uuid4().hex
+        try:
+            self._get(
+                prompt,
+                nick,
+                channel,
+                key,
+                source_image_id,
+                response_reference(source),
+                inputs,
+            )
+            with closing(self.read_connection()) as db:
+                row = db.execute(
+                    'SELECT * FROM image_cache WHERE cache_key = ?', (key,)
+                ).fetchone()
+            return dict(row)
+        except (sqlite3.Error, OSError):
+            raise ImageError(
+                'Could not save the continuation; check image storage.'
+            ) from None
+
+    def retry_upload(self, image_id):
+        """Retry hosting a saved result by ID without replacing Responses context."""
+        image = self.get_image(image_id)
+        self._get(image['prompt'], '', '', image['cache_key'])
+        return self.get_image(image_id)
+
+    def _get(
+        self,
+        prompt,
+        nick,
+        channel,
+        key,
+        parent_image_id=None,
+        previous_response_id=None,
+        inputs=None,
+    ):
         if not normalize_prompt(prompt):
             raise ImageError('Usage: !image <prompt>')
-        key = self.cache_key(prompt)
         destination = self.destination(key)
         url = self.r2['public_url'].rstrip('/') + '/' + quote(destination['key'])
         with closing(self.connect()) as db:
@@ -523,14 +655,57 @@ class ImageCache:
                 Path(row['local_filename']) if row else self.directory / f'{key}.png'
             )
             if not row or not filename.is_file():
+                if row and generation_metadata(dict(row)).get('api') == 'responses':
+                    raise ImageError(
+                        'Saved Responses image file is missing; refusing to replace its conversation context.'
+                    )
                 if not self.openai_key:
                     raise ImageError(
                         'Configure OPENAI_API_KEY before generating images.'
                     )
-                image, metadata = self.generate(prompt)
+                if previous_response_id:
+                    image, metadata = self.generate_responses(
+                        prompt, previous_response_id
+                    )
+                else:
+                    image, metadata = self.generate(prompt)
+                if inputs is not None:
+                    metadata['generation_inputs'] = inputs
                 filename = self.directory / f'{key}.png'
-                self.save(filename, image)
-                self.persist_image(db, key, prompt, filename, metadata, nick, channel)
+                db.execute('BEGIN IMMEDIATE')
+                try:
+                    # Another worker may have populated this key during the API call.
+                    existing = db.execute(
+                        'SELECT * FROM image_cache WHERE cache_key = ?', (key,)
+                    ).fetchone()
+                    if (
+                        existing
+                        and generation_metadata(dict(existing)).get('api')
+                        == 'responses'
+                    ):
+                        raise ImageError(
+                            'Responses image is already persisted; repeat the request to reuse it.'
+                        )
+                    self.save(filename, image)
+                    self.persist_image(
+                        db,
+                        key,
+                        prompt,
+                        filename,
+                        metadata,
+                        nick,
+                        channel,
+                        parent_image_id,
+                    )
+                    if inputs is not None:
+                        db.execute(
+                            'INSERT INTO album_images (album_id, cache_key) VALUES (?, ?)',
+                            (inputs['album_id'], key),
+                        )
+                    db.execute('COMMIT')
+                except Exception:
+                    db.execute('ROLLBACK')
+                    raise
             try:
                 metadata = self.upload(filename, destination)
             except ImageError as exc:
@@ -538,6 +713,13 @@ class ImageCache:
                     'UPDATE image_cache SET last_error = ? WHERE cache_key = ?',
                     (str(exc), key),
                 )
+                if previous_response_id:
+                    identifier = db.execute(
+                        'SELECT id FROM image_cache WHERE cache_key = ?', (key,)
+                    ).fetchone()[0]
+                    raise ImageError(
+                        f'Image #{identifier} saved locally, but upload failed. Retry hosting by image ID.'
+                    ) from None
                 raise ImageError(
                     'Image saved locally, but upload failed. Repeat the prompt to retry.'
                 ) from None
@@ -567,9 +749,15 @@ class ImageCache:
         Invalid ancestry raises sqlite3.IntegrityError.
         """
         row = db.execute(
-            'SELECT parent_image_id FROM image_cache WHERE cache_key = ?', (key,)
+            'SELECT parent_image_id, generation_metadata_json FROM image_cache WHERE cache_key = ?',
+            (key,),
         ).fetchone()
         if row is not None:
+            if (
+                metadata.get('api') == 'responses'
+                or generation_metadata(dict(row)).get('api') == 'responses'
+            ):
+                raise sqlite3.IntegrityError('Responses image generation is immutable')
             if parent_image_id is not None and row[0] != parent_image_id:
                 raise sqlite3.IntegrityError('Image ancestry is immutable')
             parent_image_id = row[0]
@@ -590,7 +778,16 @@ class ImageCache:
                 key,
                 prompt,
                 normalize_prompt(prompt),
-                json.dumps(self.settings),
+                json.dumps(
+                    dict(
+                        self.settings,
+                        api='responses',
+                        responses_model=self.responses_model,
+                        store=self.responses_store,
+                    )
+                    if self.image_api == 'responses'
+                    else self.settings
+                ),
                 str(filename),
                 json.dumps(metadata),
                 nick,
@@ -600,6 +797,8 @@ class ImageCache:
         )
 
     def generate(self, prompt):
+        if self.image_api == 'responses':
+            return self.generate_responses(prompt)
         data = post_json(
             'https://api.openai.com/v1/images/generations',
             'OpenAI',
@@ -614,9 +813,89 @@ class ImageCache:
                 raise ValueError('Not a PNG')
             metadata = {key: value for key, value in data.items() if key != 'data'}
             metadata['revised_prompt'] = item.get('revised_prompt')
+            metadata['api'] = 'images'
             return image, metadata
         except (KeyError, IndexError, TypeError, ValueError, binascii.Error):
             raise ImageError('OpenAI returned no valid PNG image.') from None
+
+    def generate_responses(self, prompt, previous_response_id=None):
+        tool = dict(self.settings, type='image_generation')
+        request = dict(
+            model=self.responses_model,
+            input=prompt,
+            tools=[tool],
+            tool_choice={'type': 'image_generation'},
+            store=self.responses_store,
+        )
+        if previous_response_id:
+            request['previous_response_id'] = previous_response_id
+        try:
+            data = post_json(
+                'https://api.openai.com/v1/responses',
+                'OpenAI',
+                headers={'Authorization': f'Bearer {self.openai_key}'},
+                json=request,
+                timeout=(10, 300),
+            )
+        except ImageError as exc:
+            if previous_response_id:
+                raise ImageError(
+                    'Responses continuation failed; its context may be expired, deleted, '
+                    'or inaccessible in this project. No source image was uploaded. '
+                    + str(exc)
+                ) from None
+            raise
+        try:
+            identifier = data['id']
+            if not isinstance(identifier, str) or not re.fullmatch(
+                r'resp_[A-Za-z0-9_-]+', identifier
+            ):
+                raise ValueError('Missing response reference')
+            if data['status'] != 'completed' or data.get('error'):
+                raise ValueError('Incomplete response')
+            outputs = data['output']
+            if not isinstance(outputs, list):
+                raise ValueError('Invalid output')
+            candidates = []
+            for item in outputs:
+                if (
+                    not isinstance(item, dict)
+                    or item.get('type') != 'image_generation_call'
+                    or item.get('status') != 'completed'
+                ):
+                    continue
+                try:
+                    image = base64.b64decode(item['result'], validate=True)
+                    if image.startswith(b'\x89PNG\r\n\x1a\n') and isinstance(
+                        item.get('id'), str
+                    ):
+                        candidates.append((image, item))
+                except (KeyError, TypeError, ValueError, binascii.Error):
+                    continue
+            if len(candidates) != 1:
+                raise ValueError('Requires one unambiguous image')
+            image, item = candidates[0]
+            metadata = {
+                'api': 'responses',
+                'response_id': identifier,
+                'previous_response_id': previous_response_id,
+                'store': self.responses_store and data.get('store') is True,
+                'model': data.get('model'),
+                'requested_model': self.responses_model,
+                'tool': tool,
+                'image_generation_call_id': item['id'],
+                'revised_prompt': item.get('revised_prompt'),
+                'created': data.get('created_at'),
+                'usage': data.get('usage'),
+                'image_settings': {
+                    name: item[name] for name in self.settings if name in item
+                },
+            }
+            return image, metadata
+        except (KeyError, TypeError, ValueError, binascii.Error):
+            raise ImageError(
+                'OpenAI returned no single completed PNG image with a Responses reference.'
+            ) from None
 
     @staticmethod
     def save(filename, image):

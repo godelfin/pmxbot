@@ -1393,3 +1393,462 @@ def test_image_ancestry_sql_constraints(config, foreign_keys):
             ).fetchone()[0]
             == 1
         )
+
+
+@pytest.fixture
+def responses_post(config, post):
+    config.update(image_api='responses', responses_model='gpt-5')
+    post.return_value.json.return_value = {
+        'id': 'resp_root',
+        'status': 'completed',
+        'store': True,
+        'model': 'gpt-5-snapshot',
+        'created_at': 123,
+        'usage': {'total_tokens': 42},
+        'output': [
+            {'type': 'message', 'content': []},
+            {
+                'type': 'image_generation_call',
+                'id': 'ig_root',
+                'status': 'completed',
+                'result': base64.b64encode(PNG).decode(),
+                'revised_prompt': 'A revised instruction',
+                'quality': 'low',
+            },
+        ],
+    }
+    return post
+
+
+@pytest.mark.parametrize('mode', [None, 'images', 'responses'])
+def test_image_api_modes(config, post, mode):
+    if mode:
+        config['image_api'] = mode
+    if mode == 'responses':
+        config['responses_model'] = 'gpt-5'
+    cache = images.ImageCache(config)
+    assert cache.image_api == (mode or 'images')
+    if mode != 'responses':
+        cache.get('cat')
+        assert post.call_args.args[0].endswith('/images/generations')
+        assert post.call_args.kwargs['json'] == dict(cache.settings, prompt='cat', n=1)
+        assert (
+            json.loads(read_row(cache)['generation_metadata_json'])['api'] == 'images'
+        )
+
+
+@pytest.mark.parametrize(
+    'settings',
+    [
+        {'image_api': 'invalid'},
+        {'image_api': None},
+        {'image_api': []},
+        {'image_api': 'responses'},
+        {'image_api': 'responses', 'responses_model': ''},
+        {'image_api': 'responses', 'responses_model': 42},
+        {
+            'image_api': 'responses',
+            'responses_model': 'gpt-5',
+            'responses_store': 'false',
+        },
+    ],
+)
+def test_invalid_image_api_configuration(config, post, settings):
+    with pytest.raises(images.ImageError):
+        images.ImageCache(dict(config, **settings))
+    post.assert_not_called()
+
+
+def test_responses_generation_persistence_and_cache(config, responses_post):
+    cache = images.ImageCache(config)
+    original = '  Exact Café\n prompt  '
+    cache.get(original, 'alice', '#test')
+    saved = dict(read_row(cache))
+    metadata = json.loads(saved['generation_metadata_json'])
+    assert metadata['response_id'] == 'resp_root'
+    assert metadata['image_generation_call_id'] == 'ig_root'
+    assert metadata['model'] == 'gpt-5-snapshot'
+    assert metadata['requested_model'] == 'gpt-5'
+    assert metadata['tool'] == dict(cache.settings, type='image_generation')
+    assert metadata['image_settings'] == {'quality': 'low'}
+    assert metadata['revised_prompt'] == 'A revised instruction'
+    assert metadata['usage'] == {'total_tokens': 42}
+    assert metadata['store'] is True
+    assert metadata['previous_response_id'] is None
+    assert 'result' not in metadata and 'output' not in metadata
+    assert saved['prompt'] == original
+    assert saved['parent_image_id'] is None
+    assert Path(saved['local_filename']).read_bytes() == PNG
+    assert json.loads(saved['settings_json'])['responses_model'] == 'gpt-5'
+    assert responses_post.call_args.args[0] == 'https://api.openai.com/v1/responses'
+    assert responses_post.call_args.kwargs['json'] == {
+        'model': 'gpt-5',
+        'input': original,
+        'tools': [dict(cache.settings, type='image_generation')],
+        'tool_choice': {'type': 'image_generation'},
+        'store': True,
+    }
+    restarted = images.ImageCache(config)
+    restarted.get(original)
+    assert responses_post.call_count == 1
+    assert (
+        restarted.get_image(saved['id'])['generation_metadata_json']
+        == saved['generation_metadata_json']
+    )
+    assert cache.cache_key(original) != cache.cache_key(original.strip())
+    assert cache.cache_key(original) != images.ImageCache(
+        dict(config, image_api='images')
+    ).cache_key(original)
+    assert cache.cache_key(original) != images.ImageCache(
+        dict(config, responses_model='other')
+    ).cache_key(original)
+    assert cache.cache_key(original) != images.ImageCache(
+        dict(config, responses_store=False)
+    ).cache_key(original)
+
+
+def test_responses_continuation_and_branching_without_source_bitmap(
+    config, responses_post, r2
+):
+    cache = images.ImageCache(config)
+    cache.get('root')
+    root = dict(read_row(cache))
+    # Context continuation must work even when no local source bitmap exists.
+    Path(root['local_filename']).unlink()
+    responses_post.return_value.json.return_value['id'] = 'resp_child'
+    child = cache.continue_image(root['id'], '  Make it blue\n ', 'bob', '#other')
+    assert (
+        responses_post.call_args.kwargs['json']['previous_response_id'] == 'resp_root'
+    )
+    assert (
+        responses_post.call_args.kwargs['json']['input']
+        == child['prompt']
+        == '  Make it blue\n '
+    )
+    assert child['parent_image_id'] == root['id']
+    assert child['requested_by'] == 'bob'
+    assert child['channel'] == '#other'
+    responses_post.return_value.json.return_value['id'] = 'resp_grandchild'
+    grandchild = cache.continue_image(child['id'], 'Make it green')
+    assert (
+        responses_post.call_args.kwargs['json']['previous_response_id'] == 'resp_child'
+    )
+    assert grandchild['parent_image_id'] == child['id']
+    responses_post.return_value.json.return_value['id'] = 'resp_branch'
+    branch = cache.continue_image(root['id'], 'Make it green')
+    assert (
+        responses_post.call_args.kwargs['json']['previous_response_id'] == 'resp_root'
+    )
+    assert branch['parent_image_id'] == root['id']
+    assert len({root['id'], child['id'], grandchild['id'], branch['id']}) == 4
+    assert cache.get_image(root['id']) == root
+    for call in responses_post.call_args_list:
+        assert set(call.kwargs) == {'headers', 'json', 'timeout'}
+        assert isinstance(call.kwargs['json']['input'], str)
+        assert 'image' not in call.kwargs['json']
+        assert 'files' not in call.kwargs
+    assert responses_post.call_count == r2.put_object.call_count == 4
+
+
+def test_structured_album_continuation_contract(config, responses_post):
+    from dataclasses import asdict, replace
+    from pmxbot.music import GenerationInputs, continue_album_image
+
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album', genre='Jazz')
+    generate_album_image(library, cache, album['id'])
+    source = dict(read_row(cache))
+    canonical = library.get_album(album['id'])
+    draft = replace(
+        GenerationInputs.from_source(canonical, source),
+        description='Exact\n album description',
+        artist_description='Band visual cue',
+        artist_genre='Rock',
+    )
+    responses_post.return_value.json.return_value['id'] = 'resp_child'
+    child = continue_album_image(library, cache, source['id'], draft, 'bob', '#test')
+    assert child['parent_image_id'] == source['id']
+    assert json.loads(child['generation_metadata_json'])['generation_inputs'] == asdict(
+        draft
+    )
+    assert 'Exact\n album description' in child['prompt']
+    assert 'Band visual cue' in child['prompt'] and 'Rock' in child['prompt']
+    assert responses_post.call_args.kwargs['json']['input'] == child['prompt']
+    saved = library.get_album(album['id'])
+    assert saved == dict(
+        canonical,
+        images=sorted(
+            canonical['images'] + [{'cache_key': child['cache_key']}],
+            key=lambda item: item['cache_key'],
+        ),
+    )
+    assert cache.get_image(source['id']) == source
+    responses_post.reset_mock()
+    for invalid in (
+        replace(draft, title='Rename'),
+        replace(draft, source_image_id=999),
+    ):
+        with pytest.raises(images.ImageError):
+            continue_album_image(library, cache, source['id'], invalid)
+    responses_post.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'metadata',
+    [
+        {},
+        {'api': 'images', 'response_id': 'resp_fake', 'store': True},
+        {'api': 'responses', 'store': True},
+        {'api': 'responses', 'store': True, 'response_id': 'not-a-response'},
+        {'api': 'responses', 'store': False, 'response_id': 'resp_root'},
+        {'api': 'responses', 'store': True, 'response_id': 42},
+        [],
+    ],
+)
+def test_continuation_rejects_unsupported_context(config, post, metadata):
+    cache = images.ImageCache(config)
+    cache.get('root')
+    source = dict(read_row(cache))
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            'UPDATE image_cache SET generation_metadata_json = ?',
+            (json.dumps(metadata),),
+        )
+    config.update(image_api='responses', responses_model='gpt-5')
+    post.reset_mock()
+    with pytest.raises(images.ImageError, match='continuation unavailable'):
+        images.ImageCache(config).continue_image(source['id'], 'blue')
+    post.assert_not_called()
+
+
+@pytest.mark.parametrize('store', [False, True])
+def test_responses_store_context_policy(config, responses_post, store):
+    config['responses_store'] = store
+    # Account policy may override store=True (e.g. Zero Data Retention).
+    responses_post.return_value.json.return_value['store'] = False
+    cache = images.ImageCache(config)
+    cache.get('root')
+    assert responses_post.call_args.kwargs['json']['store'] is store
+    source = dict(read_row(cache))
+    assert images.response_reference(source) is None
+    with pytest.raises(images.ImageError, match='no stored response context'):
+        cache.continue_image(source['id'], 'blue')
+    assert responses_post.call_count == 1
+
+
+def test_switch_to_images_disables_continuation_without_mutation(
+    config, responses_post
+):
+    cache = images.ImageCache(config)
+    cache.get('root')
+    source = dict(read_row(cache))
+    switched = images.ImageCache(dict(config, image_api='images'))
+    with pytest.raises(images.ImageError, match='configure image_api'):
+        switched.continue_image(source['id'], 'blue')
+    assert switched.get_image(source['id']) == source
+    with pytest.raises(images.ImageError, match='Unknown source'):
+        cache.continue_image(999, 'blue')
+    assert responses_post.call_count == 1
+
+
+@pytest.mark.parametrize(
+    'change',
+    [
+        {'id': None},
+        {'id': 'ig_wrong'},
+        {'status': 'incomplete'},
+        {'error': {'message': 'secret'}},
+        {'output': None},
+        {'output': []},
+        {'output': [{'type': 'message'}]},
+        {
+            'output': [
+                {
+                    'type': 'image_generation_call',
+                    'id': 'ig_x',
+                    'status': 'failed',
+                    'result': base64.b64encode(PNG).decode(),
+                }
+            ]
+        },
+        {
+            'output': [
+                {
+                    'type': 'image_generation_call',
+                    'id': 'ig_x',
+                    'status': 'completed',
+                    'result': 'invalid',
+                }
+            ]
+        },
+    ],
+)
+def test_invalid_responses_do_not_persist_or_upload(config, responses_post, r2, change):
+    responses_post.return_value.json.return_value.update(change)
+    cache = images.ImageCache(config)
+    with pytest.raises(images.ImageError, match='single completed PNG'):
+        cache.get('root')
+    assert read_row(cache) is None
+    r2.put_object.assert_not_called()
+
+
+def test_responses_multiple_outputs_require_unambiguous_image(
+    config, responses_post, r2
+):
+    data = responses_post.return_value.json.return_value
+    data['output'].insert(
+        0, {'type': 'image_generation_call', 'status': 'completed', 'result': 'bad'}
+    )
+    cache = images.ImageCache(config)
+    cache.get('one image plus other outputs')
+    data['output'].append(dict(data['output'][-1], id='ig_other'))
+    with pytest.raises(images.ImageError, match='single completed PNG'):
+        cache.get('multiple images')
+    assert r2.put_object.call_count == 1
+
+
+@pytest.mark.parametrize(
+    'status,code',
+    [
+        (404, 'not_found'),
+        (400, 'previous_response_not_found'),
+        (403, 'permission_denied'),
+        (429, 'rate_limit_exceeded'),
+    ],
+)
+def test_unavailable_responses_context_is_safe_and_has_no_fallback(
+    config, responses_post, r2, status, code
+):
+    cache = images.ImageCache(config)
+    cache.get('root')
+    source = dict(read_row(cache))
+    response = requests.Response()
+    response.status_code = status
+    response._content = json.dumps(
+        {'error': {'code': code, 'message': 'secret openai-secret'}}
+    ).encode()
+    responses_post.side_effect = requests.HTTPError(
+        'secret credentials', response=response
+    )
+    with pytest.raises(images.ImageError) as caught:
+        cache.continue_image(source['id'], 'blue')
+    assert 'expired, deleted, or inaccessible' in str(caught.value)
+    assert 'No source image was uploaded' in str(caught.value)
+    assert 'secret' not in str(caught.value)
+    assert cache.get_image(source['id']) == source
+    with sqlite3.connect(cache.database) as db:
+        assert db.execute('SELECT COUNT(*) FROM image_cache').fetchone()[0] == 1
+    assert responses_post.call_count == 2
+    assert r2.put_object.call_count == 1
+
+
+def test_responses_upload_failure_keeps_id_and_context_for_retry(
+    config, responses_post, r2
+):
+    cache = images.ImageCache(config)
+    cache.get('root')
+    source = dict(read_row(cache))
+    responses_post.return_value.json.return_value['id'] = 'resp_child'
+    r2.put_object.side_effect = images.BotoCoreError()
+    with pytest.raises(images.ImageError, match='saved locally'):
+        cache.continue_image(source['id'], 'blue')
+    with sqlite3.connect(cache.database) as db:
+        child_id = db.execute(
+            'SELECT id FROM image_cache WHERE parent_image_id = ?', (source['id'],)
+        ).fetchone()[0]
+    child = cache.get_image(child_id)
+    assert images.response_reference(child) == 'resp_child'
+    assert child['hosted_url'] is None
+    r2.put_object.side_effect = None
+    retried = cache.retry_upload(child_id)
+    assert retried['hosted_url'] and retried['id'] == child_id
+    assert retried['generation_metadata_json'] == child['generation_metadata_json']
+    assert responses_post.call_count == 2
+    Path(retried['local_filename']).unlink()
+    with sqlite3.connect(cache.database) as db:
+        db.execute('UPDATE image_cache SET hosted_url = NULL WHERE id = ?', (child_id,))
+    with pytest.raises(images.ImageError, match='refusing to replace'):
+        cache.retry_upload(child_id)
+    assert responses_post.call_count == 2
+
+
+def test_continuation_storage_failure_is_safe(config, responses_post, monkeypatch):
+    cache = images.ImageCache(config)
+    cache.get('root')
+    source = dict(read_row(cache))
+    monkeypatch.setattr(
+        cache,
+        'persist_image',
+        Mock(side_effect=sqlite3.OperationalError('secret path')),
+    )
+    with pytest.raises(images.ImageError, match='check image storage') as caught:
+        cache.continue_image(source['id'], 'blue')
+    assert 'secret' not in str(caught.value)
+    assert cache.get_image(source['id']) == source
+    with sqlite3.connect(cache.database) as db:
+        assert db.execute('SELECT COUNT(*) FROM image_cache').fetchone()[0] == 1
+
+
+def test_responses_records_refuse_replacement(config, responses_post):
+    from contextlib import closing
+
+    cache = images.ImageCache(config)
+    cache.get('root')
+    source = dict(read_row(cache))
+    with closing(cache.connect()) as db:
+        with pytest.raises(sqlite3.IntegrityError, match='immutable'):
+            cache.persist_image(
+                db, source['cache_key'], 'replacement', 'different.png', {}
+            )
+    assert cache.get_image(source['id']) == source
+
+
+def test_album_continuation_link_failure_rolls_back_child(config, responses_post):
+    from contextlib import closing
+    from pmxbot.music import GenerationInputs, continue_album_image
+
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
+    generate_album_image(library, cache, album['id'])
+    source = dict(read_row(cache))
+    draft = GenerationInputs.from_source(album, source)
+    with closing(cache.connect()) as db:
+        db.execute(
+            '''CREATE TRIGGER reject_child_link BEFORE INSERT ON album_images
+                      BEGIN SELECT RAISE(ABORT, 'secret storage detail'); END'''
+        )
+    with pytest.raises(images.ImageError, match='check image storage'):
+        continue_album_image(library, cache, source['id'], draft)
+    assert cache.get_image(source['id']) == source
+    with sqlite3.connect(cache.database) as db:
+        assert db.execute('SELECT COUNT(*) FROM image_cache').fetchone()[0] == 1
+        assert db.execute('SELECT COUNT(*) FROM album_images').fetchone()[0] == 1
+    failure = cache.album_image_failures(album['id'])[0]
+    assert failure['prompt'] == responses_post.call_args.kwargs['json']['input']
+    assert 'secret' not in failure['error']
+
+
+@pytest.mark.parametrize('stage', ['read', 'save'])
+def test_continuation_filesystem_failure_is_safe(
+    config, responses_post, monkeypatch, r2, stage
+):
+    cache = images.ImageCache(config)
+    cache.get('root')
+    source = dict(read_row(cache))
+    operation = 'get_image' if stage == 'read' else 'save'
+    monkeypatch.setattr(cache, operation, Mock(side_effect=OSError('secret location')))
+    with pytest.raises(images.ImageError, match='check image storage') as caught:
+        cache.continue_image(source['id'], 'blue')
+    assert 'secret' not in str(caught.value)
+    assert r2.put_object.call_count == 1
+    assert responses_post.call_count == (1 if stage == 'read' else 2)
+
+
+@pytest.mark.parametrize('source_id', [None, True, '1', -1, 0, 2**63])
+def test_continuation_source_id_validation(config, responses_post, source_id):
+    cache = images.ImageCache(config)
+    with pytest.raises(images.ImageError, match='Invalid source image ID'):
+        cache.continue_image(source_id, 'blue')
+    responses_post.assert_not_called()
