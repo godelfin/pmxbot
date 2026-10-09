@@ -209,8 +209,8 @@ identity, builds final instructions, and saves the structured inputs with the
 child. The child and its album association are inserted in one SQLite transaction.
 Canonical album properties, source records, and prior links remain unchanged.
 The album-detail page reports local continuation eligibility for the selected
-image. ``Prepare variation`` still only validates inputs: F13 must connect form
-submission to generation. There is no prompt editing or pre-generation preview.
+image. ``Generate variation`` submits validated structured properties to the
+configured backend. There is no prompt editing or pre-generation preview.
 
 Images API records, legacy records, missing response IDs, unstored responses,
 and a configured Images backend explicitly reject Responses continuation.
@@ -325,22 +325,51 @@ them with ``!band add: <band name>`` and ``!album add: <album title>``.
 song quote library.
 
 
-Preparing artwork variations
-----------------------------
+Generating artwork variations
+-----------------------------
 
-On an album page with artwork, the variation form starts from the canonical
-album and artist properties. Band name and album title remain fixed. Format,
-format description, both genres, and both descriptions describe one visual
-interpretation of that release. Retired configured choices remain selectable
-when they are source values.
+On an album page with artwork, the variation form starts from that image's
+saved structured properties, or canonical album and artist properties for
+legacy images. Band name, album title, and canonical database records remain
+fixed. Format, format description, both genres, and both descriptions describe
+one visual interpretation. Retired source choices remain selectable.
 
-``Prepare variation`` validates the structured inputs without saving changes
-or generating artwork. The source image ID stays attached to the draft; an
-existing image can be selected with ``?source_image_id=<id>`` on its album page.
-Drafts last only for the current response. The page shows the source image's
-existing prompt, but never builds or previews the variation prompt. F13 can
-consume ``GenerationInputs.album_properties()`` with the shared ``album_prompt``
-builder when generation is implemented.
+With ``images_enabled: true``, ``Generate variation`` validates the six creative
+fields and derives the final prompt internally. No raw prompt control or
+pre-generation preview is provided. Anonymous visitors may generate variations;
+the existing session CSRF guard protects submissions. Generation runs within
+the HTTP request, so the web server/proxy must permit the provider's latency
+(the OpenAI read timeout is 300 seconds). Successful POSTs redirect to the new
+image's album page, showing its numeric image ID, artwork, and exact prompt.
+Provider/storage failures also redirect with session feedback, so refreshing
+cannot repeat generation. Explicitly submitting again creates another image.
+
+``image_api: images`` sends the saved source PNG to the Images API edits endpoint
+using the configured GPT Image model, size, quality, and PNG output settings.
+A missing local source or a non-GPT-Image model disables the form. This path
+also accepts legacy images with a saved PNG; it does not download hosted images.
+Provider access and model-specific edit restrictions are checked by OpenAI.
+See the `official Images edit API
+<https://developers.openai.com/api/reference/resources/images/methods/edit>`_.
+
+``image_api: responses`` uses the selected image's stored response ID as
+``previous_response_id`` and sends only the new instructions. It never reads or
+uploads the source PNG. Legacy/Images records, missing or unstored response IDs,
+and expired/deleted/inaccessible remote context cannot continue. The form
+explains local eligibility; remote failures are reported without falling back
+to an upload or independent generation. Responses retention limitations above
+still apply. Selecting an earlier ``?source_image_id=<id>`` branches from that
+specific response rather than the latest album image.
+
+Every successful provider result receives a new random cache key and distinct
+numeric image ID, ``parent_image_id`` pointing to the source, exact final prompt,
+and ``generation_inputs`` in existing generation metadata. Responses results
+also retain their new conversation metadata. Image insertion and same-album
+association share one SQLite transaction; no schema change is required.
+If hosting fails, the new image remains saved and linked, and the error includes
+its ID for ``ImageCache.retry_upload(id)``. Retrying hosting cannot replace saved
+variation artwork or generation metadata. The source image is never modified.
+
 
 
 Historical music database upgrades

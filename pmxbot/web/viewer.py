@@ -24,7 +24,7 @@ import pmxbot.util
 from pmxbot.images import ImageCache, ImageError
 from pmxbot.users import InvalidCredentials, UserError, UserStore, UsernameTaken
 from pmxbot.web import auth
-from pmxbot.music import GenerationInputs
+from pmxbot.music import GenerationInputs, MusicLibrary, generate_album_variation
 
 jenv = jinja2.Environment(loader=jinja2.loaders.PackageLoader('pmxbot.web'))
 TIMEOUT = 10.0
@@ -380,6 +380,11 @@ class AlbumPage:
         value = path[0].lstrip('0')
         if not value or len(value) > 19 or int(value) > 2**63 - 1:
             raise cherrypy.HTTPError(404, 'Unknown album ID')
+        csrf = (
+            params.pop('csrf_token', None)
+            if cherrypy.request.method == 'POST'
+            else None
+        )
         source_id = params.pop('source_image_id', None)
         if source_id is not None:
             if (
@@ -402,7 +407,7 @@ class AlbumPage:
             failures = cache.album_image_failures(int(value))
         except LookupError:
             raise cherrypy.HTTPError(404, 'Unknown album ID') from None
-        except (sqlite3.Error, ImageError):
+        except (sqlite3.Error, OSError, ImageError):
             raise cherrypy.HTTPError(503, 'Album storage is unavailable') from None
         context = get_context()
         context['metadata_sections'] = image_metadata(image) if image else []
@@ -419,11 +424,31 @@ class AlbumPage:
             image_url=safe_image_url(image['hosted_url']) if image else None,
         )
         draft = GenerationInputs.from_source(album, image) if image else None
-        context.update(draft=draft, prepared=False, variation_error=None)
+        context.update(draft=draft, variation_error=None)
+        if draft and cherrypy.request.config.get('tools.sessions.on'):
+            feedback = cherrypy.session.get('variation_feedback')
+            if (
+                feedback
+                and feedback['album_id'] == int(value)
+                and feedback['source_id'] == image['id']
+            ):
+                cherrypy.session.pop('variation_feedback')
+                context['variation_error'] = feedback['error']
+                draft = draft.prepare(feedback['values'], {})
+                context['draft'] = draft
         if image:
             available, message = cache.continuation_capability(image)
+            variation_available, variation_message = cache.variation_capability(image)
+            if not pmxbot.config.get('images_enabled', False):
+                variation_available, variation_message = (
+                    False,
+                    'Image generation is disabled.',
+                )
             context.update(
-                continuation_available=available, continuation_message=message
+                continuation_available=available,
+                continuation_message=message,
+                variation_available=variation_available,
+                variation_message=variation_message,
             )
         if cherrypy.request.method == 'POST':
             if draft is None:
@@ -442,7 +467,43 @@ class AlbumPage:
                 cherrypy.response.status = 400
                 context['variation_error'] = str(exc)
             else:
-                context.update(draft=draft, prepared=True)
+                context.update(draft=draft)
+                auth.require_csrf(csrf)
+                if not context['variation_available']:
+                    cherrypy.response.status = 409
+                    context['variation_error'] = context['variation_message']
+                else:
+                    user = context.get('current_user')
+                    try:
+                        result = generate_album_variation(
+                            MusicLibrary(cache.database),
+                            cache,
+                            source_id,
+                            draft,
+                            nick=user['username'] if user else '',
+                        )
+                    except (ImageError, sqlite3.Error, OSError) as exc:
+                        error = (
+                            str(exc)
+                            if isinstance(exc, ImageError)
+                            else 'Could not save the variation; check image storage.'
+                        )
+                        cherrypy.session['variation_feedback'] = dict(
+                            album_id=int(value),
+                            source_id=source_id,
+                            error=error,
+                            values={
+                                field: getattr(draft, field)
+                                for field in draft.creative_fields
+                            },
+                        )
+                        auth.redirect(
+                            f"{context['base']}/albums/{value}?source_image_id={source_id}"
+                        )
+                    else:
+                        auth.redirect(
+                            f"{context['base']}/albums/{value}?source_image_id={result['id']}"
+                        )
         # Escape the entire inherited layout too, without changing legacy pages.
         page = jenv.overlay(autoescape=True).get_template('album.html')
         return page.render(**context).encode('utf-8')
