@@ -22,7 +22,7 @@ import pmxbot.albums
 import pmxbot.logging
 import pmxbot.util
 from pmxbot.images import ImageCache, ImageError
-from pmxbot.users import InvalidCredentials, UserError, UserStore
+from pmxbot.users import InvalidCredentials, UserError, UserStore, UsernameTaken
 from pmxbot.web import auth
 from pmxbot.music import GenerationInputs
 
@@ -454,6 +454,42 @@ class PmxbotPages:
         page = jenv.overlay(autoescape=True).get_template('login.html')
         return page.render(
             error=error, return_to=auth.safe_return_to(return_to), **get_context()
+        ).encode('utf-8')
+
+    @cherrypy.expose
+    def register(
+        self,
+        username='',
+        password='',
+        password_confirmation='',
+        csrf_token='',
+        created='',
+    ):
+        cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
+        error = None
+        if cherrypy.request.method == 'POST':
+            if cherrypy.request.query_string:
+                raise cherrypy.HTTPError(400, 'Use a form body.')
+            auth.require_csrf(csrf_token)
+            auth.login_throttle.check()
+            try:
+                auth.validate_registration_password(password, password_confirmation)
+                with contextlib.closing(UserStore(pmxbot.config.database)) as store:
+                    store.create(username, password=password, enabled=False)
+            except UsernameTaken:
+                error = 'That username is already registered.'
+            except UserError as exc:
+                error = str(exc)
+            except sqlite3.Error:
+                raise cherrypy.HTTPError(503, 'User storage is unavailable') from None
+            else:
+                auth.redirect(pmxbot.config.web_base + '/register?created=1')
+            cherrypy.response.status = 400
+        page = jenv.overlay(autoescape=True).get_template('register.html')
+        return page.render(
+            error=error,
+            created=cherrypy.request.method != 'POST' and created == '1',
+            **get_context(),
         ).encode('utf-8')
 
     @cherrypy.expose

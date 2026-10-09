@@ -193,9 +193,16 @@ Show logs from the last seven days::
 Web authentication
 ------------------
 
-Provision accounts in the main SQLite database before using web login. From an
+Accounts can be provisioned by administrators or requested through the web
+registration form. Registration requires matching passwords of 12–1024 characters
+with uppercase and lowercase letters and a number. New web accounts are disabled
+until an administrator enables them; registration never signs the applicant in.
+For example, use ``store.update(store.get_by_username('Alice').id, enabled=True)``
+inside the administrator session below after approving the account.
+
+To provision an account directly in the main SQLite database, use an
 administrator's interactive Python session on the server (using the service
-venv), prompt for the initial password rather than putting it in a shell command,
+venv). Prompt for the initial password rather than putting it in a shell command,
 configuration file, or source code::
 
     from contextlib import closing
@@ -209,8 +216,9 @@ configuration file, or source code::
 
 Use the same ``database`` URI in the bot, viewer, and provisioning session.
 See :doc:`users` for account naming, password storage, and disabling accounts.
-There is no registration or password reset UI. Administrators should assign
-strong, unique passwords and communicate them through a trusted private channel.
+The web registration form creates disabled accounts; there is no password reset
+UI. Administrators should assign strong, unique passwords and communicate them
+through a trusted private channel.
 
 The viewer enables CherryPy RAM sessions in its single server process. Only
 ``users.id`` is stored as authentication data; the browser receives an opaque
@@ -255,7 +263,7 @@ and the session identifier; they rotate with the identifier and are never stored
 in cookies or the database. The key needs no deployment secret or persistent
 file, and disappears with RAM sessions on restart.
 
-The viewer allows at most 30 login attempts per rolling minute across all clients,
+The viewer allows at most 30 combined login and registration attempts per rolling minute across all clients,
 including successes, before returning 429 with Retry-After. This deliberately
 bounds password derivation work without trusting forwarded IP addresses; shared
 traffic can exhaust the allowance and temporarily deny other users login. Public

@@ -291,7 +291,8 @@ def test_throttle_is_bounded_and_recovers(web, monkeypatch):
     assert len(auth.login_throttle.attempts) == 1
 
 
-def test_login_query_is_rejected_and_redacted(web, monkeypatch):
+@pytest.mark.parametrize('path', ['/login', '/register'])
+def test_auth_query_is_rejected_and_redacted(web, monkeypatch, path):
     logged = []
     monkeypatch.setattr(
         cherrypy._cplogging.LogManager,
@@ -299,7 +300,9 @@ def test_login_query_is_rejected_and_redacted(web, monkeypatch):
         lambda self: logged.append(cherrypy.request.request_line),
     )
     response = web.request(
-        '/login?username=Alice&password=secret', 'POST', {'csrf_token': web.token()}
+        path + '?username=Alice&password=secret',
+        'POST',
+        {'csrf_token': web.token(path)},
     )
     assert response['status'] == 400
     assert all('secret' not in line and 'username=' not in line for line in logged)
@@ -339,3 +342,117 @@ def test_startup_enables_sessions_at_mount(monkeypatch):
     assert config['/'] == auth.session_config(pmxbot.config)
     assert config['/']['tools.sessions.secure'] is True
     assert config['/']['tools.sessions.timeout'] == 30
+
+
+def registration(web, **overrides):
+    data = {
+        'username': 'NewUser',
+        'password': 'ValidPassword123',
+        'password_confirmation': 'ValidPassword123',
+        'csrf_token': web.token('/register'),
+    }
+    data.update(overrides)
+    return web.request('/register', 'POST', data)
+
+
+def test_registration_creates_disabled_salted_credentials(web):
+    response = registration(web)
+    assert response['status'] == 303
+    assert response['headers']['Location'] == web.base + '/register?created=1'
+    assert (
+        'awaiting administrator approval' in web.request('/register?created=1')['body']
+    )
+    with closing(UserStore(pmxbot.config.database)) as store:
+        user = store.get_by_username('newuser')
+        assert user.username == 'NewUser' and not user.enabled and not user.can_pair_irc
+        assert store.db.execute(
+            'SELECT enabled FROM users WHERE id = ?', (user.id,)
+        ).fetchone() == (0,)
+        encoded = store.db.execute(
+            'SELECT password_hash FROM user_passwords WHERE user_id = ?', (user.id,)
+        ).fetchone()[0]
+        assert encoded.startswith('pbkdf2_sha256$600000$')
+        assert 'ValidPassword123' not in encoded
+        from pmxbot.users import InvalidCredentials
+
+        with pytest.raises(InvalidCredentials):
+            store.authenticate('newuser', 'ValidPassword123')
+        store.update(user.id, enabled=True)
+        assert store.authenticate('newuser', 'ValidPassword123').id == user.id
+    assert web.request('/protected')['status'] == 401
+
+
+@pytest.mark.parametrize(
+    'password',
+    [
+        'Short1',
+        'alllowercase123',
+        'ALLUPPERCASE123',
+        'NoNumberPassword',
+        'Aa1' + 'x' * 1022,
+    ],
+)
+def test_registration_rejects_weak_passwords_without_browser_validation(web, password):
+    response = registration(web, password=password, password_confirmation=password)
+    assert response['status'] == 400
+    assert 'Password must contain' in response['body']
+    with closing(UserStore(pmxbot.config.database)) as store:
+        assert len(store.list_users()) == 3
+
+
+def test_registration_rejects_mismatch_and_duplicate_name(web):
+    assert (
+        registration(web, password_confirmation='AnotherPassword123')['status'] == 400
+    )
+    with closing(UserStore(pmxbot.config.database)) as store:
+        original = store.get_by_username('alice')
+        original_hash = store.db.execute(
+            'SELECT password_hash FROM user_passwords WHERE user_id = ?', (original.id,)
+        ).fetchone()
+    response = registration(web, username=' aLiCe ')
+    assert response['status'] == 400
+    assert 'already registered' in response['body']
+    with closing(UserStore(pmxbot.config.database)) as store:
+        assert store.get_by_id(original.id) == original
+        assert (
+            store.db.execute(
+                'SELECT password_hash FROM user_passwords WHERE user_id = ?',
+                (original.id,),
+            ).fetchone()
+            == original_hash
+        )
+        assert store.authenticate('Alice', 'correct password') == original
+        assert len(store.list_users()) == 3
+
+
+def test_registration_csrf_methods_and_username_validation(web):
+    assert registration(web, csrf_token='')['status'] == 403
+    assert web.request('/register', 'PUT')['status'] == 405
+    assert (
+        web.request(
+            '/register?password=secret', 'POST', {'csrf_token': web.token('/register')}
+        )['status']
+        == 400
+    )
+    assert registration(web, username='<script>')['status'] == 400
+    with closing(UserStore(pmxbot.config.database)) as store:
+        assert len(store.list_users()) == 3
+    for path in ('/', '/login'):
+        soup = BeautifulSoup(web.request(path)['body'], 'html.parser')
+        assert soup.select_one('a[href$="/register"]')['href'] == web.base + '/register'
+
+
+@pytest.mark.parametrize('length', [12, 1024])
+def test_registration_password_length_boundaries(length):
+    password = 'Aa1' + 'x' * (length - 3)
+    auth.validate_registration_password(password, password)
+
+
+def test_registration_respects_shared_throttle(web, monkeypatch):
+    monkeypatch.setattr(auth.time, 'monotonic', lambda: 0.0)
+    auth.login_throttle.attempts.extend([0.0] * 30)
+    response = registration(web)
+    assert response['status'] == 429
+    assert response['headers']['Retry-After'] == '60'
+    with closing(UserStore(pmxbot.config.database)) as store:
+        assert len(store.list_users()) == 3

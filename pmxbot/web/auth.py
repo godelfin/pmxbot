@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import re
 import secrets
 import sqlite3
 import threading
@@ -70,7 +71,7 @@ def session_headers():
 def redact_auth_query():
     # Never put query credentials in CherryPy's access log, even on a bad GET.
     request = cherrypy.request
-    if request.path_info.rstrip('/').endswith(('/login', '/logout')):
+    if request.path_info.rstrip('/').endswith(('/login', '/logout', '/register')):
         request.request_line = '{} {} {}'.format(
             request.method,
             request.script_name + request.path_info,
@@ -176,3 +177,20 @@ def redirect(path):
     response = cherrypy.HTTPRedirect(path, 303)
     response.urls = [path]
     raise response
+
+
+def validate_registration_password(password, confirmation):
+    """Apply the public registration policy without changing existing credentials."""
+    if (
+        not isinstance(password, str)
+        or not 12 <= len(password) <= 1024
+        or not all(
+            re.search(pattern, password) for pattern in ('[a-z]', '[A-Z]', '[0-9]')
+        )
+    ):
+        raise UserError(
+            'Password must contain 12–1024 characters, including uppercase and '
+            'lowercase letters and a number.'
+        )
+    if not isinstance(confirmation, str) or password != confirmation:
+        raise UserError('Passwords must match.')

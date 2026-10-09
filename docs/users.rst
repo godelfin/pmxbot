@@ -70,5 +70,7 @@ their IDs and have no password until explicitly assigned one.
 
 Passwords accept 1–1024 Unicode characters, including spaces, without trimming,
 normalization, or truncation. This is a storage limit, not a password strength
-policy. Administrators provision strong passwords; web transport, rate limiting, and sessions are documented in
-:doc:`deployment`. There is no self-service signup or password reset.
+policy. Administrators provision strong passwords; web transport, rate limiting,
+and sessions are documented in :doc:`deployment`. Web registration enforces
+matching passwords and its strength policy, and creates disabled accounts
+awaiting administrator approval. There is no password reset UI.
