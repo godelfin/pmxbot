@@ -19,7 +19,7 @@ class GenerationInputs:
     """One artwork interpretation of a canonical release; never writes storage.
 
     ``album_properties`` is consumed directly by the shared ``album_prompt``
-    builder. Source identity and creative properties can be persisted by F13.
+    builder. Each variation persists source identity and creative properties.
     """
 
     album_id: int
@@ -45,13 +45,29 @@ class GenerationInputs:
 
     @classmethod
     def from_source(cls, album, image):
+        from .images import generation_metadata
+
+        saved = generation_metadata(image).get('generation_inputs', {})
+        if not isinstance(saved, dict):
+            saved = {}
+        properties = {
+            field: saved.get(field, album.get(field)) or ''
+            for field in cls.creative_fields
+        }
+        if any(
+            not isinstance(value, str) or len(value) > 10000 or '\x00' in value
+            for value in properties.values()
+        ):
+            properties = {
+                field: album.get(field) or '' for field in cls.creative_fields
+            }
         return cls(
             album_id=album['id'],
             artist_id=album['artist_id'],
             source_image_id=image['id'],
             artist_name=album['artist_name'],
             title=album['title'],
-            **{field: album.get(field) or '' for field in cls.creative_fields},
+            **properties,
         )
 
     def prepare(self, values, choices):
@@ -348,7 +364,18 @@ def generate_album_image(
     return url
 
 
-def continue_album_image(library, cache, source_image_id, inputs, nick='', channel=''):
+def generate_album_variation(
+    library, cache, source_image_id, inputs, nick='', channel=''
+):
+    """Generate an immutable child through the configured album image backend."""
+    return continue_album_image(
+        library, cache, source_image_id, inputs, nick, channel, variation=True
+    )
+
+
+def continue_album_image(
+    library, cache, source_image_id, inputs, nick='', channel='', *, variation=False
+):
     """F13's backend contract: continue a selected image using an F12 draft.
 
     Returns the new immutable image record, including its numeric ID. Album
@@ -400,9 +427,8 @@ def continue_album_image(library, cache, source_image_id, inputs, nick='', chann
                 f' {label}: {json.dumps(getattr(inputs, field), ensure_ascii=False)}.'
             )
     try:
-        return cache.continue_image(
-            source_image_id, prompt, nick, channel, inputs=asdict(inputs)
-        )
+        operation = cache.vary_image if variation else cache.continue_image
+        return operation(source_image_id, prompt, nick, channel, inputs=asdict(inputs))
     except Exception as exc:
         try:
             library.record_image_failure(inputs.album_id, prompt, nick, channel, exc)

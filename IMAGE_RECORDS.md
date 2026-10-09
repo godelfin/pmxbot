@@ -82,8 +82,10 @@ the dropdown starts again on page one.
 Original images have NULL parents. `ImageCache.persist_image(db, key, prompt,
 filename, metadata, nick='', channel='', parent_image_id=None)` persists a
 record using an initialized image-cache connection, without generating or
-uploading an image. Future variation generation can supply the source image ID
-here. This change does not generate variations or change cache-key semantics.
+uploading an image. Album variations supply the selected source image ID here.
+Each variation uses a distinct cache key, atomically links to the same album, and stores exact prompt
+and structured generation inputs in generation metadata. Existing records remain
+unchanged.
 
 The parent must already exist. SQLite triggers reject nonexistent parents,
 self-parenting, cycles, changes to persisted parent relationships or image IDs,

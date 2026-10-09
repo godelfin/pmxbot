@@ -284,8 +284,70 @@ class ImageCache:
             )
         return True, (
             'Responses continuation available from this image, subject to OpenAI context retention '
-            'and project access. Generation is not connected to this form yet.'
+            'and project access.'
         )
+
+    def variation_capability(self, image):
+        if self.image_api == 'responses':
+            return self.continuation_capability(image)
+        if (
+            not self.settings['model'].startswith('gpt-image-')
+            and self.settings['model'] != 'chatgpt-image-latest'
+        ):
+            return (
+                False,
+                'Images variation unavailable: configure a GPT Image editing model.',
+            )
+        try:
+            present = Path(image['local_filename'] or '').is_file()
+        except OSError:
+            present = False
+        if not present:
+            return (
+                False,
+                'Images variation unavailable: the source PNG is missing or unreadable.',
+            )
+        return True, 'Images variation available using the saved source PNG.'
+
+    def vary_image(self, source_image_id, prompt, nick='', channel='', *, inputs):
+        if self.image_api == 'responses':
+            return self.continue_image(
+                source_image_id, prompt, nick, channel, inputs=inputs
+            )
+        if type(source_image_id) is not int or not 0 < source_image_id <= 2**63 - 1:
+            raise ImageError('Invalid source image ID.')
+        try:
+            source = self.get_image(source_image_id)
+        except LookupError:
+            raise ImageError('Unknown source image ID.') from None
+        except (sqlite3.Error, OSError):
+            raise ImageError(
+                'Could not read the source; check image storage.'
+            ) from None
+        available, message = self.variation_capability(source)
+        if not available:
+            raise ImageError(message)
+        key = uuid.uuid4().hex
+        try:
+            self._get(
+                prompt,
+                nick,
+                channel,
+                key,
+                source_image_id,
+                inputs=inputs,
+                source_filename=source['local_filename'],
+            )
+            with closing(self.read_connection()) as db:
+                return dict(
+                    db.execute(
+                        'SELECT * FROM image_cache WHERE cache_key = ?', (key,)
+                    ).fetchone()
+                )
+        except (sqlite3.Error, OSError):
+            raise ImageError(
+                'Could not save the variation; check image storage.'
+            ) from None
 
     def _credentials(self, config):
         self.openai_key = config.get('openai_api_key') or os.environ.get(
@@ -688,6 +750,7 @@ class ImageCache:
         parent_image_id=None,
         previous_response_id=None,
         inputs=None,
+        source_filename=None,
     ):
         if not normalize_prompt(prompt):
             raise ImageError('Usage: !image <prompt>')
@@ -721,6 +784,10 @@ class ImageCache:
                 Path(row['local_filename']) if row else self.directory / f'{key}.png'
             )
             if not row or not filename.is_file():
+                if row and generation_metadata(dict(row)).get('generation_inputs'):
+                    raise ImageError(
+                        'Saved variation PNG is missing; refusing to replace immutable artwork.'
+                    )
                 if row and generation_metadata(dict(row)).get('api') == 'responses':
                     raise ImageError(
                         'Saved Responses image file is missing; refusing to replace its conversation context.'
@@ -733,6 +800,8 @@ class ImageCache:
                     image, metadata = self.generate_responses(
                         prompt, previous_response_id
                     )
+                elif source_filename:
+                    image, metadata = self.generate_edit(prompt, source_filename)
                 else:
                     image, metadata = self.generate(prompt)
                 if inputs is not None:
@@ -779,7 +848,7 @@ class ImageCache:
                     'UPDATE image_cache SET last_error = ? WHERE cache_key = ?',
                     (str(exc), key),
                 )
-                if previous_response_id:
+                if parent_image_id is not None:
                     identifier = db.execute(
                         'SELECT id FROM image_cache WHERE cache_key = ?', (key,)
                     ).fetchone()[0]
@@ -822,6 +891,7 @@ class ImageCache:
             if (
                 metadata.get('api') == 'responses'
                 or generation_metadata(dict(row)).get('api') == 'responses'
+                or generation_metadata(dict(row)).get('generation_inputs')
             ):
                 raise sqlite3.IntegrityError('Responses image generation is immutable')
             if parent_image_id is not None and row[0] != parent_image_id:
@@ -872,6 +942,27 @@ class ImageCache:
             json=dict(self.settings, prompt=prompt, n=1),
             timeout=(10, 300),
         )
+        return self.decode_images(data)
+
+    def generate_edit(self, prompt, source_filename):
+        try:
+            with open(source_filename, 'rb') as source:
+                data = post_json(
+                    'https://api.openai.com/v1/images/edits',
+                    'OpenAI',
+                    headers={'Authorization': f'Bearer {self.openai_key}'},
+                    data=dict(self.settings, prompt=prompt, n=1),
+                    files={'image[]': ('source.png', source, 'image/png')},
+                    timeout=(10, 300),
+                )
+        except OSError:
+            raise ImageError(
+                'Could not read the source PNG; check image storage.'
+            ) from None
+        return self.decode_images(data)
+
+    @staticmethod
+    def decode_images(data):
         try:
             item = data['data'][0]
             image = base64.b64decode(item['b64_json'], validate=True)
