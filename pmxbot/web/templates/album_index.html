@@ -27,10 +27,16 @@ a:focus-visible, button:focus-visible { outline: 3px solid #135ba1; outline-offs
 table { width: 100%; border-collapse: collapse; overflow-wrap: anywhere; }
 th, td { padding: .25rem .5rem; text-align: left; }
 th:last-child, td:last-child { text-align: right; }
-.catalog { list-style: none; padding: .5rem; }
-.catalog li { display: flex; align-items: center; gap: 1rem; padding: .5rem; }
-.catalog-artwork { width: 4rem; height: 4rem; flex: 0 0 4rem; font-size: .7rem; }
-.catalog-artwork img { width: 100%; height: 100%; object-fit: contain; }
+.catalog { background: white; border: 1px solid #d4dbe2; table-layout: fixed; }
+.catalog th, .catalog td { padding: .65rem .75rem; border-bottom: 1px solid #d4dbe2; vertical-align: top; }
+.catalog thead { background: #dfe6ed; }
+.catalog tbody tr:nth-child(even) { background: #edf1f5; }
+.catalog th:nth-child(1), .catalog th:nth-child(2) { width: 32%; }
+.catalog th:nth-child(3) { width: 22%; }
+.catalog th:nth-child(4) { width: 14%; }
+.catalog th a { display: block; }
+.catalog td:last-child { font-variant-numeric: tabular-nums; }
+@media (max-width: 36rem) { .catalog th, .catalog td { padding: .5rem .3rem; } }
 .catalog-controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
 .catalog-controls label { display: flex; flex-direction: column; }
 .pagination { display: flex; gap: 1rem; }
@@ -70,20 +76,30 @@ th:last-child, td:last-child { text-align: right; }
 {% for name, value in [('artist', artist), ('album_title', album_title)] %}
 {% if value %}<input type="hidden" name="{{ name }}" value="{{ value }}" /><span>{{ name }}: {{ value }}</span>{% endif %}
 {% endfor %}
-<label>Sort<select name="sort">{% for value, label in [('chronology', 'Chronology'), ('artist', 'Artist'), ('album', 'Album title')] %}<option value="{{ value }}"{% if sort == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
-<label>Order<select name="order">{% for value, label in [('desc', 'Descending'), ('asc', 'Ascending')] %}<option value="{{ value }}"{% if order == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+<input type="hidden" name="sort" value="{{ sort }}" />
+<input type="hidden" name="order" value="{{ order }}" />
 <button type="submit">Search</button><a href="{{ base }}/">Clear filters</a>
 </form>
 <p>{{ total }} albums</p>
-{% if albums %}
-<ul class="catalog">
-{% for album in albums %}
-<li><div class="catalog-artwork">{% if album.image_url %}<img src="{{ album.image_url }}" alt="Artwork for {{ album.title }}" loading="lazy" referrerpolicy="no-referrer" />{% else %}Artwork unavailable{% endif %}</div><a href="{{ base }}/albums/{{ album.id }}">{{ album.artist_name }} — {{ album.title }}</a></li>
+<table class="catalog" aria-label="Album catalog">
+<thead><tr>
+{% for column, label in [('artist', 'Band'), ('album', 'Album'), ('chronology', 'Created'), ('variations', 'Image variations')] %}
+<th scope="col" aria-sort="{% if sort == column %}{{ 'ascending' if order == 'asc' else 'descending' }}{% else %}none{% endif %}"><a href="{{ sort_url(column) }}">{{ label }}{% if sort == column %} {{ '↑' if order == 'asc' else '↓' }}{% endif %}</a></th>
 {% endfor %}
-</ul>
+</tr></thead>
+<tbody>
+{% for album in albums %}
+<tr>
+<td class="catalog-band">{{ album.artist_name }}</td>
+<td class="catalog-album"><a href="{{ base }}/albums/{{ album.id }}">{{ album.title }}</a></td>
+<td><time>{{ album.created_at }}</time></td>
+<td class="catalog-variations">{{ album.image_count }}</td>
+</tr>
 {% else %}
-<p>{% if q or artist or album_title %}No albums match your search.{% else %}No albums yet.{% endif %}</p>
-{% endif %}
+<tr><td colspan="4">{% if q or artist or album_title %}No albums match your search.{% else %}No albums yet.{% endif %}</td></tr>
+{% endfor %}
+</tbody>
+</table>
 <nav class="pagination" aria-label="Catalog pages">
 {% if page_number > 1 %}<a rel="prev" href="{{ page_url(page_number - 1) }}">Previous</a>{% endif %}
 <span>Page {{ page_number }} of {{ page_count }}</span>
