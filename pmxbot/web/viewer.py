@@ -10,6 +10,7 @@ import contextlib
 import functools
 import json
 import sqlite3
+import uuid
 
 import cherrypy
 import jinja2.loaders
@@ -24,10 +25,22 @@ import pmxbot.util
 from pmxbot.images import ImageCache, ImageError
 from pmxbot.users import InvalidCredentials, UserError, UserStore, UsernameTaken
 from pmxbot.web import auth
-from pmxbot.music import GenerationInputs, MusicLibrary, generate_album_variation
+from pmxbot.music import GenerationInputs
+from pmxbot.jobs import JobStore
 
 jenv = jinja2.Environment(loader=jinja2.loaders.PackageLoader('pmxbot.web'))
 TIMEOUT = 10.0
+
+
+def wants_json():
+    return 'application/json' in cherrypy.request.headers.get('Accept', '')
+
+
+def json_response(data, status=200):
+    cherrypy.response.status = status
+    cherrypy.response.headers['Content-Type'] = 'application/json'
+    cherrypy.response.headers['Cache-Control'] = 'no-store'
+    return json.dumps(data).encode('utf-8')
 
 
 colors = [
@@ -411,6 +424,23 @@ class AlbumPage:
         except (sqlite3.Error, OSError, ImageError):
             raise cherrypy.HTTPError(503, 'Album storage is unavailable') from None
         context = get_context()
+        context['pending_jobs'] = []
+        try:
+            context['pending_jobs'] = [
+                job
+                for job in JobStore(cache.database).visible(
+                    context['current_user'],
+                    cherrypy.session.get('generation_owner', ''),
+                )
+                if job['album_id'] == int(value)
+                and job['status'] in ('queued', 'running')
+            ]
+        except LookupError:
+            pass
+        except (sqlite3.Error, OSError):
+            raise cherrypy.HTTPError(
+                503, 'Generation job storage is unavailable'
+            ) from None
         context['metadata_sections'] = image_metadata(image) if image else []
         context.update(
             image=image,
@@ -430,17 +460,6 @@ class AlbumPage:
         )
         draft = GenerationInputs.from_source(album, image) if image else None
         context.update(draft=draft, variation_error=None)
-        if draft and cherrypy.request.config.get('tools.sessions.on'):
-            feedback = cherrypy.session.get('variation_feedback')
-            if (
-                feedback
-                and feedback['album_id'] == int(value)
-                and feedback['source_id'] == image['id']
-            ):
-                cherrypy.session.pop('variation_feedback')
-                context['variation_error'] = feedback['error']
-                draft = draft.prepare(feedback['values'], {})
-                context['draft'] = draft
         if image:
             available, message = cache.continuation_capability(image)
             variation_available, variation_message = cache.variation_capability(image)
@@ -479,36 +498,29 @@ class AlbumPage:
                     context['variation_error'] = context['variation_message']
                 else:
                     user = context.get('current_user')
+                    owner = ''
+                    if not user:
+                        owner = cherrypy.session.setdefault(
+                            'generation_owner', uuid.uuid4().hex
+                        )
                     try:
-                        result = generate_album_variation(
-                            MusicLibrary(cache.database),
-                            cache,
-                            source_id,
-                            draft,
-                            nick=user['username'] if user else '',
+                        identifier = JobStore(cache.database).enqueue(
+                            draft, cache, user, owner
                         )
-                    except (ImageError, sqlite3.Error, OSError) as exc:
-                        error = (
-                            str(exc)
-                            if isinstance(exc, ImageError)
-                            else 'Could not save the variation; check image storage.'
+                    except (sqlite3.Error, OSError):
+                        raise cherrypy.HTTPError(
+                            503, 'Generation job storage is unavailable'
+                        ) from None
+                    status_url = f"{context['base']}/jobs/{identifier}"
+                    if wants_json():
+                        return json_response(
+                            dict(id=identifier, status_url=status_url), 202
                         )
-                        cherrypy.session['variation_feedback'] = dict(
-                            album_id=int(value),
-                            source_id=source_id,
-                            error=error,
-                            values={
-                                field: getattr(draft, field)
-                                for field in draft.creative_fields
-                            },
-                        )
-                        auth.redirect(
-                            f"{context['base']}/albums/{value}?source_image_id={source_id}"
-                        )
-                    else:
-                        auth.redirect(
-                            f"{context['base']}/albums/{value}?source_image_id={result['id']}"
-                        )
+                    auth.redirect(status_url)
+        if cherrypy.request.method == 'POST' and wants_json():
+            return json_response(
+                dict(error=context['variation_error']), cherrypy.response.status
+            )
         # Escape the entire inherited layout too, without changing legacy pages.
         page = jenv.overlay(autoescape=True).get_template('album.html')
         return page.render(**context).encode('utf-8')
@@ -518,6 +530,60 @@ class PmxbotPages:
     # Only the album index, gallery, and album pages are published. Keep the other
     # page classes available for when the rest of the viewer is enabled again.
     albums = AlbumPage()
+
+    @cherrypy.expose
+    def jobs(self, identifier=None, **params):
+        if cherrypy.request.method not in ('GET', 'HEAD'):
+            cherrypy.response.headers['Allow'] = 'GET, HEAD'
+            raise cherrypy.HTTPError(405)
+        if params:
+            raise cherrypy.HTTPError(400, 'Unexpected job fields')
+        context = get_context()
+        user = context['current_user']
+        try:
+            cache = ImageCache(pmxbot.config)
+            store = JobStore(cache.database)
+            if identifier is None:
+                context['jobs'] = store.visible(
+                    user, cherrypy.session.get('generation_owner', '')
+                )
+                context['job'] = None
+            else:
+                job = store.get(identifier)
+                if job['user_id'] is not None and (
+                    not user or user.id != job['user_id']
+                ):
+                    raise LookupError('Unknown job')
+                context.update(job=job, jobs=[])
+        except LookupError:
+            if identifier is not None:
+                raise cherrypy.HTTPError(404, 'Unknown generation job') from None
+            context.update(job=None, jobs=[])
+        except (sqlite3.Error, OSError, ImageError):
+            raise cherrypy.HTTPError(
+                503, 'Generation job storage is unavailable'
+            ) from None
+        cherrypy.response.headers['Cache-Control'] = 'no-store'
+        cherrypy.response.headers['Referrer-Policy'] = 'no-referrer'
+        if identifier is not None and wants_json():
+            return json_response(
+                dict(
+                    id=job['id'],
+                    status=job['status'],
+                    error=job['error'],
+                    result_url=(
+                        f"{context['base']}/albums/{job['album_id']}?source_image_id={job['result_image_id']}"
+                        if job['status'] == 'succeeded'
+                        else None
+                    ),
+                )
+            )
+        return (
+            jenv.overlay(autoescape=True)
+            .get_template('jobs.html')
+            .render(**context)
+            .encode('utf-8')
+        )
 
     @cherrypy.expose
     def login(self, username='', password='', csrf_token='', return_to=''):

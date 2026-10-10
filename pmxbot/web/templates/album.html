@@ -31,6 +31,10 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 .image-history a { display: grid; gap: .25rem; text-decoration: none; }
 .image-history img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
 .image-history .current-image { font-weight: bold; }
+.pending-artwork-box { display: grid; place-items: center; width: 100%; aspect-ratio: 1; background: #d4d7db; border-radius: .25rem; }
+.generation-spinner { width: 2rem; height: 2rem; border: .25rem solid #a5abb3; border-top-color: #444d59; border-radius: 50%; animation: generation-spin 1s linear infinite; }
+@keyframes generation-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .generation-spinner { animation: none; } }
 .album-page pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8125rem; line-height: 1.6; }
 .image-details { display: grid; grid-template-columns: minmax(0, 8rem) minmax(0, 1fr); gap: .5rem 1rem; margin: 0; }
 .image-details dt { font-weight: bold; }
@@ -73,10 +77,17 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 <p>Hosted artwork is unavailable. Album details are shown below.</p>
 {% endif %}
 </section>
-{% if image_history %}
+{% if image_history or draft or pending_jobs %}
 <section class="image-section" aria-labelledby="image-history-heading">
 <h2 id="image-history-heading">Artwork history</h2>
-<ul class="image-history">
+<ul class="image-history" id="image-history">
+{% for job in pending_jobs %}
+<li class="pending-artwork" data-status-url="{{ base }}/jobs/{{ job.id }}" aria-busy="true">
+<div class="pending-artwork-box"><span class="generation-spinner" aria-hidden="true"></span></div>
+<span class="generation-status" role="status">{% if job.status == 'running' %}Generating artwork…{% else %}Waiting for generation…{% endif %}</span>
+<a class="generation-job-link" href="{{ base }}/jobs/{{ job.id }}">Check this job later</a>
+</li>
+{% endfor %}
 {% for historical_image in image_history %}
 <li>
 {% if image and image.id == historical_image.id %}
@@ -118,11 +129,13 @@ View image #{{ historical_image.id }}
 <h2 id="album-heading">{% if draft %}Generate an image variation{% else %}Album details{% endif %}</h2>
 <div class="album-details">
 {% if draft %}
+<p>Generation runs here in the background. You can keep browsing. <a href="{{ base }}/jobs">Check your generation jobs</a>.</p>
 <p>Source image #{{ draft.source_image_id }}. Creative changes apply only to a variation of this release.</p>
 <p id="continuation-capability" data-available="{{ 'true' if continuation_available else 'false' }}">{{ continuation_message }}</p>
 {% if variation_error %}<p role="alert">{{ variation_error }}</p>{% endif %}
 <p id="variation-capability" data-available="{{ 'true' if variation_available else 'false' }}">{{ variation_message }}</p>
-<form method="POST" action="{{ base }}/albums/{{ album.id }}">
+<p id="generation-error" role="alert" hidden></p>
+<form id="variation-form" method="POST" action="{{ base }}/albums/{{ album.id }}">
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
 <input type="hidden" name="source_image_id" value="{{ draft.source_image_id }}" />
 {% endif %}
@@ -209,6 +222,139 @@ View image #{{ historical_image.id }}
     const top = bounds.top + (bounds.height - height) / 2;
     if (event.clientX < left || event.clientX > left + width ||
         event.clientY < top || event.clientY > top + height) dialog.close();
+  });
+})();
+</script>
+{% endif %}
+{% if draft or pending_jobs %}
+<script id="variation-script">
+(() => {
+  const form = document.getElementById('variation-form');
+  const history = document.getElementById('image-history');
+  const error = document.getElementById('generation-error');
+  const button = form && form.querySelector('button[type=submit]');
+  const available = button && !button.disabled;
+  const pending = new Map();
+  const headers = { Accept: 'application/json' };
+
+  function showError(message) {
+    if (error) {
+      error.textContent = message;
+      error.hidden = false;
+    }
+  }
+
+  function updateButton() {
+    if (button) button.disabled = !available || pending.size > 0;
+  }
+
+  function placeholder() {
+    const item = document.createElement('li');
+    item.className = 'pending-artwork';
+    item.setAttribute('aria-busy', 'true');
+    const box = document.createElement('div');
+    box.className = 'pending-artwork-box';
+    const spinner = document.createElement('span');
+    spinner.className = 'generation-spinner';
+    spinner.setAttribute('aria-hidden', 'true');
+    box.append(spinner);
+    const label = document.createElement('span');
+    label.className = 'generation-status';
+    label.setAttribute('role', 'status');
+    label.textContent = 'Submitting variation…';
+    item.append(box, label);
+    history.prepend(item);
+    return item;
+  }
+
+  function track(url, item) {
+    if (pending.has(url)) {
+      item.remove();
+      return;
+    }
+    pending.set(url, item);
+    item.dataset.statusUrl = url;
+    if (!item.querySelector('.generation-job-link')) {
+      const link = document.createElement('a');
+      link.className = 'generation-job-link';
+      link.href = url;
+      link.textContent = 'Check this job later';
+      item.append(link);
+    }
+    updateButton();
+    poll(url, item);
+  }
+
+  async function poll(url, item) {
+    const label = item.querySelector('.generation-status');
+    try {
+      const response = await fetch(url, { headers, cache: 'no-store' });
+      if (response.status === 404 || response.status === 401) {
+        throw new Error('unavailable');
+      }
+      if (!response.ok) {
+        label.textContent = 'Waiting to check generation…';
+        setTimeout(() => poll(url, item), 5000);
+        return;
+      }
+      const job = await response.json();
+      if (job.status === 'succeeded' && job.result_url) {
+        window.location.assign(job.result_url);
+        return;
+      }
+      if (job.status === 'failed') {
+        pending.delete(url);
+        item.setAttribute('aria-busy', 'false');
+        item.querySelector('.generation-spinner').remove();
+        label.textContent = 'Generation failed.';
+        showError(job.error || 'Generation failed. Check this job for details.');
+        updateButton();
+        return;
+      }
+      label.textContent = job.status === 'running' ? 'Generating artwork…' : 'Waiting for generation…';
+    } catch (failure) {
+      if (failure.message === 'unavailable') {
+        pending.delete(url);
+        item.setAttribute('aria-busy', 'false');
+        item.querySelector('.generation-spinner').remove();
+        label.textContent = 'Job status unavailable. Sign in or check this job later.';
+        updateButton();
+        return;
+      }
+      label.textContent = 'Waiting to check generation…';
+    }
+    setTimeout(() => poll(url, item), 5000);
+  }
+
+  history.querySelectorAll('[data-status-url]').forEach(item => track(item.dataset.statusUrl, item));
+  if (!form) return;
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (!available || pending.size || button.disabled) return;
+    button.disabled = true;
+    error.hidden = true;
+    const item = placeholder();
+    try {
+      const response = await fetch(form.action, {
+        method: 'POST', headers, body: new URLSearchParams(new FormData(form))
+      });
+      if (!response.ok) {
+        let message = 'Could not submit this variation. Check the form or reload the page and try again.';
+        if ((response.headers.get('Content-Type') || '').includes('application/json')) {
+          message = (await response.json()).error || message;
+        }
+        item.remove();
+        showError(message);
+        updateButton();
+        return;
+      }
+      const job = await response.json();
+      track(job.status_url, item);
+    } catch (failure) {
+      item.remove();
+      showError('Could not confirm submission. Check your generation jobs before trying again.');
+      updateButton();
+    }
   });
 })();
 </script>

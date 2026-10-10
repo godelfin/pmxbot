@@ -4,7 +4,8 @@ Production deployment
 The production Debian server uses ``deploy/deploy-ircbot``. It updates
 ``/home/ircbot/pmxbot`` to ``origin/main``, installs ``.[viewer]`` with
 ``constraints.txt`` into ``/home/ircbot/venv``, checks dependency consistency,
-and restarts ``ircbot.service``. The viewer extra supplies CherryPy and Jinja2.
+and restarts ``ircbot.service``, ``pmxbotweb.service``, and
+``pmxbot-generation-worker.service``. The viewer extra supplies CherryPy and Jinja2.
 An install or dependency-check failure prevents the restart. Deployments are
 serialized with a nonblocking lock; a concurrent invocation fails.
 
@@ -93,7 +94,7 @@ alternate execution path. Keep ``deploy``'s home root-owned as above.
 Using ``visudo``, grant only this exact restart command in a root-owned sudoers
 file (verify the systemctl path on the server)::
 
-    deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart ircbot.service
+    deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart ircbot.service pmxbotweb.service pmxbot-generation-worker.service
 
 Do not grant sudo for shells, pip, Git, file installation, or arbitrary systemctl
 commands. Repository code and dependency build hooks execute as ``deploy``;
@@ -278,3 +279,111 @@ Future protected endpoints can call
 for public rendering. Future form mutations must accept POST only and call
 ``require_csrf(token)`` in addition to the authentication helper. This feature
 does not pair IRC sessions or grant access based on IRC attribution strings.
+
+Background artwork generation
+-----------------------------
+
+Album variation POSTs validate the six creative properties, persist a job in the
+main SQLite database, and return JSON (202) to JavaScript on the album page.
+A gray Artwork history thumbnail shows a loading spinner while JavaScript polls
+the job every five seconds. Completion reloads the album with the generated
+image selected; failures show a safe error inline. Returning to the album resumes
+polling its pending jobs. No provider or hosting call runs in the request.
+Without JavaScript, submission redirects (303) to
+``web_base/jobs/<random-job-id>``. This stable bookmarkable page refreshes every
+five seconds while pending; terminal pages link to artwork or show a safe error.
+``web_base/jobs`` lists the latest 100 jobs for the signed-in account and the
+current anonymous browser session. Authenticated job URLs require their owner
+to sign in, including after a viewer restart. Anonymous URLs are bearer links:
+anyone with the unguessable URL can see status and public album/image links,
+but never the submitted properties, credentials, attribution or provider errors.
+Bookmark anonymous URLs before leaving; their session list disappears on a
+viewer restart. Browsing and anonymous submission remain public.
+
+Jobs live in ``generation_jobs``, separate from ``image_cache``. Each stores a
+UUID, album/source IDs, immutable structured inputs and backend/settings JSON,
+canonical user ID and attribution when present, anonymous session ownership,
+UTC creation/start/completion timestamps, status, resulting image ID or safe
+error. The lifecycle is ``queued -> running -> succeeded/failed``. Only success
+sets the result image ID. Upload failure can leave immutable local artwork
+through the existing generation service, but the job remains failed; an
+administrator can use ``ImageCache.retry_upload(image_id)`` to repair hosting
+without another provider call. Failed jobs never masquerade as ready artwork.
+
+Run the worker independently of CherryPy using the same configuration,
+credentials, database and image directory as the viewer::
+
+    /home/ircbot/venv/bin/pmxbot-generation-worker /home/ircbot/data/config.yaml
+
+Provision a root-owned ``/etc/systemd/system/pmxbot-generation-worker.service``::
+
+    [Unit]
+    Description=PMXBot artwork generation worker
+    After=network-online.target
+    Wants=network-online.target
+
+    [Service]
+    Type=simple
+    User=ircbot
+    WorkingDirectory=/home/ircbot/pmxbot
+    EnvironmentFile=/etc/ircbot.env
+    ExecStart=/home/ircbot/venv/bin/pmxbot-generation-worker /home/ircbot/data/config.yaml
+    Restart=on-failure
+    RestartSec=5
+    TimeoutStopSec=600
+
+    [Install]
+    WantedBy=multi-user.target
+
+Use absolute ``database`` and ``images_directory`` paths in the shared config.
+Set ``generation_worker_concurrency: 1`` (default); integers 1 through 4 are
+accepted. The worker fills only that many slots, polls SQLite once per second,
+and claims jobs with ``BEGIN IMMEDIATE``. SIGINT/SIGTERM stop new claims and
+wait for active generation/hosting and persistence. A forced kill after the
+shutdown deadline is handled as a crash. IRC ``!music`` behavior is unchanged;
+its work is outside this concurrency limit.
+
+Before deploying this revision, provision and enable the worker unit, update
+the exact sudoers restart command above, and install the reviewed deployment
+script using the existing administrator review procedure. The script now
+restarts bot, viewer and worker so all processes use the installed revision.
+Then run ``systemctl daemon-reload`` and
+``systemctl enable --now pmxbot-generation-worker.service`` as administrator.
+Inspect ``journalctl -u pmxbot-generation-worker`` and verify a variation reaches
+its status page immediately and later links to artwork.
+
+Recovery and limits
+~~~~~~~~~~~~~~~~~~~
+
+The POSIX worker holds an exclusive nonblocking kernel file lock at
+``<absolute-database-path>.generation-worker.lock`` for its entire lifetime.
+Only one worker process can run per database; it uses bounded threads for
+concurrency. SQLite claims are atomic even with concurrent claimers. Never
+remove the lock file while a worker could be running, and never bypass this
+entry point. The deployment supports a single host with local SQLite and local
+image files, not a network filesystem or distributed workers. The worker CLI
+requires POSIX (Linux/macOS); the web/job model remains portable.
+
+After acquiring the lock at startup, the worker marks every abandoned
+``running`` job failed with a fixed recovery message. Queued jobs survive and
+continue. A viewer restart does not affect worker execution. Kernel lock release
+on process death ensures recovery cannot overlap the old worker. No lease
+expiry, automatic retry, or timeout can launch a second copy of a live job.
+If SQLite completion persistence fails, the worker exits and its next startup
+uses the same recovery rule.
+
+Exactly-once execution across OpenAI and SQLite is impossible: the provider
+may succeed before a crash and the response or completion may never be
+persisted. An image may already be saved even though its job is subsequently
+marked failed. Check album history and local artwork before manually submitting
+another variation; that explicit new submission may incur another API charge.
+The worker never automatically requeues a failed or abandoned job.
+
+F34 (#39) is not merged. Exact inputs/settings/source requests already queued or
+running are reused atomically within the same account or anonymous session.
+Different owners remain separate to avoid revealing private jobs. There is no
+new existing-artwork equivalence algorithm. F34's future shared lookup should
+run after validation and before ``JobStore.enqueue``; its versioned generation
+identity can replace the exact JSON comparison without changing job lifecycle
+or worker provider logic. Completed and failed jobs are currently not reused.
+There are no queue caps, per-user quotas, job expiration or automatic retries.

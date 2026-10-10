@@ -6,6 +6,7 @@
 .account-nav a:focus-visible, .account-nav button:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
 </style>
 <nav class="account-nav" aria-label="Account">
+<a href="{{ base|e }}/jobs">My generation jobs</a>
 <span>Hi, {{ current_user.username|e }}.</span>
 <form action="{{ base|e }}/logout" method="post">
 <input type="hidden" name="csrf_token" value="{{ csrf_token|e }}" />
