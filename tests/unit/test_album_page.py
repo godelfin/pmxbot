@@ -43,7 +43,7 @@ def page(tmp_path, monkeypatch, request):
     )
     cookies = SimpleCookie()
 
-    def request(path='/albums/42', method='GET', data=None):
+    def request(path='/albums/42', method='GET', data=None, accept=None):
         if method == 'POST' and data and 'csrf_token' not in data:
             initial = BeautifulSoup(request(path)['body'], 'html.parser')
             token = initial.select_one('[name=csrf_token]')
@@ -72,6 +72,8 @@ def page(tmp_path, monkeypatch, request):
             'wsgi.multiprocess': False,
             'wsgi.run_once': False,
         }
+        if accept:
+            env['HTTP_ACCEPT'] = accept
         response = {}
 
         def start(status, headers, exc_info=None):

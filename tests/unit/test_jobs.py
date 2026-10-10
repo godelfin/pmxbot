@@ -249,3 +249,57 @@ def test_mount_paths(variation):
     assert f'{base}/albums/42?source_image_id=42' in status['body']
     assert f'{base}/jobs/' in request('/jobs')['body']
     post.assert_not_called()
+
+
+@pytest.mark.parametrize('page', ['', '/bot'], indirect=True)
+def test_inline_submission_and_polling(variation):
+    cache, request, post, client, values, source = variation
+    base = pmxbot.config.web_base
+    submitted = request(method='POST', data=values, accept='application/json')
+    assert submitted['status'] == 202
+    assert 'Location' not in submitted['headers']
+    job = json.loads(submitted['body'])
+    assert job['status_url'] == f"{base}/jobs/{job['id']}"
+    post.assert_not_called()
+    client.put_object.assert_not_called()
+    target = job['status_url'][len(base) :]
+    queued = json.loads(request(target, accept='application/json')['body'])
+    assert queued['status'] == 'queued'
+    assert queued['result_url'] is None
+    assert 'inputs_json' not in queued
+    # Returning to the album resumes the same placeholder/polling job.
+    body = request()['body']
+    assert f'data-status-url="{job["status_url"]}"' in body
+    assert 'generation-spinner' in body
+    store = JobStore(cache.database)
+    claimed = store.claim()
+    assert (
+        json.loads(request(target, accept='application/json')['body'])['status']
+        == 'running'
+    )
+    process_job(store, claimed, pmxbot.config)
+    ready = json.loads(request(target, accept='application/json')['body'])
+    assert ready['status'] == 'succeeded'
+    assert (
+        ready['result_url']
+        == f"{base}/albums/42?source_image_id={store.get(job['id'])['result_image_id']}"
+    )
+
+
+def test_inline_validation_and_failure(variation):
+    cache, request, post, client, values, source = variation
+    invalid = request(
+        method='POST', data=dict(values, genre='invalid'), accept='application/json'
+    )
+    assert invalid['status'] == 400
+    assert json.loads(invalid['body'])['error']
+    assert request('/jobs')['body'].count('/bot/jobs/') == 0
+    post.side_effect = RuntimeError('secret provider detail')
+    submitted = request(method='POST', data=values, accept='application/json')
+    target = json.loads(submitted['body'])['status_url'][4:]
+    store = JobStore(cache.database)
+    process_job(store, store.claim(), pmxbot.config)
+    failed = request(target, accept='application/json')
+    assert json.loads(failed['body'])['status'] == 'failed'
+    assert json.loads(failed['body'])['result_url'] is None
+    assert 'secret' not in failed['body']

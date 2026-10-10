@@ -32,6 +32,17 @@ jenv = jinja2.Environment(loader=jinja2.loaders.PackageLoader('pmxbot.web'))
 TIMEOUT = 10.0
 
 
+def wants_json():
+    return 'application/json' in cherrypy.request.headers.get('Accept', '')
+
+
+def json_response(data, status=200):
+    cherrypy.response.status = status
+    cherrypy.response.headers['Content-Type'] = 'application/json'
+    cherrypy.response.headers['Cache-Control'] = 'no-store'
+    return json.dumps(data).encode('utf-8')
+
+
 colors = [
     "06F",
     "900",
@@ -413,6 +424,23 @@ class AlbumPage:
         except (sqlite3.Error, OSError, ImageError):
             raise cherrypy.HTTPError(503, 'Album storage is unavailable') from None
         context = get_context()
+        context['pending_jobs'] = []
+        try:
+            context['pending_jobs'] = [
+                job
+                for job in JobStore(cache.database).visible(
+                    context['current_user'],
+                    cherrypy.session.get('generation_owner', ''),
+                )
+                if job['album_id'] == int(value)
+                and job['status'] in ('queued', 'running')
+            ]
+        except LookupError:
+            pass
+        except (sqlite3.Error, OSError):
+            raise cherrypy.HTTPError(
+                503, 'Generation job storage is unavailable'
+            ) from None
         context['metadata_sections'] = image_metadata(image) if image else []
         context.update(
             image=image,
@@ -483,7 +511,16 @@ class AlbumPage:
                         raise cherrypy.HTTPError(
                             503, 'Generation job storage is unavailable'
                         ) from None
-                    auth.redirect(f"{context['base']}/jobs/{identifier}")
+                    status_url = f"{context['base']}/jobs/{identifier}"
+                    if wants_json():
+                        return json_response(
+                            dict(id=identifier, status_url=status_url), 202
+                        )
+                    auth.redirect(status_url)
+        if cherrypy.request.method == 'POST' and wants_json():
+            return json_response(
+                dict(error=context['variation_error']), cherrypy.response.status
+            )
         # Escape the entire inherited layout too, without changing legacy pages.
         page = jenv.overlay(autoescape=True).get_template('album.html')
         return page.render(**context).encode('utf-8')
@@ -528,6 +565,19 @@ class PmxbotPages:
             ) from None
         cherrypy.response.headers['Cache-Control'] = 'no-store'
         cherrypy.response.headers['Referrer-Policy'] = 'no-referrer'
+        if identifier is not None and wants_json():
+            return json_response(
+                dict(
+                    id=job['id'],
+                    status=job['status'],
+                    error=job['error'],
+                    result_url=(
+                        f"{context['base']}/albums/{job['album_id']}?source_image_id={job['result_image_id']}"
+                        if job['status'] == 'succeeded'
+                        else None
+                    ),
+                )
+            )
         return (
             jenv.overlay(autoescape=True)
             .get_template('jobs.html')

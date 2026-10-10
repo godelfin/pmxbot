@@ -284,9 +284,14 @@ Background artwork generation
 -----------------------------
 
 Album variation POSTs validate the six creative properties, persist a job in the
-main SQLite database, and redirect (303) to ``web_base/jobs/<random-job-id>``.
-No provider or hosting call runs in the request. Pending pages refresh every
-five seconds; terminal pages link to artwork or show a generic safe error.
+main SQLite database, and return JSON (202) to JavaScript on the album page.
+A gray Artwork history thumbnail shows a loading spinner while JavaScript polls
+the job every five seconds. Completion reloads the album with the generated
+image selected; failures show a safe error inline. Returning to the album resumes
+polling its pending jobs. No provider or hosting call runs in the request.
+Without JavaScript, submission redirects (303) to
+``web_base/jobs/<random-job-id>``. This stable bookmarkable page refreshes every
+five seconds while pending; terminal pages link to artwork or show a safe error.
 ``web_base/jobs`` lists the latest 100 jobs for the signed-in account and the
 current anonymous browser session. Authenticated job URLs require their owner
 to sign in, including after a viewer restart. Anonymous URLs are bearer links:
