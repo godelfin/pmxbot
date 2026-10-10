@@ -63,7 +63,7 @@ def session_config(config):
 def session_headers():
     cherrypy.response.cookie[COOKIE_NAME]['samesite'] = 'Lax'
     cherrypy.response.headers['Cache-Control'] = 'no-store'
-    cherrypy.response.headers['Referrer-Policy'] = 'same-origin'
+    cherrypy.response.headers.setdefault('Referrer-Policy', 'same-origin')
     if str(cherrypy.response.status).startswith('429'):
         cherrypy.response.headers['Retry-After'] = '60'
 

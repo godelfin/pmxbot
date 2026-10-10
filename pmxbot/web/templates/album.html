@@ -118,6 +118,7 @@ View image #{{ historical_image.id }}
 <h2 id="album-heading">{% if draft %}Generate an image variation{% else %}Album details{% endif %}</h2>
 <div class="album-details">
 {% if draft %}
+<p>Generation runs in the background. <a href="{{ base }}/jobs">Check your generation jobs</a>.</p>
 <p>Source image #{{ draft.source_image_id }}. Creative changes apply only to a variation of this release.</p>
 <p id="continuation-capability" data-available="{{ 'true' if continuation_available else 'false' }}">{{ continuation_message }}</p>
 {% if variation_error %}<p role="alert">{{ variation_error }}</p>{% endif %}

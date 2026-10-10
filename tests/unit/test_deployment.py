@@ -84,7 +84,7 @@ def test_deployment_installs_viewer_before_restart(deployment):
         'git <reset> <--hard> <origin/main>',
         'python3 <-m> <pip> <install> <-c> <constraints.txt> <.[viewer]>',
         'python3 <-m> <pip> <check>',
-        'sudo <-n> </usr/bin/systemctl> <restart> <ircbot.service>',
+        'sudo <-n> </usr/bin/systemctl> <restart> <ircbot.service> <pmxbotweb.service> <pmxbot-generation-worker.service>',
     ]
 
 
