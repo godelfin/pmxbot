@@ -353,7 +353,10 @@ def generate_album_image(
         )
     prompt = album_prompt(album)
     try:
-        url = cache.get(prompt, nick, channel)
+        inputs = asdict(GenerationInputs.from_source(album, {'id': 0}))
+        # Initial prompts have never included band creative annotations.
+        inputs.update(artist_genre='', artist_description='')
+        url = cache.get(prompt, nick, channel, inputs=inputs)
     except Exception as exc:
         try:
             library.record_image_failure(album_id, prompt, nick, channel, exc)
@@ -428,7 +431,15 @@ def continue_album_image(
             )
     try:
         operation = cache.vary_image if variation else cache.continue_image
-        return operation(source_image_id, prompt, nick, channel, inputs=asdict(inputs))
+        from .image_equivalence import find_equivalent, submission_guard
+
+        with submission_guard(cache):
+            existing = find_equivalent(cache, source, asdict(inputs))
+            if existing is not None:
+                return existing
+            return operation(
+                source_image_id, prompt, nick, channel, inputs=asdict(inputs)
+            )
     except Exception as exc:
         try:
             library.record_image_failure(inputs.album_id, prompt, nick, channel, exc)

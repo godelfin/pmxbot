@@ -1492,14 +1492,24 @@ def test_responses_variations_branch_from_selected_image(variation):
     first = request(method='POST', data=values)
     first_id = int(first['headers']['Location'].rsplit('=', 1)[1])
     post.return_value.json.return_value['id'] = 'resp_second'
-    second = request(method='POST', data=dict(values, source_image_id=str(first_id)))
+    second = request(
+        method='POST',
+        data=dict(
+            values, source_image_id=str(first_id), description='New interpretation'
+        ),
+    )
     second_id = int(second['headers']['Location'].rsplit('=', 1)[1])
     assert post.call_args.kwargs['json']['previous_response_id'] == 'resp_child'
     post.return_value.json.return_value['id'] = 'resp_branch'
     branch = request(method='POST', data=values)
     branch_id = int(branch['headers']['Location'].rsplit('=', 1)[1])
-    assert post.call_args.kwargs['json']['previous_response_id'] == 'resp_source'
-    assert len({42, first_id, second_id, branch_id}) == 4
+    assert branch_id == first_id
+    assert len({42, first_id, second_id, branch_id}) == 3
+    assert post.call_count == 2
+    assert (
+        'Existing artwork reused.'
+        in request(f'/albums/42?source_image_id={branch_id}')['body']
+    )
     assert cache.get_image(second_id)['parent_image_id'] == first_id
     assert cache.get_image(branch_id)['parent_image_id'] == 42
     assert all('files' not in call.kwargs for call in post.call_args_list)

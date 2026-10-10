@@ -723,8 +723,8 @@ class ImageCache:
             )
             return row['hosted_url']
 
-    def get(self, prompt, nick='', channel=''):
-        return self._get(prompt, nick, channel, self.cache_key(prompt))
+    def get(self, prompt, nick='', channel='', *, inputs=None):
+        return self._get(prompt, nick, channel, self.cache_key(prompt), inputs=inputs)
 
     def continue_image(
         self, source_image_id, prompt, nick='', channel='', *, inputs=None
@@ -839,6 +839,14 @@ class ImageCache:
                     image, metadata = self.generate(prompt)
                 if inputs is not None:
                     metadata['generation_inputs'] = inputs
+                    from .image_equivalence import descriptor
+
+                    metadata['effective_generation'] = descriptor(self, inputs)
+                    metadata['variation_context'] = (
+                        previous_response_id
+                        if self.image_api == 'responses'
+                        else parent_image_id
+                    )
                 filename = self.directory / f'{key}.png'
                 db.execute('BEGIN IMMEDIATE')
                 try:
@@ -865,7 +873,7 @@ class ImageCache:
                         channel,
                         parent_image_id,
                     )
-                    if inputs is not None:
+                    if inputs is not None and parent_image_id is not None:
                         db.execute(
                             'INSERT INTO album_images (album_id, cache_key) VALUES (?, ?)',
                             (inputs['album_id'], key),
