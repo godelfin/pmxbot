@@ -1063,6 +1063,45 @@ def test_legacy_values_prepare_and_selected_source_stays_fixed(page):
     assert cache.database.read_bytes() == before
 
 
+def test_selected_variation_restores_generation_input_defaults(page):
+    cache, request = page
+    insert(cache)
+    generation_inputs = {
+        'format': 'Vinyl',
+        'format_description': 'Remastered',
+        'genre': 'Jazz',
+        'artist_genre': 'Alternative',
+        'description': 'Original album description',
+        'artist_description': 'Original band description',
+    }
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            '''UPDATE image_cache SET generation_metadata_json = ?
+            WHERE id = 42''',
+            (json.dumps({'generation_inputs': generation_inputs}),),
+        )
+        db.execute(
+            """UPDATE albums SET format = 'CD', format_description = 'Album',
+            genre = 'Pop', description = 'Current album description' WHERE id = 42"""
+        )
+        db.execute(
+            """UPDATE artists SET genre = 'Rock', description = 'Current band description'"""
+        )
+
+    response = request('/albums/42?source_image_id=42')
+    assert response['status'] == 200
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    for name in ('format', 'format_description', 'genre', 'artist_genre'):
+        selected = soup.select_one(f'select[name="{name}"] option[selected]')
+        assert selected['value'] == generation_inputs[name]
+    assert soup.select_one('[name="description"]').get_text() == (
+        generation_inputs['description']
+    )
+    assert soup.select_one('[name="artist_description"]').get_text() == (
+        generation_inputs['artist_description']
+    )
+
+
 @pytest.mark.parametrize(
     ('sort', 'order', 'expected'),
     [
