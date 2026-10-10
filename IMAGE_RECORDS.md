@@ -77,3 +77,31 @@ case-insensitively, with missing genres
 last. Date ties use album IDs, and alphabetical ties use title then ID for stable
 pagination. The `sort` query parameter persists in pagination links; changing
 the dropdown starts again on page one.
+
+
+## Image ancestry (F4)
+
+`image_cache.parent_image_id` is an optional foreign key to `image_cache.id`.
+Original images have NULL parents. `ImageCache.persist_image(db, key, prompt,
+filename, metadata, nick='', channel='', parent_image_id=None)` persists a
+record using an initialized image-cache connection, without generating or
+uploading an image. Album variations supply the selected source image ID here.
+Each variation uses a distinct cache key, atomically links to the same album, and stores exact prompt
+and structured generation inputs in generation metadata. Existing records remain
+unchanged.
+
+The parent must already exist. SQLite triggers reject nonexistent parents,
+self-parenting, cycles, changes to persisted parent relationships or image IDs,
+and deletion of a parent with children, even on connections with foreign-key
+checks disabled. Invalid ancestry raises `sqlite3.IntegrityError`. Repeating a
+persistence operation for an existing cache key preserves its original parent;
+omitting the parent permits ordinary upload/regeneration retries, while an
+explicit different parent is rejected. Existing generation callers create roots.
+
+Opening an image-cache connection automatically adds the nullable column and
+triggers to pre-F4 databases. The migration is serialized and transactional,
+and repeated initialization is safe. Existing IDs, metadata and album links
+are preserved, with NULL ancestry; historical parents cannot be inferred.
+Back up the database before deployment. The earlier F1 numeric-ID prerequisite
+still applies. Read-only retrieval does not migrate storage: pre-F4 records
+lack the dictionary field until an image-cache connection initializes the schema.

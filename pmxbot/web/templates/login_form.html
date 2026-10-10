@@ -1,0 +1,13 @@
+<form action="{{ base }}/login" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+<input type="hidden" name="return_to" value="{{ return_to|default(base ~ '/') }}" />
+<div class="login-field">
+<label for="login-username">Username</label>
+<input id="login-username" type="text" name="username" autocomplete="username" maxlength="64" required{% if error %} aria-invalid="true" aria-describedby="login-error"{% endif %} />
+</div>
+<div class="login-field">
+<label for="login-password">Password</label>
+<input id="login-password" type="password" name="password" autocomplete="current-password" maxlength="1024" required{% if error %} aria-invalid="true" aria-describedby="login-error"{% endif %} />
+</div>
+<button class="login-submit" type="submit">Sign in</button>
+</form>

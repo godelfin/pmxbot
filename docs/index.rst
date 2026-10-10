@@ -10,6 +10,7 @@ Welcome to |project| documentation!
 
    history
    deployment
+   users
 
 
 .. tidelift-referral-banner::

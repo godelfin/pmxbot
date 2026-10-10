@@ -146,11 +146,98 @@ access or create buckets. See `R2 public buckets
 OpenAI generation is billed to your API account; images are uploaded to R2
 and the public link is returned to the requesting channel or private
 conversation. Credentials are redacted from startup configuration logs.
-The implementation follows the `OpenAI Images API
+The implementation follows the `OpenAI image generation guide
 <https://developers.openai.com/api/docs/guides/image-generation>`_.
 Use a GPT Image model supporting PNG output; model, size, and quality are
-passed to the API. Requests run in a background worker, one at a time;
-additional requests receive a busy response instead of being queued.
+passed to the API. Requests run in background workers with the queue described above.
+
+Images and Responses API configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``image_api: images`` is the default and preserves the existing Images API
+request and cache keys. Only ``images`` and ``responses`` are accepted.
+Responses mode uses the same credentials, PNG storage, R2 hosting, and SQLite
+database. Configure an image-tool-capable mainline model separately from the
+image model, for example::
+
+    image_api: responses
+    responses_model: gpt-5
+    images_model: gpt-image-1
+    images_size: 1024x1024
+    images_quality: low
+    responses_store: true
+
+``responses_model`` is required in Responses mode; there is no implicit
+conversation-model default. ``images_model`` is passed as the image generation
+tool's model. Choose models and size/quality settings supported by your project
+and the current `image generation documentation
+<https://developers.openai.com/api/docs/guides/image-generation>`_. Model/tool
+availability and supported options vary; this configuration does not guarantee
+account access. Unsupported combinations return sanitized OpenAI errors rather
+than switching APIs. The image tool is explicitly selected, without forcing an
+``action`` option that is unavailable on some image models.
+
+``responses_store`` must be a YAML boolean and defaults to ``true``. Setting it
+to ``false`` permits standalone generation but disables continuation from those
+results. Responses caching uses exact input text (including whitespace), API,
+conversation model, storage policy, and image settings. API switching creates
+separate cache entries and never converts historical records.
+
+Responses persistence and continuation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each Responses image stores its response ID, previous response ID, actual and
+requested conversation model, storage flag, image tool settings, output call ID,
+returned image settings, revised prompt, creation time, and usage in the existing
+``generation_metadata_json`` column. No new database table or migration is needed.
+The exact input text remains in ``prompt``; rewritten tool prompts are separate.
+Payload bytes and the entire conversation are not duplicated in metadata.
+
+``ImageCache.continue_image(source_image_id, prompt, nick, channel)`` returns the
+new image record, including its numeric ID. It sends only the new text input and
+the source image's stored ``previous_response_id`` reference to Responses. It
+does not open, upload, or send the source bitmap or URL. Every call creates a
+distinct child with ``parent_image_id`` pointing to the chosen source. Its new
+response ID supports another turn, or callers can branch again from an earlier
+image. Only one valid completed image output is accepted; unrelated outputs and
+unsuccessful image calls are ignored. Multiple successful images are rejected
+because a single response reference would not identify an unambiguous source.
+
+``pmxbot.music.continue_album_image(library, cache, source_image_id, inputs, nick,
+channel)`` consumes an F12 ``GenerationInputs`` draft, validates release/source
+identity, builds final instructions, and saves the structured inputs with the
+child. The child and its album association are inserted in one SQLite transaction.
+Canonical album properties, source records, and prior links remain unchanged.
+The album-detail page reports local continuation eligibility for the selected
+image. ``Generate variation`` submits validated structured properties to the
+configured backend. There is no prompt editing or pre-generation preview.
+
+Images API records, legacy records, missing response IDs, unstored responses,
+and a configured Images backend explicitly reject Responses continuation.
+Local eligibility cannot establish remote availability. According to OpenAI's
+`conversation state guide
+<https://developers.openai.com/api/docs/guides/conversation-state>`_, responses
+have a default 30-day retention period. The `data controls documentation
+<https://developers.openai.com/api/docs/guides/your-data>`_ describes storage
+exceptions, including Zero Data Retention overriding ``store=true``. Deleted or
+expired responses, project/account changes, retention policies, and lost model
+access can prevent reuse. The returned storage flag is recorded conservatively;
+no guarantee of future access is inferred from an ID. A failed continuation
+reports the failure and never silently falls back to uploading old artwork.
+No Conversations API objects are created. Prior input tokens in a response chain
+are billed again, in addition to image generation and conversation-model costs.
+Top-level Responses instructions are not inherited; each turn supplies its own
+complete input text.
+
+Responses generation records cannot be replaced during retries. If hosting
+fails, the new record and response ID remain saved; use
+``ImageCache.retry_upload(image_id)`` to retry hosting without generating again.
+For album continuations, the pending child is already linked to its album.
+A missing local Responses bitmap is reported rather than regenerating under
+the old ID. Failed database writes do not publish a hosted result; an atomic
+local PNG may remain orphaned if persistence fails. Back up the SQLite database
+and image directory together. Local records and files outlive OpenAI retention;
+keeping them does not preserve remote conversation context.
 
 PNG files are saved atomically under ``images_directory`` (relative to the
 bot's working directory, or an absolute path). The ``image_cache`` table uses
@@ -238,22 +325,51 @@ them with ``!band add: <band name>`` and ``!album add: <album title>``.
 song quote library.
 
 
-Preparing artwork variations
-----------------------------
+Generating artwork variations
+-----------------------------
 
-On an album page with artwork, the variation form starts from the canonical
-album and artist properties. Band name and album title remain fixed. Format,
-format description, both genres, and both descriptions describe one visual
-interpretation of that release. Retired configured choices remain selectable
-when they are source values.
+On an album page with artwork, the variation form starts from that image's
+saved structured properties, or canonical album and artist properties for
+legacy images. Band name, album title, and canonical database records remain
+fixed. Format, format description, both genres, and both descriptions describe
+one visual interpretation. Retired source choices remain selectable.
 
-``Prepare variation`` validates the structured inputs without saving changes
-or generating artwork. The source image ID stays attached to the draft; an
-existing image can be selected with ``?source_image_id=<id>`` on its album page.
-Drafts last only for the current response. The page shows the source image's
-existing prompt, but never builds or previews the variation prompt. F13 can
-consume ``GenerationInputs.album_properties()`` with the shared ``album_prompt``
-builder when generation is implemented.
+With ``images_enabled: true``, ``Generate variation`` validates the six creative
+fields and derives the final prompt internally. No raw prompt control or
+pre-generation preview is provided. Anonymous visitors may generate variations;
+the existing session CSRF guard protects submissions. Generation runs within
+the HTTP request, so the web server/proxy must permit the provider's latency
+(the OpenAI read timeout is 300 seconds). Successful POSTs redirect to the new
+image's album page, showing its numeric image ID, artwork, and exact prompt.
+Provider/storage failures also redirect with session feedback, so refreshing
+cannot repeat generation. Explicitly submitting again creates another image.
+
+``image_api: images`` sends the saved source PNG to the Images API edits endpoint
+using the configured GPT Image model, size, quality, and PNG output settings.
+A missing local source or a non-GPT-Image model disables the form. This path
+also accepts legacy images with a saved PNG; it does not download hosted images.
+Provider access and model-specific edit restrictions are checked by OpenAI.
+See the `official Images edit API
+<https://developers.openai.com/api/reference/resources/images/methods/edit>`_.
+
+``image_api: responses`` uses the selected image's stored response ID as
+``previous_response_id`` and sends only the new instructions. It never reads or
+uploads the source PNG. Legacy/Images records, missing or unstored response IDs,
+and expired/deleted/inaccessible remote context cannot continue. The form
+explains local eligibility; remote failures are reported without falling back
+to an upload or independent generation. Responses retention limitations above
+still apply. Selecting an earlier ``?source_image_id=<id>`` branches from that
+specific response rather than the latest album image.
+
+Every successful provider result receives a new random cache key and distinct
+numeric image ID, ``parent_image_id`` pointing to the source, exact final prompt,
+and ``generation_inputs`` in existing generation metadata. Responses results
+also retain their new conversation metadata. Image insertion and same-album
+association share one SQLite transaction; no schema change is required.
+If hosting fails, the new image remains saved and linked, and the error includes
+its ID for ``ImageCache.retry_upload(id)``. Retrying hosting cannot replace saved
+variation artwork or generation metadata. The source image is never modified.
+
 
 
 Historical music database upgrades

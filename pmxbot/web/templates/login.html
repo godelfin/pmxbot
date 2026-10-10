@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{% block title %}Sign in{% endblock %}</title>
+<style>
+body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; color: #252b34; background: #f4f6f8; line-height: 1.6; }
+.login-page { box-sizing: border-box; max-width: 30rem; margin: 2rem auto; padding: 0 1.25rem; }
+.login-card { padding: 1.5rem; background: #fff; border: 1px solid #d4dbe2; border-radius: .5rem; }
+h1 { margin: 0 0 .5rem; font-size: 1.5rem; line-height: 1.3; }
+.login-intro { margin: 0 0 1.5rem; color: #596574; }
+a { color: #135ba1; }
+a:focus-visible, button:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
+.login-field { margin: 0 0 1.25rem; }
+.login-field label { display: block; margin-bottom: .35rem; font-weight: bold; }
+.login-field input { box-sizing: border-box; width: 100%; min-width: 0; padding: .65rem .75rem; border: 1px solid #b8c2ce; border-radius: .25rem; color: inherit; background: #fff; font: inherit; font-size: 1rem; }
+.login-field input:focus { border-color: #135ba1; outline: 2px solid #135ba1; outline-offset: 1px; }
+button { padding: .5rem .75rem; border: 1px solid #135ba1; border-radius: .25rem; color: #fff; background: #135ba1; font: inherit; cursor: pointer; }
+button:hover { background: #104b85; border-color: #104b85; }
+.login-submit { width: 100%; padding: .65rem .75rem; font-weight: bold; }
+.login-error { margin: 0 0 1.25rem; padding: .75rem; border: 1px solid #e0b4b4; border-radius: .25rem; background: #fff2f2; color: #842626; }
+.login-browse { margin: 1.25rem 0 0; text-align: center; }
+@media (max-width: 30rem) { .login-page { margin-top: 1rem; padding: 0 .75rem; } .login-card { padding: 1.25rem; } }
+</style>
+</head>
+<body>
+{% include "auth_nav.html" %}
+<main class="login-page">
+<section class="login-card" aria-labelledby="login-heading">
+{% block account_content %}
+<h1 id="login-heading">Sign in</h1>
+<p class="login-intro">Sign in to your bapudi account.</p>
+{% if error %}<p id="login-error" class="login-error" role="alert">{{ error }}</p>{% endif %}
+{% include "login_form.html" %}
+<p class="login-browse"><a href="{{ base }}/register">Create an account</a></p>
+<p class="login-browse"><a href="{{ base }}/">Browse albums</a></p>
+{% endblock %}
+</section>
+</main>
+</body>
+</html>

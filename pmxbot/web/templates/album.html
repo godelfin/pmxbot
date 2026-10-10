@@ -42,6 +42,7 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 .image-cache-key { margin: 1.25rem 0 0; color: #000; font-size: .625rem; overflow-wrap: anywhere; }
 @media (max-width: 48rem) {
   .album-page { padding: .75rem; }
+  nav.account-nav { padding-right: .75rem; padding-left: .75rem; }
   .image-layout { grid-template-columns: minmax(0, 1fr); }
   .image-section { padding: 1rem; }
 }
@@ -52,10 +53,12 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 </style>
 </head>
 <body>
+{% set login_url = base ~ "/login?return_to=" ~ ((base ~ "/albums/" ~ album.id)|urlencode) %}
+{% include "auth_nav.html" %}
 {% block body %}
 <main class="album-page">
 <p><a href="{{ base }}/gallery">Artwork gallery</a></p>
-<h1>{{ album.artist_name }} — {{ album.title }}</h1>
+<h1><a href="{{ base }}/?{{ {'artist': album.artist_name}|urlencode }}">{{ album.artist_name }}</a> — <a href="{{ base }}/?{{ {'album_title': album.title}|urlencode }}">{{ album.title }}</a></h1>
 <div class="image-layout">
 <div class="image-content image-main">
 <section class="image-section" aria-label="Artwork">
@@ -112,13 +115,15 @@ View image #{{ historical_image.id }}
 </section>
 {% if album %}
 <section class="image-section" aria-labelledby="album-heading">
-<h2 id="album-heading">{% if draft %}Prepare an image variation{% else %}Album details{% endif %}</h2>
+<h2 id="album-heading">{% if draft %}Generate an image variation{% else %}Album details{% endif %}</h2>
 <div class="album-details">
 {% if draft %}
 <p>Source image #{{ draft.source_image_id }}. Creative changes apply only to a variation of this release.</p>
+<p id="continuation-capability" data-available="{{ 'true' if continuation_available else 'false' }}">{{ continuation_message }}</p>
 {% if variation_error %}<p role="alert">{{ variation_error }}</p>{% endif %}
-{% if prepared %}<p role="status">Variation inputs validated. Image generation is not available yet.</p>{% endif %}
+<p id="variation-capability" data-available="{{ 'true' if variation_available else 'false' }}">{{ variation_message }}</p>
 <form method="POST" action="{{ base }}/albums/{{ album.id }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
 <input type="hidden" name="source_image_id" value="{{ draft.source_image_id }}" />
 {% endif %}
 <dl class="image-details">
@@ -138,7 +143,10 @@ View image #{{ historical_image.id }}
 <dd class="music-description">{% if draft %}<textarea id="album-{{ name }}" name="{{ name }}" rows="4" maxlength="10000">{{ properties[name] or '' }}</textarea>{% else %}{{ properties[name] or '' }}{% endif %}</dd>
 {% endfor %}
 </dl>
-{% if draft %}<button type="submit">Prepare variation</button></form>{% endif %}
+{% if draft %}
+<button type="submit"{% if not variation_available %} disabled{% endif %}>Generate variation</button>
+</form>
+{% endif %}
 </div>
 </section>
 {% endif %}

@@ -1,0 +1,52 @@
+{% extends "login.html" %}
+{% block title %}Create an account{% endblock %}
+{% block account_content %}
+<h1 id="login-heading">Create an account</h1>
+{% if created %}
+<p role="status">Your account was created and is awaiting administrator approval. You can sign in once it has been enabled.</p>
+<p class="login-browse"><a href="{{ base }}/login">Sign in</a></p>
+{% else %}
+<p class="login-intro">New accounts need administrator approval before they can sign in.</p>
+{% if error %}<p id="registration-error" class="login-error" role="alert">{{ error }}</p>{% endif %}
+<form id="registration-form" action="{{ base }}/register" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+<div class="login-field">
+<label for="register-username">Username</label>
+<input id="register-username" name="username" autocomplete="username" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}" aria-describedby="username-rules" required />
+<p id="username-rules">1–64 letters, numbers, dots, underscores or hyphens, starting with a letter or number.</p>
+</div>
+<div class="login-field">
+<label for="register-password">Password</label>
+<input id="register-password" type="password" name="password" autocomplete="new-password" minlength="12" maxlength="1024" pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])[\s\S]{12,1024}" aria-describedby="password-rules" required />
+<p id="password-rules">12–1024 characters, including uppercase and lowercase letters and a number.</p>
+</div>
+<div class="login-field">
+<label for="register-confirmation">Confirm password</label>
+<input id="register-confirmation" type="password" name="password_confirmation" autocomplete="new-password" minlength="12" maxlength="1024" required />
+</div>
+<button class="login-submit" type="submit">Create account</button>
+</form>
+<script>
+(function () {
+    const form = document.getElementById('registration-form');
+    const password = form.elements.namedItem('password');
+    const confirmation = form.elements.namedItem('password_confirmation');
+    function validate() {
+        const value = password.value;
+        const valid = Array.from(value).length >= 12 && Array.from(value).length <= 1024
+            && /[a-z]/.test(value) && /[A-Z]/.test(value) && /[0-9]/.test(value);
+        password.setCustomValidity(valid ? '' : 'Use 12–1024 characters with uppercase and lowercase letters and a number.');
+        confirmation.setCustomValidity(value === confirmation.value ? '' : 'Passwords must match.');
+    }
+    password.addEventListener('input', validate);
+    confirmation.addEventListener('input', validate);
+    form.addEventListener('submit', function (event) {
+        validate();
+        if (!form.reportValidity()) event.preventDefault();
+    });
+})();
+</script>
+<p class="login-browse"><a href="{{ base }}/login">Already have an account? Sign in</a></p>
+{% endif %}
+<p class="login-browse"><a href="{{ base }}/">Browse albums</a></p>
+{% endblock %}

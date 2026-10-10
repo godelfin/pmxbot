@@ -19,7 +19,7 @@ class GenerationInputs:
     """One artwork interpretation of a canonical release; never writes storage.
 
     ``album_properties`` is consumed directly by the shared ``album_prompt``
-    builder. Source identity and creative properties can be persisted by F13.
+    builder. Each variation persists source identity and creative properties.
     """
 
     album_id: int
@@ -45,13 +45,29 @@ class GenerationInputs:
 
     @classmethod
     def from_source(cls, album, image):
+        from .images import generation_metadata
+
+        saved = generation_metadata(image).get('generation_inputs', {})
+        if not isinstance(saved, dict):
+            saved = {}
+        properties = {
+            field: saved.get(field, album.get(field)) or ''
+            for field in cls.creative_fields
+        }
+        if any(
+            not isinstance(value, str) or len(value) > 10000 or '\x00' in value
+            for value in properties.values()
+        ):
+            properties = {
+                field: album.get(field) or '' for field in cls.creative_fields
+            }
         return cls(
             album_id=album['id'],
             artist_id=album['artist_id'],
             source_image_id=image['id'],
             artist_name=album['artist_name'],
             title=album['title'],
-            **{field: album.get(field) or '' for field in cls.creative_fields},
+            **properties,
         )
 
     def prepare(self, values, choices):
@@ -346,3 +362,76 @@ def generate_album_image(
         raise
     library.record_image(album_id, cache.cache_key(prompt))
     return url
+
+
+def generate_album_variation(
+    library, cache, source_image_id, inputs, nick='', channel=''
+):
+    """Generate an immutable child through the configured album image backend."""
+    return continue_album_image(
+        library, cache, source_image_id, inputs, nick, channel, variation=True
+    )
+
+
+def continue_album_image(
+    library, cache, source_image_id, inputs, nick='', channel='', *, variation=False
+):
+    """F13's backend contract: continue a selected image using an F12 draft.
+
+    Returns the new immutable image record, including its numeric ID. Album
+    properties are not updated. Persistence of the child and link is atomic.
+    """
+    from .images import ImageError
+
+    if (
+        not isinstance(inputs, GenerationInputs)
+        or inputs.source_image_id != source_image_id
+    ):
+        raise ImageError(
+            'Continuation requires structured inputs for the source image.'
+        )
+    try:
+        album, source = cache.get_album_page(inputs.album_id, source_image_id)
+    except LookupError:
+        raise ImageError('Unknown source image or album association.') from None
+    except (sqlite3.Error, OSError):
+        raise ImageError('Could not read the source; check album storage.') from None
+    canonical = GenerationInputs.from_source(album, source)
+    if any(
+        getattr(inputs, field) != getattr(canonical, field)
+        for field in (
+            'album_id',
+            'artist_id',
+            'artist_name',
+            'title',
+            'source_image_id',
+        )
+    ):
+        raise ImageError('Continuation cannot change the release or source identity.')
+    try:
+        canonical.prepare(
+            {field: getattr(inputs, field) for field in inputs.creative_fields}, {}
+        )
+    except ValueError as exc:
+        raise ImageError(str(exc)) from None
+    prompt = (
+        'Continue the source artwork with this release interpretation: '
+        + album_prompt(inputs.album_properties())
+    )
+    for field, label in (
+        ('artist_genre', 'Band genre'),
+        ('artist_description', 'Band description'),
+    ):
+        if getattr(inputs, field):
+            prompt += (
+                f' {label}: {json.dumps(getattr(inputs, field), ensure_ascii=False)}.'
+            )
+    try:
+        operation = cache.vary_image if variation else cache.continue_image
+        return operation(source_image_id, prompt, nick, channel, inputs=asdict(inputs))
+    except Exception as exc:
+        try:
+            library.record_image_failure(inputs.album_id, prompt, nick, channel, exc)
+        except (sqlite3.Error, OSError):
+            logging.getLogger(__name__).error('Could not store album image failure')
+        raise

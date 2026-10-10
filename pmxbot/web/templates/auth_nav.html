@@ -1,0 +1,28 @@
+{% if current_user %}
+<style>
+.account-nav { max-width: 70rem; margin: 0 auto; padding: .75rem 1.25rem; display: flex; justify-content: flex-end; align-items: baseline; flex-wrap: wrap; gap: .5rem; }
+.account-nav form { margin: 0; }
+.account-nav a, .account-nav button { padding: 0; border: 0; background: none; color: #135ba1; font: inherit; text-decoration: underline; cursor: pointer; }
+.account-nav a:focus-visible, .account-nav button:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
+</style>
+<nav class="account-nav" aria-label="Account">
+<span>Hi, {{ current_user.username|e }}.</span>
+<form action="{{ base|e }}/logout" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token|e }}" />
+<a href="{{ base|e }}/logout" hidden>Sign out</a>
+<button type="submit">Sign out</button>
+</form>
+</nav>
+<script>
+(function () {
+    const form = document.currentScript.previousElementSibling.querySelector('form');
+    const link = form.querySelector('a');
+    link.addEventListener('click', function (event) {
+        event.preventDefault();
+        form.requestSubmit();
+    });
+    link.hidden = false;
+    form.querySelector('button').hidden = true;
+})();
+</script>
+{% endif %}

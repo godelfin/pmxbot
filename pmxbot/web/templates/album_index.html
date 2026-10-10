@@ -11,19 +11,43 @@ h1 { margin: 0 0 1.25rem; font-size: 1.5rem; }
 ul { padding: 1.25rem 1.25rem 1.25rem 2.5rem; background: white; border: 1px solid #d4dbe2; border-radius: .5rem; overflow-wrap: anywhere; }
 li + li { margin-top: .5rem; }
 a { color: #135ba1; }
-a:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
-.leaderboard { max-width: 28rem; margin: 1.25rem 0; padding: 1rem; background: white; border: 1px solid #d4dbe2; border-radius: .5rem; }
-.leaderboard h2 { margin: 0; font-size: 1.125rem; }
+a:focus-visible, button:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
+.homepage-panels { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 1.25rem; margin: 1.25rem 0; }
+.leaderboard { box-sizing: border-box; flex: 1 1 24rem; min-width: 0; max-width: 28rem; margin: 0; padding: 1rem; background: white; border: 1px solid #d4dbe2; border-radius: .5rem; }
+.leaderboard h2, .signin-card h2 { margin: 0; font-size: 1.125rem; }
 .leaderboard p { margin: .25rem 0 .75rem; }
+.signin-card { box-sizing: border-box; flex: 1 1 20rem; min-width: 0; max-width: 24rem; padding: 1rem; background: #fff; border: 1px solid #d4dbe2; border-radius: .5rem; }
+.signin-card p { margin: .25rem 0 1rem; color: #596574; }
+.login-field { margin-bottom: 1rem; }
+.login-field label { display: block; margin-bottom: .35rem; font-weight: bold; }
+.login-field input { box-sizing: border-box; width: 100%; min-width: 0; padding: .65rem .75rem; border: 1px solid #b8c2ce; border-radius: .25rem; color: inherit; background: #fff; font: inherit; font-size: 1rem; }
+.login-field input:focus { border-color: #135ba1; outline: 2px solid #135ba1; outline-offset: 1px; }
+.login-submit { width: 100%; padding: .65rem .75rem; border: 1px solid #135ba1; border-radius: .25rem; color: #fff; background: #135ba1; font: inherit; font-weight: bold; cursor: pointer; }
+.login-submit:hover { background: #104b85; border-color: #104b85; }
 table { width: 100%; border-collapse: collapse; overflow-wrap: anywhere; }
 th, td { padding: .25rem .5rem; text-align: left; }
 th:last-child, td:last-child { text-align: right; }
+.catalog { background: white; border: 1px solid #d4dbe2; table-layout: fixed; }
+.catalog th, .catalog td { padding: .65rem .75rem; border-bottom: 1px solid #d4dbe2; vertical-align: top; }
+.catalog thead { background: #dfe6ed; }
+.catalog tbody tr:nth-child(even) { background: #edf1f5; }
+.catalog th:nth-child(1), .catalog th:nth-child(2) { width: 32%; }
+.catalog th:nth-child(3) { width: 22%; }
+.catalog th:nth-child(4) { width: 14%; }
+.catalog th a { display: block; }
+.catalog td:last-child { font-variant-numeric: tabular-nums; }
+@media (max-width: 36rem) { .catalog th, .catalog td { padding: .5rem .3rem; } }
+.catalog-controls { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
+.catalog-controls label { display: flex; flex-direction: column; }
+.pagination { display: flex; gap: 1rem; }
 </style>
 </head>
 <body>
+{% include "auth_nav.html" %}
 <main>
 <h1>Albums</h1>
 <p><a href="{{ base }}/gallery">View artwork gallery</a></p>
+<div class="homepage-panels">
 {% if leaderboard %}
 <section class="leaderboard" aria-labelledby="leaderboard-heading">
 <h2 id="leaderboard-heading">Top album image generators</h2>
@@ -38,15 +62,49 @@ th:last-child, td:last-child { text-align: right; }
 </table>
 </section>
 {% endif %}
-{% if albums %}
-<ul>
-{% for album in albums %}
-<li><a href="{{ base }}/albums/{{ album.id }}">{{ album.artist_name }} — {{ album.title }}</a></li>
-{% endfor %}
-</ul>
-{% else %}
-<p>No albums yet.</p>
+{% if not current_user %}
+<section class="signin-card" aria-labelledby="signin-heading">
+<h2 id="signin-heading">Sign in</h2>
+<p>Sign in to your pmxbot account.</p>
+{% include "login_form.html" %}
+<p><a href="{{ base }}/register">Create an account</a></p>
+</section>
 {% endif %}
+</div>
+<form class="catalog-controls" action="{{ base }}/" method="get">
+<label>Search albums and artists<input name="q" value="{{ q }}" type="search" /></label>
+{% for name, value in [('artist', artist), ('album_title', album_title)] %}
+{% if value %}<input type="hidden" name="{{ name }}" value="{{ value }}" /><span>{{ name }}: {{ value }}</span>{% endif %}
+{% endfor %}
+<input type="hidden" name="sort" value="{{ sort }}" />
+<input type="hidden" name="order" value="{{ order }}" />
+<button type="submit">Search</button><a href="{{ base }}/">Clear filters</a>
+</form>
+<p>{{ total }} albums</p>
+<table class="catalog" aria-label="Album catalog">
+<thead><tr>
+{% for column, label in [('artist', 'Band'), ('album', 'Album'), ('chronology', 'Created'), ('variations', 'Image variations')] %}
+<th scope="col" aria-sort="{% if sort == column %}{{ 'ascending' if order == 'asc' else 'descending' }}{% else %}none{% endif %}"><a href="{{ sort_url(column) }}">{{ label }}{% if sort == column %} {{ '↑' if order == 'asc' else '↓' }}{% endif %}</a></th>
+{% endfor %}
+</tr></thead>
+<tbody>
+{% for album in albums %}
+<tr>
+<td class="catalog-band">{{ album.artist_name }}</td>
+<td class="catalog-album"><a href="{{ base }}/albums/{{ album.id }}">{{ album.title }}</a></td>
+<td><time>{{ album.created_at }}</time></td>
+<td class="catalog-variations">{{ album.image_count }}</td>
+</tr>
+{% else %}
+<tr><td colspan="4">{% if q or artist or album_title %}No albums match your search.{% else %}No albums yet.{% endif %}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+<nav class="pagination" aria-label="Catalog pages">
+{% if page_number > 1 %}<a rel="prev" href="{{ page_url(page_number - 1) }}">Previous</a>{% endif %}
+<span>Page {{ page_number }} of {{ page_count }}</span>
+{% if page_number < page_count %}<a rel="next" href="{{ page_url(page_number + 1) }}">Next</a>{% endif %}
+</nav>
 </main>
 </body>
 </html>

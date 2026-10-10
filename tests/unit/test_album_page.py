@@ -1,4 +1,5 @@
 import io
+import json
 import sqlite3
 from contextlib import closing
 from unittest.mock import Mock
@@ -11,7 +12,11 @@ from bs4 import BeautifulSoup
 import pmxbot
 from pmxbot.images import ImageCache, ImageError
 from pmxbot.music import MusicLibrary
-from pmxbot.web import viewer
+from pmxbot.web import viewer, auth
+from http.cookies import SimpleCookie
+
+ORIGINAL_GENERATE = ImageCache.generate
+ORIGINAL_UPLOAD = ImageCache.upload
 
 
 @pytest.fixture
@@ -31,9 +36,17 @@ def page(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ImageCache, 'upload', Mock(side_effect=AssertionError('upload'))
     )
-    app = cherrypy.Application(viewer.PmxbotPages(), '/bot')
+    config.web_session_secure = False
+    app = cherrypy.Application(
+        viewer.PmxbotPages(), '/bot', {'/': auth.session_config(config)}
+    )
+    cookies = SimpleCookie()
 
     def request(path='/albums/42', method='GET', data=None):
+        if method == 'POST' and data and 'csrf_token' not in data:
+            initial = BeautifulSoup(request(path)['body'], 'html.parser')
+            token = initial.select_one('[name=csrf_token]')
+            data = dict(data, csrf_token=token['value'] if token else '')
         payload = urlencode(data or {}).encode()
         path, _, query = path.partition('?')
         env = {
@@ -43,6 +56,9 @@ def page(tmp_path, monkeypatch):
             'QUERY_STRING': query,
             'SERVER_NAME': 'localhost',
             'HTTP_HOST': 'localhost',
+            'HTTP_COOKIE': '; '.join(
+                f'{name}={cookie.value}' for name, cookie in cookies.items()
+            ),
             'CONTENT_LENGTH': str(len(payload)),
             'CONTENT_TYPE': 'application/x-www-form-urlencoded',
             'SERVER_PORT': '80',
@@ -59,6 +75,9 @@ def page(tmp_path, monkeypatch):
 
         def start(status, headers, exc_info=None):
             response.update(status=int(status.split()[0]), headers=dict(headers))
+            for name, value in headers:
+                if name.lower() == 'set-cookie':
+                    cookies.load(value)
 
         output = app(env, start)
         try:
@@ -70,14 +89,15 @@ def page(tmp_path, monkeypatch):
     return cache, request
 
 
-def insert(cache, url='https://albums.example/art.png?x=1&y=2'):
+def insert(cache, url='https://albums.example/art.png?x=1&y=2', image_id=42):
     with closing(cache.connect()) as db:
         db.execute(
             '''INSERT INTO image_cache
             (id, cache_key, prompt, normalized_prompt, settings_json, local_filename,
              hosted_url, generation_metadata_json, requested_by, channel, created_at)
-            VALUES (42, 'key', ?, 'normalized', ?, '/private/secret.png', ?, ?, ?, ?, '2026-01-02 03:04:05')''',
+            VALUES (?, 'key', ?, 'normalized', ?, '/private/secret.png', ?, ?, ?, ?, '2026-01-02 03:04:05')''',
             (
+                image_id,
                 '  exact <script> & "prompt"\nsecond line  ',
                 '{"model":"gpt-image-1","quality":"low","secret":"hidden"}',
                 url,
@@ -141,7 +161,7 @@ def test_render_and_read_only(page):
     ] == [
         'Artwork history',
         'Original prompt',
-        'Prepare an image variation',
+        'Generate an image variation',
         'Image details',
         'Settings',
         'Generation metadata',
@@ -188,6 +208,69 @@ def test_render_and_read_only(page):
     assert request(method='HEAD')['status'] == 200
     assert cache.database.read_bytes() == before
     assert not any(word in body for word in ('Customize', 'Delete', 'Rate'))
+
+
+@pytest.mark.parametrize(
+    'mode,metadata,available,reason',
+    [
+        (
+            'responses',
+            {'api': 'responses', 'response_id': 'resp_selected', 'store': True},
+            True,
+            'subject to OpenAI context retention',
+        ),
+        (
+            'images',
+            {'api': 'responses', 'response_id': 'resp_selected', 'store': True},
+            False,
+            'configure image_api',
+        ),
+        ('responses', {'api': 'images'}, False, 'Images API'),
+        ('responses', {}, False, 'legacy image'),
+        (
+            'responses',
+            {'api': 'responses', 'store': True},
+            False,
+            'no stored response context',
+        ),
+        (
+            'responses',
+            {'api': 'responses', 'response_id': 'resp_selected', 'store': False},
+            False,
+            'no stored response context',
+        ),
+    ],
+)
+def test_selected_image_continuation_capability(
+    page, mode, metadata, available, reason
+):
+    cache, request = page
+    insert(cache)
+    pmxbot.config.update(image_api=mode, responses_model='gpt-5')
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            'UPDATE image_cache SET generation_metadata_json = ? WHERE id = 42',
+            (json.dumps(metadata),),
+        )
+        db.execute(
+            """INSERT INTO image_cache
+            (id, cache_key, prompt, normalized_prompt, settings_json,
+             local_filename, generation_metadata_json, created_at)
+            VALUES (43, 'newer', 'newer', 'newer', '{}', 'new.png', '{}', '2099-01-01')"""
+        )
+    MusicLibrary(cache.database).record_image(42, 'newer')
+    before = cache.database.read_bytes()
+    soup = BeautifulSoup(
+        request('/albums/42?source_image_id=42')['body'], 'html.parser'
+    )
+    status = soup.select_one('#continuation-capability')
+    assert status['data-available'] == str(available).lower()
+    assert reason in status.get_text()
+    assert soup.select_one('button[type=submit]').get_text() == 'Generate variation'
+    assert 'Generate a new version' not in soup.get_text()
+    latest = BeautifulSoup(request()['body'], 'html.parser')
+    assert latest.select_one('#continuation-capability')['data-available'] == 'false'
+    assert cache.database.read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -298,7 +381,7 @@ def test_album_and_band_properties(page):
         'Band description': '<b>Band description</b>',
     }
     assert not cards[0].select('script, b, edition')
-    assert not cards[0].select('a')
+    assert cards[0].select_one('button[type=submit]').get_text() == 'Generate variation'
     assert cache.database.read_bytes() == before
 
 
@@ -354,7 +437,7 @@ def test_malformed_metadata(page, data):
     ] == [
         'Artwork history',
         'Original prompt',
-        'Prepare an image variation',
+        'Generate an image variation',
         'Image details',
     ]
 
@@ -407,9 +490,8 @@ def test_storage_failure_is_clean(page):
 
 def test_route_uses_album_id_and_newest_image(page):
     cache, request = page
-    insert(cache)
+    insert(cache, image_id=100)
     with sqlite3.connect(cache.database) as db:
-        db.execute('UPDATE image_cache SET id = 100 WHERE id = 42')
         db.execute(
             '''INSERT INTO image_cache
             (id, cache_key, prompt, normalized_prompt, settings_json,
@@ -578,14 +660,14 @@ def test_homepage_lists_all_albums(page):
     response = request('/')
     assert response['status'] == 200
     soup = BeautifulSoup(response['body'], 'html.parser')
-    links = soup.select('main li a')
+    links = soup.select('.catalog-album a')
     assert [link.get_text() for link in links] == [
-        '<Band> — <Album>',
-        '<Band> — Second',
-        'Zulu — Last',
+        'Second',
+        '<Album>',
+        'Last',
     ]
     assert [link['href'] for link in links] == [
-        f'/bot/albums/{album["id"]}' for album in (first, second, last)
+        f'/bot/albums/{album["id"]}' for album in (second, first, last)
     ]
     assert not soup.select('band, album')
     for link in links:
@@ -911,9 +993,9 @@ def test_preparation_is_immutable_and_has_no_generation(page):
         'artist_description': 'Band interpretation',
     }
     response = request(method='POST', data=values)
-    assert response['status'] == 200
+    assert response['status'] == 409
     soup = BeautifulSoup(response['body'], 'html.parser')
-    assert 'validated' in soup.select_one('[role=status]').get_text()
+    assert 'disabled' in soup.select_one('[role=alert]').get_text()
     assert soup.select_one('[name=description]').get_text() == values['description']
     assert not soup.select('form pre, form [name=prompt], form b')
     assert cache.database.read_bytes() == before
@@ -977,7 +1059,486 @@ def test_legacy_values_prepare_and_selected_source_stays_fixed(page):
     assert values['format'] == 'Retired format'
     assert values['artist_genre'] == 'Retired genre'
     response = request(method='POST', data=values)
-    assert response['status'] == 200
+    assert response['status'] == 409
     assert 'Source image #42' in response['body']
-    assert 'validated' in response['body']
+    assert 'disabled' in response['body']
     assert cache.database.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ('sort', 'order', 'expected'),
+    [
+        ('chronology', 'desc', [3, 2, 1]),
+        ('chronology', 'asc', [1, 2, 3]),
+        ('artist', 'asc', [2, 3, 1]),
+        ('artist', 'desc', [1, 3, 2]),
+        ('album', 'asc', [1, 3, 2]),
+        ('album', 'desc', [2, 3, 1]),
+    ],
+)
+def test_catalog_sort(page, sort, order, expected):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    for artist, title in [('Zulu', 'Apple'), ('alpha', 'Zoo'), ('alpha', 'Apple')]:
+        library.create_album(artist, title)
+    with sqlite3.connect(cache.database) as db:
+        db.execute("UPDATE albums SET created_at = '2026-01-01'")
+    soup = BeautifulSoup(request(f'/?sort={sort}&order={order}')['body'], 'html.parser')
+    assert [link['href'] for link in soup.select('.catalog-album a')] == [
+        f'/bot/albums/{value}' for value in expected
+    ]
+
+
+@pytest.mark.parametrize(
+    ('query', 'expected'),
+    [
+        ('q=APPLE', [3, 1]),
+        ('q=ALPHA', [3, 2]),
+        ('q=+++', [3, 2, 1]),
+        ('album_title=Apple', [3, 1]),
+        ('artist=alpha', [3, 2]),
+        ('artist=Alpha', []),
+        ('q=%25', []),
+        ('q=%27+OR+1%3D1', []),
+    ],
+)
+def test_catalog_filters(page, query, expected):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    for artist, title in [('Zulu', 'Apple'), ('alpha', 'Zoo'), ('alpha', 'Apple')]:
+        library.create_album(artist, title)
+    soup = BeautifulSoup(request('/?' + query)['body'], 'html.parser')
+    assert [link['href'] for link in soup.select('.catalog-album a')] == [
+        f'/bot/albums/{value}' for value in expected
+    ]
+    if not expected:
+        assert 'No albums match' in soup.get_text()
+
+
+def test_catalog_exact_links_and_pagination(page):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    artist, title = '<B & / + ü>', '<A & / + ü>'
+    for index in range(25):
+        library.create_album(artist, title + str(index))
+    library.create_album('Other', title + '0')
+    soup = BeautifulSoup(request('/albums/1')['body'], 'html.parser')
+    links = soup.select('h1 a')
+    assert [link['href'] for link in links] == [
+        '/bot/?' + urlencode({'artist': artist}),
+        '/bot/?' + urlencode({'album_title': title + '0'}),
+    ]
+    title_results = BeautifulSoup(request(links[1]['href'][4:])['body'], 'html.parser')
+    assert len(title_results.select('.catalog-album')) == 2
+    query = urlencode(dict(q='<A', artist=artist, sort='album', order='asc'))
+    first = BeautifulSoup(request('/?' + query)['body'], 'html.parser')
+    assert len(first.select('.catalog-album')) == 24
+    next_url = first.select_one('[rel=next]')['href']
+    assert next_url.startswith('/bot/?')
+    from urllib.parse import parse_qs, urlsplit
+
+    assert parse_qs(urlsplit(next_url).query) == dict(
+        q=['<A'], artist=[artist], sort=['album'], order=['asc'], page=['2']
+    )
+    second = BeautifulSoup(request(next_url[4:])['body'], 'html.parser')
+    assert len(second.select('.catalog-album')) == 1
+    assert not second.select_one('[rel=next]')
+    assert second.select_one('[rel=prev]')
+    assert not first.select('b, aü')
+    assert first.select_one('[name=artist]')['value'] == artist
+    assert first.select_one('form.catalog-controls')['action'] == '/bot/'
+    assert request('/?' + query + '&page=3')['status'] == 404
+
+
+@pytest.mark.parametrize(
+    'query',
+    [
+        'page=0',
+        'page=-1',
+        'page=abc',
+        'page=',
+        'page=1&page=2',
+        'page=' + '9' * 100,
+        'sort=bad',
+        'order=bad',
+        'q=a&q=b',
+        'unknown=a',
+    ],
+)
+def test_catalog_invalid_parameters(page, query):
+    cache, request = page
+    assert request('/?' + query)['status'] == 400
+    assert not cache.database.exists()
+
+
+def test_catalog_artwork_and_unicode(page):
+    cache, request = page
+    insert(cache)
+    library = MusicLibrary(cache.database)
+    library.create_album('Straße', 'No artwork')
+    library.create_album('Other', 'No artwork')
+    with closing(cache.connect()) as db:
+        db.execute(
+            """INSERT INTO image_cache
+            (cache_key, prompt, normalized_prompt, settings_json, local_filename,
+             hosted_url, generation_metadata_json, created_at)
+            VALUES ('new', '', '', '{}', 'private.png', 'javascript:bad', '{}', '2099')"""
+        )
+    library.record_image(42, 'new')
+    before = cache.database.read_bytes()
+    soup = BeautifulSoup(request('/')['body'], 'html.parser')
+    assert len(soup.select('.catalog-album')) == 3
+    assert not soup.select('.catalog img')
+    assert 'Straße' in request('/?q=STRASSE')['body']
+    assert cache.database.read_bytes() == before
+
+
+def test_catalog_existing_artwork(page):
+    cache, request = page
+    insert(cache)
+    soup = BeautifulSoup(request('/')['body'], 'html.parser')
+    assert len(soup.select('.catalog-album')) == 1
+    assert not soup.select('.catalog img')
+    assert soup.select_one('.catalog-variations').get_text() == '1'
+
+
+@pytest.mark.parametrize('order', ['asc', 'desc'])
+def test_catalog_tied_pagination_and_query_count(page, monkeypatch, order):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    albums = [library.create_album('Band', f'Title {index}') for index in range(49)]
+    with sqlite3.connect(cache.database) as db:
+        db.execute("UPDATE albums SET created_at = '2026-01-01'")
+    statements = []
+    original = ImageCache.read_connection
+
+    def traced_connection(self):
+        db = original(self)
+        db.set_trace_callback(statements.append)
+        return db
+
+    monkeypatch.setattr(ImageCache, 'read_connection', traced_connection)
+    ids = []
+    for number in range(1, 4):
+        soup = BeautifulSoup(
+            request(f'/?order={order}&page={number}')['body'], 'html.parser'
+        )
+        rows = soup.select('.catalog-album a')
+        assert len(rows) == (24 if number < 3 else 1)
+        ids.extend(int(row['href'].rsplit('/', 1)[1]) for row in rows)
+    expected = [album['id'] for album in albums]
+    assert ids == (expected if order == 'asc' else expected[::-1])
+    # Schema, count, result and leaderboard schema queries: constant per page.
+    assert len([sql for sql in statements if sql.startswith('SELECT')]) == 12
+
+
+def test_catalog_creation_dates_precede_ids(page):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    library.create_album('Band', 'Newest')
+    library.create_album('Band', 'Oldest')
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            "UPDATE albums SET created_at = CASE id WHEN 1 THEN '2026-02-01' ELSE '2026-01-01' END"
+        )
+    soup = BeautifulSoup(request('/')['body'], 'html.parser')
+    assert [row['href'] for row in soup.select('.catalog-album a')] == [
+        '/bot/albums/1',
+        '/bot/albums/2',
+    ]
+
+
+@pytest.fixture
+def variation(page, monkeypatch, tmp_path):
+    import base64
+    from pmxbot import images
+
+    cache, request = page
+    insert(cache)
+    pmxbot.config.update(
+        images_enabled=True,
+        openai_api_key='test',
+        r2_endpoint_url='https://r2.example.com',
+        r2_public_url='https://images.example.com',
+        r2_bucket='images',
+        r2_access_key_id='test',
+        r2_secret_access_key='test',
+    )
+    source = tmp_path / 'source.png'
+    source.write_bytes(b'\x89PNG\r\n\x1a\nsource')
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            'UPDATE image_cache SET local_filename = ? WHERE id = 42', (str(source),)
+        )
+    monkeypatch.setattr(ImageCache, 'generate', ORIGINAL_GENERATE)
+    monkeypatch.setattr(ImageCache, 'upload', ORIGINAL_UPLOAD)
+    response = Mock()
+    response.json.return_value = {
+        'data': [{'b64_json': base64.b64encode(b'\x89PNG\r\n\x1a\nchild').decode()}]
+    }
+    post = Mock(return_value=response)
+    monkeypatch.setattr(images.requests, 'post', post)
+    client = Mock()
+    client.put_object.return_value = {'ETag': 'test'}
+    monkeypatch.setattr(images.boto3, 'client', Mock(return_value=client))
+    values = dict(
+        source_image_id='42',
+        format='',
+        format_description='',
+        genre='',
+        artist_genre='',
+        description='new <art>\nexact cue',
+        artist_description='Band cue',
+    )
+    return cache, request, post, client, values, source
+
+
+def enable_responses(cache, post):
+    import base64
+
+    pmxbot.config.update(image_api='responses', responses_model='gpt-5')
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            'UPDATE image_cache SET generation_metadata_json = ? WHERE id = 42',
+            (json.dumps(dict(api='responses', response_id='resp_source', store=True)),),
+        )
+    post.return_value.json.return_value = dict(
+        id='resp_child',
+        status='completed',
+        model='gpt-5',
+        store=True,
+        output=[
+            dict(
+                type='image_generation_call',
+                id='ig_child',
+                status='completed',
+                result=base64.b64encode(b'\x89PNG\r\n\x1a\nchild').decode(),
+            )
+        ],
+    )
+
+
+@pytest.mark.parametrize('api', ['images', 'responses'])
+def test_generate_variation_prg_and_provenance(variation, api):
+    cache, request, post, client, values, source = variation
+    if api == 'responses':
+        enable_responses(cache, post)
+        source.unlink()  # Conversation continuation never opens the source bitmap.
+    else:
+
+        def image_post(*args, **kwargs):
+            assert kwargs['files']['image[]'][1].read() == source.read_bytes()
+            return post.return_value
+
+        post.side_effect = image_post
+    original = cache.get_image(42)
+    with sqlite3.connect(cache.database) as db:
+        canonical = (
+            db.execute('SELECT * FROM albums').fetchall(),
+            db.execute('SELECT * FROM artists').fetchall(),
+        )
+    capability = BeautifulSoup(request()['body'], 'html.parser')
+    assert capability.select_one('#variation-capability')['data-available'] == 'true'
+    result = request(method='POST', data=values)
+    assert result['status'] == 303
+    target = result['headers']['Location']
+    child_id = int(target.rsplit('=', 1)[1])
+    assert child_id != 42
+    child = cache.get_image(child_id)
+    sent = post.call_args.kwargs['json' if api == 'responses' else 'data']
+    assert child['prompt'] == sent['input' if api == 'responses' else 'prompt']
+    assert values['description'] in child['prompt']
+    assert 'Band cue' in child['prompt']
+    assert child['parent_image_id'] == 42
+    meta = json.loads(child['generation_metadata_json'])
+    assert meta['generation_inputs']['description'] == values['description']
+    assert meta['generation_inputs']['source_image_id'] == 42
+    assert meta['api'] == api
+    if api == 'responses':
+        assert sent['previous_response_id'] == 'resp_source'
+        assert 'files' not in post.call_args.kwargs
+        assert meta['response_id'] == 'resp_child'
+    else:
+        assert post.call_args.args[0].endswith('/images/edits')
+    assert cache.get_image(42) == original
+    with sqlite3.connect(cache.database) as db:
+        assert canonical == (
+            db.execute('SELECT * FROM albums').fetchall(),
+            db.execute('SELECT * FROM artists').fetchall(),
+        )
+        assert db.execute(
+            'SELECT album_id FROM album_images WHERE cache_key = ?',
+            (child['cache_key'],),
+        ).fetchone() == (42,)
+    for _ in range(2):
+        page = BeautifulSoup(request(target[len('/bot') :])['body'], 'html.parser')
+        assert page.select_one('[name=description]').get_text() == values['description']
+        assert child['prompt'] in page.get_text()
+        assert str(child_id) in page.get_text()
+    assert post.call_count == 1
+    assert client.put_object.call_count == 1
+
+
+@pytest.mark.parametrize(
+    'case', ['disabled', 'legacy', 'missing_file', 'invalid', 'csrf', 'mismatch']
+)
+def test_variation_rejected_without_provider(variation, case):
+    cache, request, post, client, values, source = variation
+    if case == 'disabled':
+        pmxbot.config['images_enabled'] = False
+    elif case == 'legacy':
+        pmxbot.config.update(image_api='responses', responses_model='gpt-5')
+    elif case == 'missing_file':
+        source.unlink()
+    elif case == 'invalid':
+        values['genre'] = 'not a configured genre'
+    elif case == 'csrf':
+        values['csrf_token'] = 'invalid'
+    else:
+        values['source_image_id'] = '999'
+    original = cache.get_image(42)
+    result = request(method='POST', data=values)
+    assert result['status'] in (400, 403, 404, 409)
+    post.assert_not_called()
+    client.put_object.assert_not_called()
+    assert cache.get_image(42) == original
+
+
+@pytest.mark.parametrize('failure', ['api', 'upload', 'storage', 'expired_context'])
+def test_variation_failures_redirect_and_preserve_source(variation, failure):
+    from pmxbot import images
+
+    cache, request, post, client, values, source = variation
+    original = cache.get_image(42)
+    if failure == 'expired_context':
+        enable_responses(cache, post)
+        original = cache.get_image(42)
+        post.side_effect = images.requests.exceptions.RequestException(
+            'secret provider detail'
+        )
+    elif failure == 'api':
+        post.side_effect = images.requests.exceptions.RequestException(
+            'secret provider detail'
+        )
+    elif failure == 'upload':
+        client.put_object.side_effect = images.BotoCoreError()
+    else:
+        with sqlite3.connect(cache.database) as db:
+            db.execute(
+                "CREATE TRIGGER fail_link BEFORE INSERT ON album_images BEGIN SELECT RAISE(ABORT, 'secret storage detail'); END"
+            )
+    result = request(method='POST', data=values)
+    assert result['status'] == 303
+    assert result['headers']['Location'] == '/bot/albums/42?source_image_id=42'
+    page = request('/albums/42?source_image_id=42')
+    soup = BeautifulSoup(page['body'], 'html.parser')
+    assert soup.select_one('[role=alert]')
+    assert 'secret ' not in page['body']
+    if failure == 'expired_context':
+        assert 'No source image was uploaded' in page['body']
+    assert cache.get_image(42) == original
+    with sqlite3.connect(cache.database) as db:
+        assert db.execute('SELECT count(*) FROM image_cache').fetchone()[0] == (
+            2 if failure == 'upload' else 1
+        )
+        assert db.execute('SELECT count(*) FROM album_images').fetchone()[0] == (
+            2 if failure == 'upload' else 1
+        )
+    request('/albums/42?source_image_id=42')
+    assert post.call_count == 1
+    assert client.put_object.call_count == (1 if failure == 'upload' else 0)
+
+
+def test_responses_variations_branch_from_selected_image(variation):
+    cache, request, post, client, values, source = variation
+    enable_responses(cache, post)
+    first = request(method='POST', data=values)
+    first_id = int(first['headers']['Location'].rsplit('=', 1)[1])
+    post.return_value.json.return_value['id'] = 'resp_second'
+    second = request(method='POST', data=dict(values, source_image_id=str(first_id)))
+    second_id = int(second['headers']['Location'].rsplit('=', 1)[1])
+    assert post.call_args.kwargs['json']['previous_response_id'] == 'resp_child'
+    post.return_value.json.return_value['id'] = 'resp_branch'
+    branch = request(method='POST', data=values)
+    branch_id = int(branch['headers']['Location'].rsplit('=', 1)[1])
+    assert post.call_args.kwargs['json']['previous_response_id'] == 'resp_source'
+    assert len({42, first_id, second_id, branch_id}) == 4
+    assert cache.get_image(second_id)['parent_image_id'] == first_id
+    assert cache.get_image(branch_id)['parent_image_id'] == 42
+    assert all('files' not in call.kwargs for call in post.call_args_list)
+
+
+def test_variation_source_must_belong_to_album(variation):
+    cache, request, post, client, values, source = variation
+    other = MusicLibrary(cache.database).create_album('Other', 'Release')
+    assert (
+        request(f"/albums/{other['id']}", method='POST', data=values)['status'] == 404
+    )
+    post.assert_not_called()
+
+
+def test_images_variation_hosting_retry_never_regenerates(variation):
+    from pmxbot import images
+
+    cache, request, post, client, values, source = variation
+    client.put_object.side_effect = images.BotoCoreError()
+    assert request(method='POST', data=values)['status'] == 303
+    _, child = cache.get_album_page(42)
+    assert child['id'] != 42
+    client.put_object.side_effect = None
+    ready = ImageCache(pmxbot.config).retry_upload(child['id'])
+    assert ready['hosted_url']
+    assert ready['prompt'] == child['prompt']
+    assert ready['generation_metadata_json'] == child['generation_metadata_json']
+    assert post.call_count == 1
+    from pathlib import Path
+
+    Path(ready['local_filename']).unlink()
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            'UPDATE image_cache SET hosted_url = NULL WHERE id = ?', (child['id'],)
+        )
+    with pytest.raises(ImageError, match='immutable artwork'):
+        ImageCache(pmxbot.config).retry_upload(child['id'])
+    assert post.call_count == 1
+
+
+@pytest.mark.parametrize(
+    'case', ['unstored', 'missing_response_id', 'unsupported_model']
+)
+def test_variation_capability_disables_unsupported_source(variation, case):
+    cache, request, post, client, values, source = variation
+    if case == 'unsupported_model':
+        pmxbot.config['images_model'] = 'dall-e-3'
+    else:
+        enable_responses(cache, post)
+        metadata = dict(api='responses', store=case != 'unstored')
+        if case == 'unstored':
+            metadata['response_id'] = 'resp_source'
+        with sqlite3.connect(cache.database) as db:
+            db.execute(
+                'UPDATE image_cache SET generation_metadata_json = ? WHERE id = 42',
+                (json.dumps(metadata),),
+            )
+    soup = BeautifulSoup(request()['body'], 'html.parser')
+    assert soup.select_one('#variation-capability')['data-available'] == 'false'
+    assert soup.select_one('button[type=submit]').has_attr('disabled')
+    assert request(method='POST', data=values)['status'] == 409
+    post.assert_not_called()
+
+
+def test_variation_file_save_failure_is_safe(variation, monkeypatch):
+    cache, request, post, client, values, source = variation
+    before = cache.get_image(42)
+    monkeypatch.setattr(
+        ImageCache, 'save', Mock(side_effect=OSError('secret disk detail'))
+    )
+    assert request(method='POST', data=values)['status'] == 303
+    result = request('/albums/42?source_image_id=42')
+    assert 'check image storage' in result['body']
+    assert 'secret disk detail' not in result['body']
+    assert cache.get_image(42) == before
+    with sqlite3.connect(cache.database) as db:
+        assert db.execute('SELECT count(*) FROM image_cache').fetchone() == (1,)
+        assert db.execute('SELECT count(*) FROM album_images').fetchone() == (1,)
+    client.put_object.assert_not_called()
