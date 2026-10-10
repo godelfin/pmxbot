@@ -550,6 +550,30 @@ class ImageCache:
                 )
             ]
 
+    def album_image_history(self, album_id):
+        """Read all linked artwork versions without modifying storage."""
+        with closing(self.read_connection()) as db:
+            tables = {
+                row[0]
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if not {'album_images', 'image_cache'} <= tables:
+                return []
+            return [
+                dict(row)
+                for row in db.execute(
+                    '''SELECT image_cache.id, image_cache.hosted_url,
+                    image_cache.prompt, image_cache.requested_by,
+                    image_cache.channel, image_cache.created_at
+                    FROM image_cache JOIN album_images USING (cache_key)
+                    WHERE album_images.album_id = ?
+                    ORDER BY image_cache.created_at DESC, image_cache.id DESC''',
+                    (album_id,),
+                )
+            ]
+
     def gallery_albums(self, page, page_size=24, sort='date_desc'):
         """Read one page of albums and their latest artwork without writes."""
         order = {
