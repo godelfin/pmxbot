@@ -558,15 +558,9 @@ def test_album_selectable_image_history_updates_prompt_and_metadata(page):
     assert len(entries) == 3
     assert 'Currently viewing image #44' in entries[0].get_text()
     assert entries[0].select_one('img') is None
-    assert entries[1].select_one('a')['href'] == (
-        '/bot/albums/42?source_image_id=43'
-    )
-    assert entries[1].select_one('img')['src'] == (
-        'https://albums.example/newer.png'
-    )
-    assert entries[2].select_one('a')['href'] == (
-        '/bot/albums/42?source_image_id=42'
-    )
+    assert entries[1].select_one('a')['href'] == ('/bot/albums/42?source_image_id=43')
+    assert entries[1].select_one('img')['src'] == ('https://albums.example/newer.png')
+    assert entries[2].select_one('a')['href'] == ('/bot/albums/42?source_image_id=42')
     assert cache.database.read_bytes() == before
 
     selected = request('/albums/42?source_image_id=43')
@@ -575,12 +569,16 @@ def test_album_selectable_image_history_updates_prompt_and_metadata(page):
     assert selected_soup.select_one('#prompt-heading ~ pre').get_text() == (
         'new prompt'
     )
-    assert '"revised_prompt": "new details"' in selected_soup.select_one(
-        '#metadata-heading-2 ~ pre'
-    ).get_text()
-    assert selected_soup.select_one(
-        '#image-history-heading ~ ul li .current-image'
-    ).get_text(strip=True) == 'Currently viewing image #43'
+    assert (
+        '"revised_prompt": "new details"'
+        in selected_soup.select_one('#metadata-heading-2 ~ pre').get_text()
+    )
+    assert (
+        selected_soup.select_one(
+            '#image-history-heading ~ ul li .current-image'
+        ).get_text(strip=True)
+        == 'Currently viewing image #43'
+    )
     assert cache.database.read_bytes() == before
 
 
