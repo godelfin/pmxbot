@@ -318,8 +318,8 @@ def test_music_result_ids_persist_and_distinguish_albums(config, post):
         ).fetchone()
         Path(row[0]).unlink()
         db.execute('UPDATE image_cache SET hosted_url = NULL')
-    assert result(first['id']) == first_result
-    assert post.call_count == 3
+    assert 'refusing to replace immutable artwork' in result(first['id'])[0]
+    assert post.call_count == 2
 
 
 def test_music_strips_metadata_before_album_prompt(config, post, monkeypatch):
@@ -1813,7 +1813,9 @@ def test_album_continuation_link_failure_rolls_back_child(config, responses_post
     album = library.create_album('Band', 'Album')
     generate_album_image(library, cache, album['id'])
     source = dict(read_row(cache))
-    draft = GenerationInputs.from_source(album, source)
+    draft = GenerationInputs.from_source(album, source).prepare(
+        dict(dict.fromkeys(GenerationInputs.creative_fields, ''), genre='Rock'), {}
+    )
     with closing(cache.connect()) as db:
         db.execute(
             '''CREATE TRIGGER reject_child_link BEFORE INSERT ON album_images
@@ -1852,3 +1854,238 @@ def test_continuation_source_id_validation(config, responses_post, source_id):
     with pytest.raises(images.ImageError, match='Invalid source image ID'):
         cache.continue_image(source_id, 'blue')
     responses_post.assert_not_called()
+
+
+@pytest.mark.parametrize('backend', ['images', 'responses'])
+def test_equivalence_reversion_and_siblings(config, responses_post, backend):
+    from dataclasses import replace
+    from pmxbot.music import GenerationInputs, generate_album_variation
+
+    config['image_api'] = backend
+    if backend == 'images':
+        responses_post.return_value.json.return_value = {
+            'data': [{'b64_json': base64.b64encode(PNG).decode()}]
+        }
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
+    generate_album_image(library, cache, album['id'])
+    source = dict(read_row(cache))
+    draft = GenerationInputs.from_source(album, source)
+    rock = generate_album_variation(
+        library, cache, source['id'], replace(draft, genre='Rock')
+    )
+    before = responses_post.call_count
+    restored = generate_album_variation(
+        library, cache, rock['id'], replace(draft, source_image_id=rock['id'])
+    )
+    assert restored['id'] == source['id'] and restored['reused']
+    sibling = generate_album_variation(
+        library, cache, source['id'], replace(draft, genre='Rock')
+    )
+    assert sibling['id'] == rock['id']
+    assert responses_post.call_count == before
+    with sqlite3.connect(cache.database) as db:
+        assert db.execute('SELECT COUNT(*) FROM image_cache').fetchone()[0] == 2
+        assert db.execute('SELECT COUNT(*) FROM album_images').fetchone()[0] == 2
+        assert (
+            db.execute(
+                'SELECT COUNT(*) FROM image_cache WHERE parent_image_id IS NOT NULL'
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_equivalence_concurrent_requests_and_retry(config, post):
+    from concurrent.futures import ThreadPoolExecutor
+    from dataclasses import replace
+    from pmxbot.music import GenerationInputs, generate_album_variation
+
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
+    generate_album_image(library, cache, album['id'])
+    source = dict(read_row(cache))
+    draft = replace(GenerationInputs.from_source(album, source), genre='Rock')
+    original = cache.generate_edit
+    entered, release = threading.Event(), threading.Event()
+
+    def blocked(*args):
+        entered.set()
+        assert release.wait(5)
+        return original(*args)
+
+    cache.generate_edit = blocked
+
+    def submit():
+        return generate_album_variation(library, cache, source['id'], draft)
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        first = workers.submit(submit)
+        assert entered.wait(5)
+        second = workers.submit(submit)
+        release.set()
+        assert first.result()['id'] == second.result()['id']
+    assert post.call_count == 2
+    failed = replace(draft, genre='Jazz')
+    cache.generate_edit = Mock(side_effect=images.ImageError('Provider unavailable'))
+    with pytest.raises(images.ImageError):
+        generate_album_variation(library, cache, source['id'], failed)
+    cache.generate_edit = original
+    assert not generate_album_variation(library, cache, source['id'], failed).get(
+        'reused'
+    )
+
+
+@pytest.mark.parametrize(
+    'field', ['artist_name', 'title'] + list(music.GenerationInputs.creative_fields)
+)
+def test_effective_property_distinctions(config, field):
+    from pmxbot.image_equivalence import descriptor
+
+    cache = images.ImageCache(config)
+    values = dict(
+        album_id=1,
+        artist_id=1,
+        source_image_id=7,
+        artist_name='Band',
+        title='Album',
+        **dict.fromkeys(music.GenerationInputs.creative_fields, ''),
+    )
+    original = descriptor(cache, values)
+    assert descriptor(cache, dict(values, source_image_id=8)) == original
+    assert descriptor(cache, dict(values, **{field: 'different'})) != original
+    if field in music.GenerationInputs.creative_fields:
+        assert descriptor(cache, dict(values, **{field: None})) == original
+
+
+def test_equivalence_legacy_settings_context_and_selection(config, post):
+    from dataclasses import asdict, replace
+    from pmxbot.image_equivalence import find_equivalent
+    from pmxbot.music import GenerationInputs, generate_album_variation
+
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
+    generate_album_image(library, cache, album['id'])
+    source = dict(read_row(cache))
+    draft = GenerationInputs.from_source(album, source)
+    rock = generate_album_variation(
+        library, cache, source['id'], replace(draft, genre='Rock')
+    )
+    other = library.create_album('Other', 'Album')
+    assert (
+        find_equivalent(cache, source, dict(asdict(draft), album_id=other['id']))
+        is None
+    )
+    # A distinct source context cannot reuse an unrelated branch with Rock.
+    jazz = generate_album_variation(
+        library, cache, source['id'], replace(draft, genre='Jazz')
+    )
+    assert find_equivalent(cache, jazz, asdict(replace(draft, genre='Rock'))) is None
+    # Ancestor restore is allowed even through more than one generation.
+    child = generate_album_variation(
+        library,
+        cache,
+        rock['id'],
+        replace(draft, source_image_id=rock['id'], genre='Metal'),
+    )
+    assert find_equivalent(cache, child, asdict(draft))['id'] == source['id']
+    for setting in cache.settings:
+        old = cache.settings[setting]
+        cache.settings[setting] = 'different'
+        assert find_equivalent(cache, source, asdict(draft)) is None
+        cache.settings[setting] = old
+    cache.image_api = 'responses'
+    assert find_equivalent(cache, source, asdict(draft)) is None
+    cache.image_api = 'images'
+    with sqlite3.connect(cache.database) as db:
+        # Duplicate metadata with another numeric ID: earliest match wins.
+        duplicate = dict(rock, id=100, cache_key='duplicate')
+        names = list(duplicate)
+        db.execute(
+            'INSERT INTO image_cache ({}) VALUES ({})'.format(
+                ','.join(names), ','.join('?' for _ in names)
+            ),
+            list(duplicate.values()),
+        )
+        db.execute('INSERT INTO album_images VALUES (?, ?)', (album['id'], 'duplicate'))
+    assert (
+        find_equivalent(cache, source, asdict(replace(draft, genre='Rock')))['id']
+        == rock['id']
+    )
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            "UPDATE image_cache SET generation_metadata_json = '{}' WHERE id = ?",
+            (source['id'],),
+        )
+    assert find_equivalent(cache, source, asdict(draft)) is None
+
+
+@pytest.mark.parametrize(
+    'change', ['model', 'store', 'version', 'incomplete', 'empty', 'missing']
+)
+def test_responses_equivalence_metadata_policy(config, responses_post, change):
+    from dataclasses import asdict
+    from pmxbot.image_equivalence import find_equivalent
+    from pmxbot.music import GenerationInputs
+
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
+    generate_album_image(library, cache, album['id'])
+    source = dict(read_row(cache))
+    inputs = asdict(GenerationInputs.from_source(album, source))
+    if change == 'model':
+        cache.responses_model = 'different-model'
+    elif change == 'store':
+        cache.responses_store = False
+    else:
+        metadata = json.loads(source['generation_metadata_json'])
+        if change == 'version':
+            metadata['effective_generation']['version'] += 1
+        elif change == 'incomplete':
+            del metadata['effective_generation']['properties']['genre']
+        elif change == 'empty':
+            metadata = {}
+        else:
+            metadata.pop('effective_generation')
+        with sqlite3.connect(cache.database) as db:
+            db.execute(
+                'UPDATE image_cache SET generation_metadata_json = ? WHERE id = ?',
+                (json.dumps(metadata), source['id']),
+            )
+    assert find_equivalent(cache, source, inputs) is None
+
+
+def test_responses_distinct_conversations_do_not_match(config, responses_post):
+    from dataclasses import asdict, replace
+    from pmxbot.image_equivalence import find_equivalent
+    from pmxbot.music import GenerationInputs, generate_album_variation
+
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
+    generate_album_image(library, cache, album['id'])
+    source = dict(read_row(cache))
+    draft = GenerationInputs.from_source(album, source)
+    responses_post.return_value.json.return_value['id'] = 'resp_rock'
+    rock = generate_album_variation(
+        library, cache, source['id'], replace(draft, genre='Rock')
+    )
+    responses_post.return_value.json.return_value['id'] = 'resp_jazz'
+    jazz = generate_album_variation(
+        library, cache, source['id'], replace(draft, genre='Jazz')
+    )
+    assert find_equivalent(cache, jazz, asdict(replace(draft, genre='Rock'))) is None
+    responses_post.return_value.json.return_value['id'] = 'resp_new_rock'
+    result = generate_album_variation(
+        library,
+        cache,
+        jazz['id'],
+        replace(draft, source_image_id=jazz['id'], genre='Rock'),
+    )
+    assert result['id'] != rock['id']
+    assert (
+        responses_post.call_args.kwargs['json']['previous_response_id'] == 'resp_jazz'
+    )

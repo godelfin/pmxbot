@@ -105,3 +105,46 @@ are preserved, with NULL ancestry; historical parents cannot be inferred.
 Back up the database before deployment. The earlier F1 numeric-ID prerequisite
 still applies. Read-only retrieval does not migrate storage: pre-F4 records
 lack the dictionary field until an image-cache connection initializes the schema.
+
+## F34: effective artwork equivalence
+
+New structured album generations persist an `effective_generation` descriptor.
+Version 1 covers the canonical album and artist IDs, exact artist/title text,
+all six F12 creative fields, the API backend, complete requested image settings
+(including model, size, quality and PNG output), and Responses model/store policy.
+Null and empty creative values mean absence; nonempty text is kept exactly,
+including case and whitespace, because it reaches the prompt builder. Fields not
+exposed by F12 (for example style) must be added to the descriptor if introduced.
+Bump the descriptor version when prompt-building or input semantics change.
+Initial prompts do not include band genre/description annotations, so their
+persisted effective values are empty. Source IDs and the continuation prefix are
+excluded from the property descriptor: they identify an operation, not a release
+interpretation. Metadata without the complete versioned descriptor is never
+inferred from prompts or current canonical records and never reused.
+
+`find_equivalent` searches only the requested album's persisted associations,
+ordered by numeric image ID. It returns the earliest qualifying image, without
+writing records. Context is checked separately: a saved ancestor (including the
+selected image itself) can be explicitly restored when every effective property
+and backend setting matches. This is restoration of an existing interpretation,
+not a claim that a fresh provider continuation would produce identical pixels.
+Otherwise a candidate must have been generated from the same source PNG image ID
+for Images, or the exact same stored `previous_response_id` for Responses.
+Unrelated branches/conversations are conservatively distinct, even when creative
+fields match. Siblings sharing that context can be reused. Artist/album records,
+image bytes, prompts, metadata and ancestry remain immutable on reuse.
+
+Structured synchronous variation submissions use a persistent SQLite sidecar
+`<database>.artwork-claims`. Its `BEGIN IMMEDIATE` transaction serializes lookup,
+provider work and persistence across threads/processes sharing the database,
+without locking the main bot database during provider work. Waiting requests
+recheck persisted results and reuse them; provider failures release the guard
+and permit retry. A process crash also releases the SQLite transaction. A saved
+image whose hosting failed remains an immutable result and can be hosted again
+using the existing retry-by-ID operation. There is no running claim to strand.
+The wait timeout is 600 seconds; contention beyond that fails without calling the
+provider. This deliberately serializes all structured variations for now.
+
+F17 can call the same lookup before queue insertion and use the guard around
+lookup and durable job insertion. It will need job-state lookup/claims to coalesce
+queued/running work; this issue does not introduce a queue or job lifecycle.
