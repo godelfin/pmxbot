@@ -167,17 +167,16 @@ def test_ownership_visibility_and_capability(variation, monkeypatch):
     assert job['user_id'] == alice.id
     assert job['requested_by'] == alice.username
     assert target in request('/jobs')['body']
-    assert request(target)['status'] == 200
+    status = request(target)
+    assert status['status'] == 200
     monkeypatch.setattr(auth, 'current_user', Mock(return_value=bob))
     assert request(target)['status'] == 404
     assert target not in request('/jobs')['body']
     monkeypatch.setattr(auth, 'current_user', Mock(return_value=None))
     assert request(target)['status'] == 404
     anonymous = request(method='POST', data=values)
-    status = request(anonymous['headers']['Location'][4:])
-    assert status['status'] == 200
-    assert 'Waiting for generation' in status['body']
-    assert values['description'] not in status['body']
+    assert anonymous['status'] == 401
+    assert store.visible() == []
     assert status['headers']['Referrer-Policy'] == 'no-referrer'
 
 

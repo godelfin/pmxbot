@@ -272,7 +272,7 @@ needed. RAM sessions, the CSRF key, and the throttle are process-local: run one
 viewer process. Multiple workers or replicas require a reviewed shared session
 and rate-limit design before deployment.
 
-Future protected endpoints can call
+Protected endpoints, including variation submission, call
 ``pmxbot.web.auth.require_authenticated_user()`` for a canonical User (including
 ``may_pair_irc``), or receive HTTP 401. ``current_user()`` returns a User or None
 for public rendering. Future form mutations must accept POST only and call
@@ -297,7 +297,13 @@ to sign in, including after a viewer restart. Anonymous URLs are bearer links:
 anyone with the unguessable URL can see status and public album/image links,
 but never the submitted properties, credentials, attribution or provider errors.
 Bookmark anonymous URLs before leaving; their session list disappears on a
-viewer restart. Browsing and anonymous submission remain public.
+viewer restart. These bearer links remain compatible with legacy anonymous jobs.
+Album browsing remains public, but new web variations require an enabled,
+signed-in account. The server rejects signed-out POST requests before input
+preparation or enqueueing; a CSRF token alone does not authorize generation.
+Signed-out visitors see a disabled generation button and a sign-in link that
+returns to the selected album/image. Expired or revoked accounts must sign in
+again. IRC nickname/channel attribution and worker routing are unaffected.
 
 Jobs live in ``generation_jobs``, separate from ``image_cache``. Each stores a
 UUID, album/source IDs, immutable structured inputs and backend/settings JSON,

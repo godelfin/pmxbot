@@ -10,7 +10,6 @@ import contextlib
 import functools
 import json
 import sqlite3
-import uuid
 
 import cherrypy
 import jinja2.loaders
@@ -387,6 +386,11 @@ class AlbumPage:
     @cherrypy.expose
     def default(self, *path, **params):
         cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
+        requesting_user = (
+            auth.require_authenticated_user()
+            if cherrypy.request.method == 'POST'
+            else None
+        )
         if len(path) != 1 or not path[0].isascii() or not path[0].isdecimal():
             raise cherrypy.HTTPError(404, 'Unknown album ID')
         # SQLite IDs are positive signed 64-bit integers. Bound before conversion.
@@ -497,15 +501,10 @@ class AlbumPage:
                     cherrypy.response.status = 409
                     context['variation_error'] = context['variation_message']
                 else:
-                    user = context.get('current_user')
-                    owner = ''
-                    if not user:
-                        owner = cherrypy.session.setdefault(
-                            'generation_owner', uuid.uuid4().hex
-                        )
+                    user = requesting_user
                     try:
                         identifier = JobStore(cache.database).enqueue(
-                            draft, cache, user, owner
+                            draft, cache, user
                         )
                     except (sqlite3.Error, OSError):
                         raise cherrypy.HTTPError(

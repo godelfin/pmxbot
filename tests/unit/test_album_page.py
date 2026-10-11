@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 
 import pmxbot
 from pmxbot.images import ImageCache, ImageError
+from pmxbot.users import User
 from pmxbot.music import MusicLibrary
 from pmxbot.web import viewer, auth
 from http.cookies import SimpleCookie
@@ -980,7 +981,12 @@ def test_gallery_invalid_sort_does_not_create_storage(page, sort):
     assert not cache.directory.exists()
 
 
-def test_preparation_is_immutable_and_has_no_generation(page):
+def test_preparation_is_immutable_and_has_no_generation(page, monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        'current_user',
+        Mock(return_value=User(1, 'Alice', 'alice', None, '2026', True, False)),
+    )
     cache, request = page
     insert(cache)
     before = cache.database.read_bytes()
@@ -1032,7 +1038,12 @@ def test_shared_generation_inputs(page):
         source.prepare(dict(values, description=['duplicate']), {})
 
 
-def test_legacy_values_prepare_and_selected_source_stays_fixed(page):
+def test_legacy_values_prepare_and_selected_source_stays_fixed(page, monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        'current_user',
+        Mock(return_value=User(1, 'Alice', 'alice', None, '2026', True, False)),
+    )
     cache, request = page
     insert(cache)
     with sqlite3.connect(cache.database) as db:
@@ -1049,7 +1060,7 @@ def test_legacy_values_prepare_and_selected_source_stays_fixed(page):
     soup = BeautifulSoup(
         request('/albums/42?source_image_id=42')['body'], 'html.parser'
     )
-    form = soup.form
+    form = soup.select_one('#variation-form')
     values = {
         control['name']: control.get('value', control.get_text())
         for control in form.select('input, textarea')
@@ -1290,6 +1301,11 @@ def test_catalog_creation_dates_precede_ids(page):
 
 @pytest.fixture
 def variation(page, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        auth,
+        'current_user',
+        Mock(return_value=User(1, 'Alice', 'alice', None, '2026', True, False)),
+    )
     import base64
     from pmxbot import images
 
@@ -1591,7 +1607,7 @@ def test_variation_capability_disables_unsupported_source(variation, case):
             )
     soup = BeautifulSoup(request()['body'], 'html.parser')
     assert soup.select_one('#variation-capability')['data-available'] == 'false'
-    assert soup.select_one('button[type=submit]').has_attr('disabled')
+    assert soup.select_one('#variation-form button[type=submit]').has_attr('disabled')
     assert request(method='POST', data=values)['status'] == 409
     post.assert_not_called()
 

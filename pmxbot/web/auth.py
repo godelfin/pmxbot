@@ -113,7 +113,7 @@ def current_user():
 
 
 def require_authenticated_user():
-    """Future protected handlers call this and receive a User or an explicit 401."""
+    """Protected handlers receive an enabled canonical User or an explicit 401."""
     user = current_user()
     if user is None:
         raise cherrypy.HTTPError(401, 'Authentication required.')
