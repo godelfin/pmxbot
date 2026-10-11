@@ -291,7 +291,8 @@ polling its pending jobs. No provider or hosting call runs in the request.
 Without JavaScript, submission redirects (303) to
 ``web_base/jobs/<random-job-id>``. This stable bookmarkable page refreshes every
 five seconds while pending; terminal pages link to artwork or show a safe error.
-``web_base/jobs`` lists the latest 100 jobs for the signed-in account and the
+The jobs list has no account or album navigation link; it remains accessible
+directly for troubleshooting. ``web_base/jobs`` lists the latest 100 jobs for the signed-in account and the
 current anonymous browser session. Authenticated job URLs require their owner
 to sign in, including after a viewer restart. Anonymous URLs are bearer links:
 anyone with the unguessable URL can see status and public album/image links,

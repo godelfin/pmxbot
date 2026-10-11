@@ -130,7 +130,7 @@ View image #{{ historical_image.id }}
 <div class="album-details">
 {% if draft %}
 {% if current_user %}
-<p>Generation runs here in the background. You can keep browsing. <a href="{{ base }}/jobs">Check your generation jobs</a>.</p>
+<p>Generation runs here in the background. You can keep browsing.</p>
 {% else %}
 <p id="variation-sign-in">Sign in to generate an image variation. <a href="{{ base }}/login?return_to={{ (base ~ '/albums/' ~ album.id ~ '?source_image_id=' ~ draft.source_image_id)|urlencode }}">Sign in</a>.</p>
 {% endif %}
@@ -358,7 +358,7 @@ View image #{{ historical_image.id }}
       track(job.status_url, item);
     } catch (failure) {
       item.remove();
-      showError('Could not confirm submission. Check your generation jobs before trying again.');
+      showError('Could not confirm submission. Reload this album to check pending artwork before trying again.');
       updateButton();
     }
   });
