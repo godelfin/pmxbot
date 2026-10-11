@@ -7,9 +7,17 @@ from dataclasses import replace
 from unittest.mock import Mock
 
 import pytest
+from cherrypy.process.wspbus import Bus
 
 import pmxbot
-from pmxbot.jobs import ABANDONED, JobStore, process_job, serve, worker_lock
+from pmxbot.jobs import (
+    ABANDONED,
+    GenerationExecutor,
+    JobStore,
+    process_job,
+    serve,
+    worker_lock,
+)
 from pmxbot.music import GenerationInputs
 from pmxbot.users import User
 from tests.unit.test_album_page import page, variation  # noqa: F401
@@ -81,7 +89,7 @@ def test_recovery_never_retries(variation):
     post.assert_not_called()
 
 
-@pytest.mark.skipif(os.name == 'nt', reason='Production worker uses POSIX file locks')
+@pytest.mark.skipif(os.name == 'nt', reason='Enabled generation uses POSIX file locks')
 def test_worker_lock_prevents_live_recovery(variation):
     import subprocess
     import sys
@@ -110,10 +118,10 @@ def test_worker_lock_prevents_live_recovery(variation):
         pass
 
 
-@pytest.mark.skipif(os.name == 'nt', reason='Production worker uses POSIX file locks')
+@pytest.mark.skipif(os.name == 'nt', reason='Enabled generation uses POSIX file locks')
 def test_slow_worker_does_not_block_http(variation):
     cache, request, post, client, values, source = variation
-    entered, release, stop = threading.Event(), threading.Event(), threading.Event()
+    entered, release = threading.Event(), threading.Event()
     response = post.return_value
 
     def slow_provider(*args, **kwargs):
@@ -125,8 +133,10 @@ def test_slow_worker_does_not_block_http(variation):
     submitted = request(method='POST', data=values)
     assert submitted['status'] == 303
     post.assert_not_called()
-    worker = threading.Thread(target=serve, args=(dict(pmxbot.config), stop))
-    worker.start()
+    bus = Bus()
+    executor = GenerationExecutor(bus, pmxbot.config)
+    executor.subscribe()
+    bus.publish('start')
     try:
         assert entered.wait(10)
         target = submitted['headers']['Location'][4:]
@@ -136,10 +146,10 @@ def test_slow_worker_does_not_block_http(variation):
         assert request()['status'] == 200
         assert request('/jobs')['status'] == 200
     finally:
-        stop.set()
         release.set()
-        worker.join(10)
-    assert not worker.is_alive()
+        bus.publish('stop')
+        executor.unsubscribe()
+    assert executor._thread is None
     assert 'Artwork is ready' in request(target)['body']
 
 
@@ -178,9 +188,15 @@ def test_invalid_concurrency(variation, concurrency):
             dict(pmxbot.config, generation_worker_concurrency=concurrency),
             threading.Event(),
         )
+    executor = GenerationExecutor(
+        Bus(), dict(pmxbot.config, generation_worker_concurrency=concurrency)
+    )
+    with pytest.raises(ValueError, match='concurrency'):
+        executor.start()
+    assert executor._thread is None
 
 
-@pytest.mark.skipif(os.name == 'nt', reason='Production worker uses POSIX file locks')
+@pytest.mark.skipif(os.name == 'nt', reason='Enabled generation uses POSIX file locks')
 def test_worker_bounds_active_jobs(variation, monkeypatch):
     from pmxbot import jobs
 
@@ -188,7 +204,7 @@ def test_worker_bounds_active_jobs(variation, monkeypatch):
     store = JobStore(cache.database)
     for description in ['one', 'two', 'three']:
         store.enqueue(replace(draft(cache), description=description), cache)
-    entered, release, stop = threading.Event(), threading.Event(), threading.Event()
+    entered, release = threading.Event(), threading.Event()
     guard = threading.Lock()
     active = []
 
@@ -201,10 +217,12 @@ def test_worker_bounds_active_jobs(variation, monkeypatch):
         store.finish(job['id'], error='test failure')
 
     monkeypatch.setattr(jobs, 'process_job', blocked)
-    worker = threading.Thread(
-        target=serve, args=(dict(pmxbot.config, generation_worker_concurrency=2), stop)
+    bus = Bus()
+    executor = GenerationExecutor(
+        bus, dict(pmxbot.config, generation_worker_concurrency=2)
     )
-    worker.start()
+    executor.subscribe()
+    bus.publish('start')
     try:
         assert entered.wait(10)
         with closing(store.connect()) as db:
@@ -222,10 +240,10 @@ def test_worker_bounds_active_jobs(variation, monkeypatch):
             )
         assert len(active) == 2
     finally:
-        stop.set()
         release.set()
-        worker.join(10)
-    assert not worker.is_alive()
+        bus.publish('stop')
+        executor.unsubscribe()
+    assert executor._thread is None
 
 
 def test_invalid_status_requests(page):
@@ -303,3 +321,170 @@ def test_inline_validation_and_failure(variation):
     assert json.loads(failed['body'])['status'] == 'failed'
     assert json.loads(failed['body'])['result_url'] is None
     assert 'secret' not in failed['body']
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Enabled generation uses POSIX file locks')
+def test_engine_start_once_and_graceful_stop(variation):
+    cache, request, post, client, values, source = variation
+    entered, release = threading.Event(), threading.Event()
+    response = post.return_value
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        return response
+
+    post.side_effect = blocked
+    store = JobStore(cache.database)
+    first = store.enqueue(draft(cache), cache)
+    bus = Bus()
+    executor = GenerationExecutor(bus, pmxbot.config)
+    executor.subscribe()
+    shutdown = None
+    try:
+        bus.publish('start')
+        assert entered.wait(10)
+        thread = executor._thread
+        bus.publish('start')
+        assert executor._thread is thread
+        assert post.call_count == 1
+        queued = store.enqueue(replace(draft(cache), description='waiting'), cache)
+        shutdown = threading.Thread(target=lambda: bus.publish('stop'))
+        shutdown.start()
+        assert executor._stop.wait(10)
+        assert shutdown.is_alive()  # Shutdown must wait for active generation.
+        assert store.get(queued)['status'] == 'queued'
+        other = GenerationExecutor(Bus(), pmxbot.config)
+        with pytest.raises(RuntimeError, match='already running'):
+            other.start()
+        assert store.get(first)['status'] == 'running'
+    finally:
+        release.set()
+        if shutdown is not None:
+            shutdown.join(10)
+        executor.stop()
+        executor.unsubscribe()
+    assert store.get(first)['status'] == 'succeeded'
+    assert store.get(queued)['status'] == 'queued'
+    assert executor._thread is None
+    assert executor.start not in bus.listeners['start']
+    # A subsequent engine start processes the queued job, without retrying first.
+    entered.clear()
+    executor.start()
+    try:
+        assert entered.wait(10)
+    finally:
+        executor.stop()
+    assert store.get(queued)['status'] == 'succeeded'
+    assert post.call_count == 2
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Enabled generation uses POSIX file locks')
+def test_scheduler_failure_requires_explicit_restart(variation, monkeypatch):
+    from pmxbot import jobs
+
+    cache, request, post, client, values, source = variation
+    store = JobStore(cache.database)
+    first = store.enqueue(draft(cache), cache)
+    queued = store.enqueue(replace(draft(cache), description='later'), cache)
+    # Claim a known job, then simulate loss of completion persistence.
+    entered = threading.Event()
+
+    def broken(config, stop, store, concurrency):
+        with closing(store.connect()) as db:
+            db.execute(
+                "UPDATE generation_jobs SET status = 'running' WHERE id = ?", (first,)
+            )
+        raise RuntimeError('secret database detail')
+
+    monkeypatch.setattr(jobs, 'process_queue', broken)
+    bus = Bus()
+    bus.log = Mock()
+    executor = GenerationExecutor(bus, pmxbot.config)
+    executor.start()
+    try:
+        executor._thread.join(10)
+        assert not executor._thread.is_alive()
+        assert store.get(first)['status'] == 'running'
+        assert 'secret' not in str(bus.log.call_args)
+        executor.start()  # Repeated engine notifications do not retry/recover.
+        assert store.get(first)['status'] == 'running'
+        other = GenerationExecutor(Bus(), pmxbot.config)
+        with pytest.raises(RuntimeError, match='already running'):
+            other.start()
+    finally:
+        executor.stop()
+
+    def resumed(config, stop, store, concurrency):
+        entered.set()
+        stop.wait(10)
+
+    monkeypatch.setattr(jobs, 'process_queue', resumed)
+    executor.start()
+    try:
+        assert entered.wait(10)
+        assert store.get(first)['status'] == 'failed'
+        assert store.get(first)['error'] == ABANDONED
+        assert store.get(queued)['status'] == 'queued'
+    finally:
+        executor.stop()
+    post.assert_not_called()
+
+
+def test_disabled_engine_does_not_create_storage(page):
+    cache, request = page
+    bus = Bus()
+    executor = GenerationExecutor(bus, pmxbot.config)
+    executor.subscribe()
+    try:
+        bus.publish('start')
+        bus.publish('start')
+        bus.publish('stop')
+        assert executor._thread is None
+        assert not cache.database.exists()
+    finally:
+        executor.unsubscribe()
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Enabled generation uses POSIX file locks')
+def test_startup_recovery_failure_releases_lock(variation, monkeypatch):
+    original = JobStore.recover
+    monkeypatch.setattr(
+        JobStore, 'recover', Mock(side_effect=RuntimeError('recovery failed'))
+    )
+    executor = GenerationExecutor(Bus(), pmxbot.config)
+    with pytest.raises(RuntimeError, match='recovery failed'):
+        executor.start()
+    assert executor._thread is None
+    monkeypatch.setattr(JobStore, 'recover', original)
+    executor.start()
+    executor.stop()
+
+
+@pytest.mark.parametrize('failure', [False, True])
+def test_viewer_owns_executor_hooks(monkeypatch, failure):
+    import cherrypy
+    from pmxbot.web import viewer
+
+    monkeypatch.setattr(pmxbot, 'config', {})
+    monkeypatch.setattr(viewer, '_setup_logging', lambda: None)
+    monkeypatch.setattr(pmxbot.core, '_load_library_extensions', lambda: None)
+    executor = Mock()
+    factory = Mock(return_value=executor)
+    monkeypatch.setattr(viewer, 'GenerationExecutor', factory)
+
+    def quickstart(*args, **kwargs):
+        executor.subscribe.assert_called_once_with()
+        executor.stop.assert_not_called()
+        if failure:
+            raise RuntimeError('startup failed')
+
+    monkeypatch.setattr(cherrypy, 'quickstart', quickstart)
+    if failure:
+        with pytest.raises(RuntimeError, match='startup failed'):
+            viewer.startup({'web_base': '/bot'})
+    else:
+        viewer.startup({'web_base': '/bot'})
+    factory.assert_called_once_with(cherrypy.engine, pmxbot.config)
+    executor.stop.assert_called_once_with()
+    executor.unsubscribe.assert_called_once_with()

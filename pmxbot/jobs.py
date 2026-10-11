@@ -1,24 +1,25 @@
-"""Durable web generation jobs and a separate, bounded worker process."""
+"""Durable web generation jobs and a CherryPy-owned background executor."""
 
 import json
 import logging
 import re
-import signal
 import sqlite3
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import asdict
 
-import pmxbot
+from cherrypy.process.plugins import SimplePlugin
 from .images import ImageCache
 from .music import GenerationInputs, MusicLibrary, generate_album_variation
 
 
 log = logging.getLogger(__name__)
-FAILURE = 'Generation failed. Check worker logs or contact the administrator.'
-ABANDONED = 'Worker stopped before recording completion. No automatic retry was made.'
+FAILURE = 'Generation failed. Check web viewer logs or contact the administrator.'
+ABANDONED = (
+    'Web executor stopped before recording completion. No automatic retry was made.'
+)
 
 
 class JobStore:
@@ -205,7 +206,7 @@ def process_job(store, job, config):
 def worker_lock(database):
     """POSIX process lock: released by the kernel on crash, never by a timeout.
 
-    All worker processes must use this lock on the same local filesystem.
+    All executors must use this lock on the same local filesystem.
     The lock file must never be deleted while a worker could be alive.
     """
     import fcntl
@@ -214,14 +215,15 @@ def worker_lock(database):
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise RuntimeError('A generation worker is already running.') from None
+            raise RuntimeError('A generation executor is already running.') from None
         try:
             yield
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def serve(config, stop):
+@contextmanager
+def executor_session(config):
     concurrency = config.get('generation_worker_concurrency', 1)
     if type(concurrency) is not int or not 1 <= concurrency <= 4:
         raise ValueError(
@@ -232,29 +234,91 @@ def serve(config, stop):
     store = JobStore(cache.database)
     with worker_lock(cache.database):
         store.recover()
-        with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            active = set()
-            while not stop.is_set():
-                for future in list(active):
-                    if future.done():
-                        future.result()  # Persistence failures stop the worker for recovery.
-                        active.remove(future)
-                while len(active) < concurrency and not stop.is_set():
-                    job = store.claim()
-                    if not job:
-                        break
-                    active.add(pool.submit(process_job, store, job, config))
-                stop.wait(1)
-            for future in active:
-                future.result()
+        yield store, concurrency
 
 
-def run():
-    import pmxbot.core
+def process_queue(config, stop, store, concurrency):
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        active = set()
+        while not stop.is_set():
+            for future in list(active):
+                if future.done():
+                    future.result()  # Persistence failures stop the executor for recovery.
+                    active.remove(future)
+            while len(active) < concurrency and not stop.is_set():
+                job = store.claim()
+                if not job:
+                    break
+                active.add(pool.submit(process_job, store, job, config))
+            stop.wait(1)
+        for future in active:
+            future.result()
 
-    config = pmxbot.core.init_config(pmxbot.core.get_args().config)
-    logging.basicConfig(level=logging.INFO)
-    stop = threading.Event()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(sig, lambda *_: stop.set())
-    serve(config, stop)
+
+def serve(config, stop):
+    """Exercise the same executor loop without a CherryPy bus (e.g. in tests)."""
+    with executor_session(config) as (store, concurrency):
+        process_queue(config, stop, store, concurrency)
+
+
+class GenerationExecutor(SimplePlugin):
+    """One executor per CherryPy engine, protected by a database process lock.
+
+    Startup recovery runs synchronously before HTTP serving. The scheduler and
+    provider pool are separate from CherryPy's HTTP request threads. Retain the
+    lock even if the scheduler fails; only a deliberate web restart recovers it.
+    """
+
+    def __init__(self, bus, config):
+        super().__init__(bus)
+        self.config = dict(config)
+        self._lifecycle_lock = threading.Lock()
+        self._thread = None
+        self._session = None
+        self._stop = threading.Event()
+
+    def subscribe(self):
+        self.bus.subscribe('start', self.start, priority=30)
+        self.bus.subscribe('stop', self.stop, priority=70)
+
+    def start(self):
+        with self._lifecycle_lock:
+            if self._thread is not None or not self.config.get('images_enabled', False):
+                return
+            session = ExitStack()
+            try:
+                store, concurrency = session.enter_context(
+                    executor_session(self.config)
+                )
+                self._stop.clear()
+                thread = threading.Thread(
+                    target=self._run,
+                    args=(store, concurrency),
+                    name='pmxbot-generation-scheduler',
+                )
+                thread.start()
+            except Exception:
+                session.close()
+                raise
+            self._session = session
+            self._thread = thread
+
+    def _run(self, store, concurrency):
+        try:
+            process_queue(self.config, self._stop, store, concurrency)
+        except Exception as exc:
+            self.bus.log(
+                'Background generation stopped (%s); restart the viewer to recover.'
+                % type(exc).__name__,
+                level=40,
+            )
+
+    def stop(self):
+        with self._lifecycle_lock:
+            if self._thread is None:
+                return
+            self._stop.set()
+            self._thread.join()
+            self._session.close()
+            self._thread = None
+            self._session = None

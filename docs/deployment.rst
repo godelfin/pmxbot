@@ -4,8 +4,7 @@ Production deployment
 The production Debian server uses ``deploy/deploy-ircbot``. It updates
 ``/home/ircbot/pmxbot`` to ``origin/main``, installs ``.[viewer]`` with
 ``constraints.txt`` into ``/home/ircbot/venv``, checks dependency consistency,
-and restarts ``ircbot.service``, ``pmxbotweb.service``, and
-``pmxbot-generation-worker.service``. The viewer extra supplies CherryPy and Jinja2.
+and restarts ``ircbot.service`` and ``pmxbotweb.service``. The viewer extra supplies CherryPy and Jinja2.
 An install or dependency-check failure prevents the restart. Deployments are
 serialized with a nonblocking lock; a concurrent invocation fails.
 
@@ -94,7 +93,7 @@ alternate execution path. Keep ``deploy``'s home root-owned as above.
 Using ``visudo``, grant only this exact restart command in a root-owned sudoers
 file (verify the systemctl path on the server)::
 
-    deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart ircbot.service pmxbotweb.service pmxbot-generation-worker.service
+    deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart ircbot.service pmxbotweb.service
 
 Do not grant sudo for shells, pip, Git, file installation, or arbitrary systemctl
 commands. Repository code and dependency build hooks execute as ``deploy``;
@@ -310,74 +309,84 @@ through the existing generation service, but the job remains failed; an
 administrator can use ``ImageCache.retry_upload(image_id)`` to repair hosting
 without another provider call. Failed jobs never masquerade as ready artwork.
 
-Run the worker independently of CherryPy using the same configuration,
-credentials, database and image directory as the viewer::
+The existing ``pmxbotweb.service`` owns background execution. No additional
+executable, process or systemd unit is needed. With ``images_enabled: true``,
+``pmxbotweb`` subscribes one ``GenerationExecutor`` to CherryPy's engine before
+startup. It acquires the database lock and recovers interrupted jobs before HTTP
+serving starts, then starts a scheduler thread and bounded ``ThreadPoolExecutor``.
+Repeated start notifications do not create another executor. HTTP request
+threads only validate/enqueue jobs and return; provider and hosting work runs
+in the background pool. Disabling images leaves queued jobs intact and does not
+start an executor; re-enable images and restart the viewer to process them.
 
-    /home/ircbot/venv/bin/pmxbot-generation-worker /home/ircbot/data/config.yaml
+Use absolute ``database`` and ``images_directory`` paths in the viewer config.
+The existing ``generation_worker_concurrency: 1`` setting is retained (default);
+integers 1 through 4 are accepted. The scheduler fills only that many slots,
+polls SQLite once per second, and claims jobs with ``BEGIN IMMEDIATE``.
+CherryPy's shutdown stops HTTP serving, stops new claims, and joins the
+scheduler and active generation/hosting work before releasing the database
+lock. Configure ``TimeoutStopSec=600`` on ``pmxbotweb.service`` to allow graceful
+completion; a forced kill after the deadline is handled as a crash. Python
+threads cannot forcibly cancel a provider call. IRC ``!music`` behavior is
+unchanged; its work is outside this concurrency limit.
 
-Provision a root-owned ``/etc/systemd/system/pmxbot-generation-worker.service``::
-
-    [Unit]
-    Description=PMXBot artwork generation worker
-    After=network-online.target
-    Wants=network-online.target
-
-    [Service]
-    Type=simple
-    User=ircbot
-    WorkingDirectory=/home/ircbot/pmxbot
-    EnvironmentFile=/etc/ircbot.env
-    ExecStart=/home/ircbot/venv/bin/pmxbot-generation-worker /home/ircbot/data/config.yaml
-    Restart=on-failure
-    RestartSec=5
-    TimeoutStopSec=600
-
-    [Install]
-    WantedBy=multi-user.target
-
-Use absolute ``database`` and ``images_directory`` paths in the shared config.
-Set ``generation_worker_concurrency: 1`` (default); integers 1 through 4 are
-accepted. The worker fills only that many slots, polls SQLite once per second,
-and claims jobs with ``BEGIN IMMEDIATE``. SIGINT/SIGTERM stop new claims and
-wait for active generation/hosting and persistence. A forced kill after the
-shutdown deadline is handled as a crash. IRC ``!music`` behavior is unchanged;
-its work is outside this concurrency limit.
-
-Before deploying this revision, provision and enable the worker unit, update
-the exact sudoers restart command above, and install the reviewed deployment
-script using the existing administrator review procedure. The script now
-restarts bot, viewer and worker so all processes use the installed revision.
-Then run ``systemctl daemon-reload`` and
-``systemctl enable --now pmxbot-generation-worker.service`` as administrator.
-Inspect ``journalctl -u pmxbot-generation-worker`` and verify a variation reaches
-its status page immediately and later links to artwork.
+Deployment restarts bot and viewer so the executor uses the installed code.
+Install the reviewed deployment script and update the exact sudoers restart
+command above using the existing administrator review procedure. If the earlier
+standalone worker was provisioned, first stop and disable
+``pmxbot-generation-worker.service``; remove its unit and run
+``systemctl daemon-reload`` as administrator. Never run it alongside the viewer
+executor. Its CLI entry point is removed. SQLite jobs need no migration and
+queued jobs will be processed by the viewer. Inspect
+``journalctl -u pmxbotweb`` and verify that a submitted variation shows its
+spinner immediately and later selects the completed artwork.
 
 Recovery and limits
 ~~~~~~~~~~~~~~~~~~~
 
-The POSIX worker holds an exclusive nonblocking kernel file lock at
-``<absolute-database-path>.generation-worker.lock`` for its entire lifetime.
-Only one worker process can run per database; it uses bounded threads for
-concurrency. SQLite claims are atomic even with concurrent claimers. Never
-remove the lock file while a worker could be running, and never bypass this
-entry point. The deployment supports a single host with local SQLite and local
-image files, not a network filesystem or distributed workers. The worker CLI
-requires POSIX (Linux/macOS); the web/job model remains portable.
+The executor retains the existing POSIX kernel file lock at
+``<absolute-database-path>.generation-worker.lock`` for its entire engine
+lifetime, including pool shutdown. The historical filename is retained so an
+old standalone worker cannot overlap the new executor during transition.
+Never remove the lock file while either could be alive. A second enabled viewer
+or executor against the same database fails synchronously at startup, before
+recovering or claiming jobs. Atomic SQLite claims additionally prevent two
+claimers from taking the same queued job. Run one viewer process on a single
+POSIX host (Linux/macOS) with local SQLite and local image files; network
+filesystems and distributed executors are unsupported. Windows can serve the
+viewer with images disabled, but enabled execution requires POSIX file locks.
+The existing RAM sessions also require a single viewer process.
 
-After acquiring the lock at startup, the worker marks every abandoned
-``running`` job failed with a fixed recovery message. Queued jobs survive and
-continue. A viewer restart does not affect worker execution. Kernel lock release
-on process death ensures recovery cannot overlap the old worker. No lease
-expiry, automatic retry, or timeout can launch a second copy of a live job.
-If SQLite completion persistence fails, the worker exits and its next startup
-uses the same recovery rule.
+Do not initialize the executor before forking a web process or launch multiple
+WSGI workers against this database. Custom CherryPy/WSGI embedding must subscribe
+``GenerationExecutor(engine, config)`` once in the final process and start/stop
+that engine; constructing only a ``cherrypy.Application`` does not run it.
+The standard ``pmxbotweb`` entry point manages these hooks automatically.
+
+On startup, after acquiring the lock, the executor marks all abandoned
+``running`` jobs failed with a fixed recovery message. Queued jobs survive and
+continue. Graceful viewer restarts wait for current work; crashes, forced kills,
+and interrupted completion persistence leave running jobs to be failed on the
+next startup. Kernel lock release on process death ensures recovery cannot
+race an old live executor. No timeout or expiring lease starts a second copy.
+If scheduling or completion persistence fails, background processing stops and
+logs a safe error in the viewer log; the lock remains held until engine shutdown.
+The web UI stays available but queued jobs wait for an explicit viewer restart.
+There is no automatic scheduler restart or job retry.
+
+Background work shares the viewer's CPU, memory, credentials and lifetime.
+The concurrency bound limits provider work, but expensive image handling and
+SQLite contention can still affect web responsiveness. Generation is unavailable
+while the viewer is down, and deployment/shutdown may wait for remote calls.
+Separate request and pool threads avoid waiting for those calls inside HTTP
+handlers; they do not provide process-level resource or failure isolation.
 
 Exactly-once execution across OpenAI and SQLite is impossible: the provider
 may succeed before a crash and the response or completion may never be
 persisted. An image may already be saved even though its job is subsequently
 marked failed. Check album history and local artwork before manually submitting
 another variation; that explicit new submission may incur another API charge.
-The worker never automatically requeues a failed or abandoned job.
+The executor never automatically requeues a failed or abandoned job.
 
 F34 (#39) is not merged. Exact inputs/settings/source requests already queued or
 running are reused atomically within the same account or anonymous session.
@@ -385,5 +394,5 @@ Different owners remain separate to avoid revealing private jobs. There is no
 new existing-artwork equivalence algorithm. F34's future shared lookup should
 run after validation and before ``JobStore.enqueue``; its versioned generation
 identity can replace the exact JSON comparison without changing job lifecycle
-or worker provider logic. Completed and failed jobs are currently not reused.
+or executor provider logic. Completed and failed jobs are currently not reused.
 There are no queue caps, per-user quotas, job expiration or automatic retries.

@@ -26,7 +26,7 @@ from pmxbot.images import ImageCache, ImageError
 from pmxbot.users import InvalidCredentials, UserError, UserStore, UsernameTaken
 from pmxbot.web import auth
 from pmxbot.music import GenerationInputs
-from pmxbot.jobs import JobStore
+from pmxbot.jobs import GenerationExecutor, JobStore
 
 jenv = jinja2.Environment(loader=jinja2.loaders.PackageLoader('pmxbot.web'))
 TIMEOUT = 10.0
@@ -856,8 +856,14 @@ def startup(config):
         },
     }
 
-    with file_manager:
-        cherrypy.quickstart(PmxbotPages(), config.web_base, config=app_conf)
+    executor = GenerationExecutor(cherrypy.engine, config)
+    executor.subscribe()
+    try:
+        with file_manager:
+            cherrypy.quickstart(PmxbotPages(), config.web_base, config=app_conf)
+    finally:
+        executor.stop()
+        executor.unsubscribe()
 
 
 def run():
