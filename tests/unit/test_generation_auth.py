@@ -61,12 +61,11 @@ def test_unsigned_variations_rejected_without_jobs(
             RamSession.cache[session_id] = (data, expires - datetime.timedelta(days=1))
     body = BeautifulSoup(request()['body'], 'html.parser')
     assert body.select_one('#variation-form button')['disabled'] == ''
-    link = body.select_one('#variation-sign-in a')['href']
+    link = body.select_one('#variation-sign-in')['href']
     assert urlsplit(link).path == pmxbot.config.web_base + '/login'
     assert parse_qs(urlsplit(link).query)['return_to'] == [
         f'{pmxbot.config.web_base}/albums/42?source_image_id=42'
     ]
-    assert body.select_one('#variation-capability')['data-available'] == 'false'
     # Even a correctly supplied CSRF token cannot authorize signed-out generation.
     assert (
         request(method='POST', data=values, accept='application/json')['status'] == 401

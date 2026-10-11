@@ -267,13 +267,16 @@ def test_selected_image_continuation_capability(
     soup = BeautifulSoup(
         request('/albums/42?source_image_id=42')['body'], 'html.parser'
     )
-    status = soup.select_one('#continuation-capability')
-    assert status['data-available'] == str(available).lower()
-    assert reason in status.get_text()
+    configured_cache = ImageCache(pmxbot.config)
+    status, message = configured_cache.continuation_capability(cache.get_image(42))
+    assert status is available
+    assert reason in message
+    assert soup.select_one('[name=source_image_id]')['value'] == '42'
     assert soup.select_one('button[type=submit]').get_text() == 'Generate variation'
     assert 'Generate a new version' not in soup.get_text()
     latest = BeautifulSoup(request()['body'], 'html.parser')
-    assert latest.select_one('#continuation-capability')['data-available'] == 'false'
+    assert latest.select_one('[name=source_image_id]')['value'] == '43'
+    assert configured_cache.continuation_capability(cache.get_image(43))[0] is False
     assert cache.database.read_bytes() == before
 
 
@@ -1072,7 +1075,12 @@ def test_legacy_values_prepare_and_selected_source_stays_fixed(page, monkeypatch
     assert values['artist_genre'] == 'Retired genre'
     response = request(method='POST', data=values)
     assert response['status'] == 409
-    assert 'Source image #42' in response['body']
+    assert (
+        BeautifulSoup(response['body'], 'html.parser').select_one(
+            '[name=source_image_id]'
+        )['value']
+        == '42'
+    )
     assert 'disabled' in response['body']
     assert cache.database.read_bytes() == before
 
@@ -1415,7 +1423,9 @@ def test_generate_variation_prg_and_provenance(variation, api):
             db.execute('SELECT * FROM artists').fetchall(),
         )
     capability = BeautifulSoup(request()['body'], 'html.parser')
-    assert capability.select_one('#variation-capability')['data-available'] == 'true'
+    assert not capability.select_one('#variation-form button[type=submit]').has_attr(
+        'disabled'
+    )
     result = complete_variation(variation)
     assert result['status'] == 303
     target = result['headers']['Location']
@@ -1606,7 +1616,6 @@ def test_variation_capability_disables_unsupported_source(variation, case):
                 (json.dumps(metadata),),
             )
     soup = BeautifulSoup(request()['body'], 'html.parser')
-    assert soup.select_one('#variation-capability')['data-available'] == 'false'
     assert soup.select_one('#variation-form button[type=submit]').has_attr('disabled')
     assert request(method='POST', data=values)['status'] == 409
     post.assert_not_called()

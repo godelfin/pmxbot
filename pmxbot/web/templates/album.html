@@ -129,15 +129,7 @@ View image #{{ historical_image.id }}
 <h2 id="album-heading">{% if draft %}Generate an image variation{% else %}Album details{% endif %}</h2>
 <div class="album-details">
 {% if draft %}
-{% if current_user %}
-<p>Generation runs here in the background. You can keep browsing.</p>
-{% else %}
-<p id="variation-sign-in">Sign in to generate an image variation. <a href="{{ base }}/login?return_to={{ (base ~ '/albums/' ~ album.id ~ '?source_image_id=' ~ draft.source_image_id)|urlencode }}">Sign in</a>.</p>
-{% endif %}
-<p>Source image #{{ draft.source_image_id }}. Creative changes apply only to a variation of this release.</p>
-<p id="continuation-capability" data-available="{{ 'true' if continuation_available else 'false' }}">{{ continuation_message }}</p>
 {% if variation_error %}<p role="alert">{{ variation_error }}</p>{% endif %}
-<p id="variation-capability" data-available="{{ 'true' if variation_available and current_user else 'false' }}">{{ variation_message }}</p>
 <p id="generation-error" role="alert" hidden></p>
 <form id="variation-form" method="POST" action="{{ base }}/albums/{{ album.id }}">
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
@@ -162,6 +154,9 @@ View image #{{ historical_image.id }}
 </dl>
 {% if draft %}
 <button type="submit"{% if not variation_available or not current_user %} disabled{% endif %}>Generate variation</button>
+{% if not current_user %}
+<a id="variation-sign-in" href="{{ base }}/login?return_to={{ (base ~ '/albums/' ~ album.id ~ '?source_image_id=' ~ draft.source_image_id)|urlencode }}">Sign in</a>
+{% endif %}
 </form>
 {% endif %}
 </div>
