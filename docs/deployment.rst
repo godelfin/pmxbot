@@ -309,77 +309,125 @@ through the existing generation service, but the job remains failed; an
 administrator can use ``ImageCache.retry_upload(image_id)`` to repair hosting
 without another provider call. Failed jobs never masquerade as ready artwork.
 
-The existing ``pmxbotweb.service`` owns background execution. No additional
-executable, process or systemd unit is needed. With ``images_enabled: true``,
-``pmxbotweb`` subscribes one ``GenerationExecutor`` to CherryPy's engine before
-startup. It acquires the database lock and recovers interrupted jobs before HTTP
-serving starts, then starts a scheduler thread and bounded ``ThreadPoolExecutor``.
-Repeated start notifications do not create another executor. HTTP request
-threads only validate/enqueue jobs and return; provider and hosting work runs
-in the background pool. Disabling images leaves queued jobs intact and does not
-start an executor; re-enable images and restart the viewer to process them.
+Optional shared standalone worker
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Use absolute ``database`` and ``images_directory`` paths in the viewer config.
-The existing ``generation_worker_concurrency: 1`` setting is retained (default);
-integers 1 through 4 are accepted. The scheduler fills only that many slots,
-polls SQLite once per second, and claims jobs with ``BEGIN IMMEDIATE``.
-CherryPy's shutdown stops HTTP serving, stops new claims, and joins the
-scheduler and active generation/hosting work before releasing the database
-lock. Configure ``TimeoutStopSec=600`` on ``pmxbotweb.service`` to allow graceful
-completion; a forced kill after the deadline is handled as a crash. Python
-threads cannot forcibly cancel a provider call. IRC ``!music`` behavior is
-unchanged; its work is outside this concurrency limit.
+Both switches default to false, so upgrading preserves current behavior:
+web variations run in CherryPy, and IRC ``!music`` uses its existing in-memory
+queue. To trial one shared worker, use the same configuration in all services::
 
-Deployment restarts bot and viewer so the executor uses the installed code.
-Install the reviewed deployment script and update the exact sudoers restart
-command above using the existing administrator review procedure. If the earlier
-standalone worker was provisioned, first stop and disable
-``pmxbot-generation-worker.service``; remove its unit and run
-``systemctl daemon-reload`` as administrator. Never run it alongside the viewer
-executor. Its CLI entry point is removed. SQLite jobs need no migration and
-queued jobs will be processed by the viewer. Inspect
-``journalctl -u pmxbotweb`` and verify that a submitted variation shows its
-spinner immediately and later selects the completed artwork.
+    images_enabled: true
+    irc_generation_standalone: true
+    web_generation_standalone: true
+    generation_worker_concurrency: 1
+    database: sqlite:////home/ircbot/data/pmxbot.sqlite
+    images_directory: /home/ircbot/data/images
+
+``irc_generation_standalone`` routes new ``!music`` requests to SQLite instead
+of the bot's thread queue. ``!music <album ID>`` remains a cached lookup.
+``web_generation_standalone``
+disables CherryPy's executor and routes variation execution to the standalone
+worker. The album UI, status endpoints, ownership and polling are unchanged.
+Neither switch disables image generation; each selects where it executes.
+
+The four supported configurations are:
+
+========================== ========================== ================================
+IRC standalone             Web standalone             Execution
+========================== ========================== ================================
+false                      false                      IRC local queue; CherryPy variations
+true                       false                      Worker IRC; CherryPy variations
+false                      true                       IRC local queue; worker variations
+true                       true                       Worker handles both job types
+========================== ========================== ================================
+
+Install the viewer extra (``.[viewer]``) for the worker's runtime dependencies.
+Run ``pmxbot-generation-worker /home/ircbot/data/config.yaml`` manually, or install
+the reviewed ``deploy/pmxbot-generation-worker.service`` into
+``/etc/systemd/system/`` as administrator. The sample unit runs as ``ircbot``
+with the existing virtual environment and environment file. After reviewing::
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now pmxbot-generation-worker.service
+
+Restart the bot and viewer after changing switches. The worker must receive the
+same switches, absolute database/image paths, provider settings and hosting
+credentials. It refuses to start when neither switch is enabled or images are
+disabled. Watch ``journalctl -u pmxbot-generation-worker -f``. Submit ``!music``
+and a web variation: both return immediately; IRC posts a finished result to
+its original channel and the browser selects its new image after polling.
+
+The deployment script restarts the optional worker only when its unit is enabled.
+Add this exact additional sudoers permission through the existing administrator
+review procedure if using it::
+
+    deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart pmxbot-generation-worker.service
+
+No unit or privileged deployment script is automatically installed from the
+checkout. The default bot/viewer deployment needs no extra service.
+
+For rollback, stop the worker first, change switches to false, and restart the
+bot/viewer. Drain IRC jobs before disabling its switch: persisted IRC jobs wait
+until an IRC-enabled worker returns; terminal notifications still drain from the
+bot. Queued web jobs can be processed by CherryPy after rollback. Stop old
+executors before transferring a job type; overlapping owners fail startup
+rather than steal work. Changing worker settings requires restarting it.
+
+Job schema and delivery
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The existing JobStore gets an additive, transaction-serialized migration:
+``kind`` defaults to ``variation`` for existing jobs; ``channel`` and
+``delivered_at`` support IRC notifications. Music jobs snapshot the album's
+artist/title, the exact IRC prompt and API settings at submission. They use
+``source_image_id = 0`` to indicate an initial cover with no source. Credentials
+and paths stay in service configuration. The existing generation service handles
+both Images and Responses APIs; web Responses continuation remains unchanged.
+
+IRC jobs retain the requesting nickname and channel, separately from web account
+and anonymous session identities. Identical pending IRC requests reuse a job
+within that nickname/channel. IRC notifications are claimed atomically from
+SQLite, so a bot restart does not normally lose queued work or terminal results.
+Delivery is at most once: a crash after claiming a notification but before
+sending it to IRC can lose that notification. IRC has no transactional delivery
+acknowledgment; album history still contains successful artwork. Run one bot
+for this database/network; multiple IRC networks sharing it are unsupported.
 
 Recovery and limits
 ~~~~~~~~~~~~~~~~~~~
 
-The executor retains the existing POSIX kernel file lock at
-``<absolute-database-path>.generation-worker.lock`` for its entire engine
-lifetime, including pool shutdown. The historical filename is retained so an
-old standalone worker cannot overlap the new executor during transition.
-Never remove the lock file while either could be alive. A second enabled viewer
-or executor against the same database fails synchronously at startup, before
-recovering or claiming jobs. Atomic SQLite claims additionally prevent two
-claimers from taking the same queued job. Run one viewer process on a single
-POSIX host (Linux/macOS) with local SQLite and local image files; network
-filesystems and distributed executors are unsupported. Windows can serve the
-viewer with images disabled, but enabled execution requires POSIX file locks.
-The existing RAM sessions also require a single viewer process.
+The scheduler polls SQLite once per second and atomically claims queued jobs
+using ``BEGIN IMMEDIATE``. ``generation_worker_concurrency`` defaults to 1 and
+accepts integers 1 through 4. With both switches on, it is a shared IRC/web bound;
+with mixed modes, separate executors and legacy IRC work have separate bounds.
 
-Do not initialize the executor before forking a web process or launch multiple
-WSGI workers against this database. Custom CherryPy/WSGI embedding must subscribe
-``GenerationExecutor(engine, config)`` once in the final process and start/stop
-that engine; constructing only a ``cherrypy.Application`` does not run it.
-The standard ``pmxbotweb`` entry point manages these hooks automatically.
+An executor must hold the POSIX kernel file lock for every job type it owns:
+``<database>.generation-worker.lock`` for variations and
+``<database>.irc.generation-worker.lock`` for music. Locks are acquired in a
+fixed order before recovery. This allows the IRC-only standalone worker and the
+CherryPy variation executor to coexist, while excluding multiple owners of the
+same type. Never delete lock files while any executor could be alive. Atomic
+claims provide additional protection. Use one POSIX host, local SQLite and local
+image files; network filesystems and distributed execution are unsupported.
+Stop any older all-job worker before upgrading: it does not understand job types.
 
-On startup, after acquiring the lock, the executor marks all abandoned
-``running`` jobs failed with a fixed recovery message. Queued jobs survive and
-continue. Graceful viewer restarts wait for current work; crashes, forced kills,
-and interrupted completion persistence leave running jobs to be failed on the
-next startup. Kernel lock release on process death ensures recovery cannot
-race an old live executor. No timeout or expiring lease starts a second copy.
-If scheduling or completion persistence fails, background processing stops and
-logs a safe error in the viewer log; the lock remains held until engine shutdown.
-The web UI stays available but queued jobs wait for an explicit viewer restart.
-There is no automatic scheduler restart or job retry.
+On startup, only abandoned ``running`` jobs of the executor's owned types become
+failed with a safe message; queued jobs remain available. There are no automatic
+job retries. SIGTERM/SIGINT stop new claims and drain active calls before releasing
+locks. Both sample worker and viewer should have ``TimeoutStopSec=600``; Python
+threads cannot forcibly cancel remote calls, and a forced kill is recovered as
+a crash. A standalone scheduler/persistence failure exits with an error for
+operator attention; the sample unit does not automatically restart it.
 
-Background work shares the viewer's CPU, memory, credentials and lifetime.
-The concurrency bound limits provider work, but expensive image handling and
-SQLite contention can still affect web responsiveness. Generation is unavailable
-while the viewer is down, and deployment/shutdown may wait for remote calls.
-Separate request and pool threads avoid waiting for those calls inside HTTP
-handlers; they do not provide process-level resource or failure isolation.
+When web standalone is false, CherryPy's existing lifecycle starts/stops its
+variation executor once. It retains locks after scheduler failure until explicit
+shutdown/restart. When true, the viewer starts no executor and can restart
+independently of generation. Existing RAM sessions still require one viewer
+process; never start an in-process executor before forking WSGI workers.
+Standalone operation isolates generation resources and lifetime from both
+applications, although database contention remains shared. Worker downtime
+leaves requests queued. With IRC standalone disabled, the bot's existing
+generation threads remain outside the worker pool's concurrency limit.
 
 Exactly-once execution across OpenAI and SQLite is impossible: the provider
 may succeed before a crash and the response or completion may never be

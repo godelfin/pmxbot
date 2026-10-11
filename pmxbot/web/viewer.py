@@ -550,6 +550,8 @@ class PmxbotPages:
                 context['job'] = None
             else:
                 job = store.get(identifier)
+                if job.get('kind', 'variation') != 'variation':
+                    raise LookupError('Unknown job')
                 if job['user_id'] is not None and (
                     not user or user.id != job['user_id']
                 ):

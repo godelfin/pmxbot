@@ -10,6 +10,7 @@ import requests
 
 import pmxbot
 from pmxbot import core, images, music, quotes
+from pmxbot.dictlib import ConfigDict
 from pmxbot.music import MusicLibrary, album_prompt, generate_album_image
 
 PNG = b'\x89PNG\r\n\x1a\nimage bytes'
@@ -146,7 +147,8 @@ def test_music_generated_album_link(config, post, monkeypatch, settings, expecte
     assert '\n' not in output[1]
 
 
-def test_music_registered():
+def test_music_registered(monkeypatch):
+    monkeypatch.setattr(pmxbot, 'config', ConfigDict(log_channels=[]))
     assert next(core.Handler.find_matching('!music', '#test')).func is images.music
 
 
@@ -756,7 +758,8 @@ def test_worker_disabled(config, post):
     post.assert_not_called()
 
 
-def test_image_commands_removed():
+def test_image_commands_removed(monkeypatch):
+    monkeypatch.setattr(pmxbot, 'config', ConfigDict(log_channels=[]))
     for message in ('!image cat', '!imagine cat'):
         assert not list(core.Handler.find_matching(message, '#test'))
 
