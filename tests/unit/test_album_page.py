@@ -1651,7 +1651,7 @@ def test_artwork_selection_fragments(page):
     response = request('/albums/42?source_image_id=42', accept='application/json')
     assert response['status'] == 200
     data = json.loads(response['body'])
-    assert data['image_id'] == 42
+    assert data['image_id'] == '42'
     parts = data['fragments']
     assert set(parts) == {'artwork', 'prompt', 'metadata', 'cache_key'}
     assert 'javascript:' not in parts['artwork']
@@ -1668,3 +1668,14 @@ def test_artwork_selection_fragments(page):
         request('/albums/42?source_image_id=999', accept='application/json')['status']
         == 404
     )
+
+
+@pytest.mark.parametrize('identifier', [42, 2**53 + 1, 2**63 - 1])
+def test_artwork_selection_preserves_image_id(page, identifier):
+    cache, request = page
+    insert(cache, image_id=identifier)
+    response = request(
+        '/albums/42?source_image_id=' + str(identifier), accept='application/json'
+    )
+    assert response['status'] == 200
+    assert json.loads(response['body'])['image_id'] == str(identifier)

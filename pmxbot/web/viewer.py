@@ -527,7 +527,8 @@ class AlbumPage:
             names = ('artwork', 'prompt', 'metadata', 'cache_key')
             return json_response(
                 dict(
-                    image_id=image['id'] if image else None,
+                    # Preserve SQLite's 64-bit IDs across JavaScript's number limit.
+                    image_id=str(image['id']) if image else None,
                     properties=(
                         {
                             field: getattr(draft, field)
