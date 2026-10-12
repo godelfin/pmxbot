@@ -12,7 +12,7 @@ from contextlib import ExitStack, closing, contextmanager
 from dataclasses import asdict
 
 from cherrypy.process.plugins import SimplePlugin
-from .images import ImageCache
+from .images import ImageCache, ImageError
 from .music import GenerationInputs, MusicLibrary, generate_album_variation
 
 
@@ -282,21 +282,24 @@ def process_job(store, job, config):
             from .music import generate_album_image
 
             inputs = json.loads(job['inputs_json'])
-            generate_album_image(
-                MusicLibrary(cache.database),
-                cache,
-                job['album_id'],
-                job['requested_by'],
-                job['channel'],
-                include_metadata=False,
-                snapshot=inputs['album'],
-                exact_prompt=inputs['prompt'],
-            )
-            with closing(cache.read_connection()) as db:
-                result = db.execute(
-                    'SELECT id FROM image_cache WHERE cache_key = ?',
-                    (cache.cache_key(inputs['prompt']),),
-                ).fetchone()
+            try:
+                result = cache.latest_album_image_record(job['album_id'])
+            except ImageError:
+                generate_album_image(
+                    MusicLibrary(cache.database),
+                    cache,
+                    job['album_id'],
+                    job['requested_by'],
+                    job['channel'],
+                    include_metadata=False,
+                    snapshot=inputs['album'],
+                    exact_prompt=inputs['prompt'],
+                )
+                with closing(cache.read_connection()) as db:
+                    result = db.execute(
+                        'SELECT id FROM image_cache WHERE cache_key = ?',
+                        (cache.cache_key(inputs['prompt']),),
+                    ).fetchone()
         else:
             result = generate_album_variation(
                 MusicLibrary(cache.database),
