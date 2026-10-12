@@ -380,6 +380,47 @@ bot. Queued web jobs can be processed by CherryPy after rollback. Stop old
 executors before transferring a job type; overlapping owners fail startup
 rather than steal work. Changing worker settings requires restarting it.
 
+CLI queue inspection
+~~~~~~~~~~~~~~~~~~~~
+
+``pmxbot-jobs`` inspects the database without claiming jobs, running recovery,
+creating storage, migrating the schema, or contacting providers. It can run
+alongside the worker. After deploying the updated package, use the runtime
+account and existing SQLite path::
+
+    sudo -u ircbot /home/ircbot/venv/bin/pmxbot-jobs --database /home/ircbot/data/pmxbot.sqlite
+
+Alternatively, supply ``/home/ircbot/data/config.yaml`` as the positional argument
+instead of ``--database``. Database resolution uses the same conventions as image
+storage. Direct database selection needs no configuration or provider credentials.
+
+The default view reports total queued/running/succeeded/failed counts and the
+latest 50 jobs, with job ID prefix, status, kind, album, saved API and requester.
+Counts always cover the whole database; filters apply to the displayed jobs::
+
+    pmxbot-jobs --database /home/ircbot/data/pmxbot.sqlite --status pending
+    pmxbot-jobs --database /home/ircbot/data/pmxbot.sqlite --status failed --limit 20
+    pmxbot-jobs --database /home/ircbot/data/pmxbot.sqlite --kind music
+    pmxbot-jobs --database /home/ircbot/data/pmxbot.sqlite --job <job-ID-or-prefix>
+    pmxbot-jobs --database /home/ircbot/data/pmxbot.sqlite --json
+
+Pending jobs are listed oldest first. Other lists show the newest first.
+``--limit`` accepts 1 through 1000. ``--job`` accepts a full ID or a unique
+8–32-character hexadecimal prefix and shows the source/result IDs, ownership,
+channel, UTC timestamps, delivery state, safe error and saved generation settings.
+A queued job's settings may differ from the configuration now on disk.
+JSON output contains counts and selected job summaries/settings; it excludes
+prompts, immutable input payloads, anonymous bearer tokens and credentials.
+
+For a refreshing terminal view, Debian's ``watch`` can invoke the command::
+
+    sudo -u ircbot watch -n 2 /home/ircbot/venv/bin/pmxbot-jobs --database /home/ircbot/data/pmxbot.sqlite --status pending
+
+An existing database without a job table reports an empty queue. A missing or
+unreadable database exits with an error and is never created. Job lookup failures
+exit with status 1; invalid CLI arguments exit with status 2. This is an
+administrator view across all owners, controlled by filesystem access.
+
 Job schema and delivery
 ~~~~~~~~~~~~~~~~~~~~~~~
 

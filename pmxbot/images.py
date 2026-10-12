@@ -221,25 +221,30 @@ def initialize_image_records(db):
         db.execute('RELEASE image_ancestry')
 
 
+def image_database_path(config):
+    """Resolve shared persistent SQLite storage without provider configuration."""
+    database_uri = config.get('database', 'sqlite:pmxbot.sqlite')
+    parsed = urlsplit(database_uri)
+    if parsed.scheme != 'sqlite' and not (
+        not parsed.scheme and database_uri.endswith('.sqlite')
+    ):
+        raise ImageError('Image caching requires a SQLite main bot database.')
+    if not parsed.path or parsed.path == ':memory:':
+        raise ImageError(
+            'Image caching requires a persistent SQLite main bot database.'
+        )
+    # Match SQLiteStorage's URI path handling; only the connection is separate,
+    # because the image worker cannot use the IRC thread's SQLite connection.
+    # Python 3.8 on Windows can leave a nonexistent relative path unresolved.
+    return Path(parsed.path).absolute().resolve()
+
+
 class ImageCache:
     def __init__(self, config):
         self.directory = (
             Path(config.get('images_directory', 'images')).expanduser().resolve()
         )
-        database_uri = config.get('database', 'sqlite:pmxbot.sqlite')
-        parsed = urlsplit(database_uri)
-        if parsed.scheme != 'sqlite' and not (
-            not parsed.scheme and database_uri.endswith('.sqlite')
-        ):
-            raise ImageError('Image caching requires a SQLite main bot database.')
-        if not parsed.path or parsed.path == ':memory:':
-            raise ImageError(
-                'Image caching requires a persistent SQLite main bot database.'
-            )
-        # Match SQLiteStorage's URI path handling; only the connection is separate,
-        # because the image worker cannot use the IRC thread's SQLite connection.
-        # Python 3.8 on Windows can leave a nonexistent relative path unresolved.
-        self.database = Path(parsed.path).absolute().resolve()
+        self.database = image_database_path(config)
         self.settings = {
             'model': config.get('images_model', 'gpt-image-1'),
             'size': config.get('images_size', '1024x1024'),
