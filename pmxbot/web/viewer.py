@@ -429,12 +429,7 @@ class AlbumPage:
             image_url=safe_image_url(image['hosted_url']) if image else None,
         )
         draft = GenerationInputs.from_source(album, image) if image else None
-        context.update(draft=draft, variation_error=None, variation_notice=None)
-        if cherrypy.request.config.get('tools.sessions.on'):
-            notice = cherrypy.session.get('artwork_reused')
-            if notice == (int(value), image['id'] if image else None):
-                cherrypy.session.pop('artwork_reused')
-                context['variation_notice'] = 'Existing artwork reused.'
+        context.update(draft=draft, variation_error=None)
         if draft and cherrypy.request.config.get('tools.sessions.on'):
             feedback = cherrypy.session.get('variation_feedback')
             if (
@@ -511,11 +506,6 @@ class AlbumPage:
                             f"{context['base']}/albums/{value}?source_image_id={source_id}"
                         )
                     else:
-                        if result.get('reused'):
-                            cherrypy.session['artwork_reused'] = (
-                                int(value),
-                                result['id'],
-                            )
                         auth.redirect(
                             f"{context['base']}/albums/{value}?source_image_id={result['id']}"
                         )

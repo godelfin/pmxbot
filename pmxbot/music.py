@@ -353,8 +353,19 @@ def generate_album_image(
         )
     prompt = album_prompt(album)
     try:
-        inputs = asdict(GenerationInputs.from_source(album, {'id': 0}))
-        # Initial prompts have never included band creative annotations.
+        # Snapshot only properties used by this initial prompt. Band annotations
+        # are supported by variations, but not included in initial generation.
+        inputs = dict(
+            album_id=album['id'],
+            artist_id=album['artist_id'],
+            source_image_id=None,
+            artist_name=album['artist_name'],
+            title=album['title'],
+            **{
+                field: album.get(field) or ''
+                for field in GenerationInputs.creative_fields
+            },
+        )
         inputs.update(artist_genre='', artist_description='')
         url = cache.get(prompt, nick, channel, inputs=inputs)
     except Exception as exc:
@@ -431,15 +442,7 @@ def continue_album_image(
             )
     try:
         operation = cache.vary_image if variation else cache.continue_image
-        from .image_equivalence import find_equivalent, submission_guard
-
-        with submission_guard(cache):
-            existing = find_equivalent(cache, source, asdict(inputs))
-            if existing is not None:
-                return existing
-            return operation(
-                source_image_id, prompt, nick, channel, inputs=asdict(inputs)
-            )
+        return operation(source_image_id, prompt, nick, channel, inputs=asdict(inputs))
     except Exception as exc:
         try:
             library.record_image_failure(inputs.album_id, prompt, nick, channel, exc)

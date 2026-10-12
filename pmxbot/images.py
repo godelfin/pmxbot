@@ -839,14 +839,6 @@ class ImageCache:
                     image, metadata = self.generate(prompt)
                 if inputs is not None:
                     metadata['generation_inputs'] = inputs
-                    from .image_equivalence import descriptor
-
-                    metadata['effective_generation'] = descriptor(self, inputs)
-                    metadata['variation_context'] = (
-                        previous_response_id
-                        if self.image_api == 'responses'
-                        else parent_image_id
-                    )
                 filename = self.directory / f'{key}.png'
                 db.execute('BEGIN IMMEDIATE')
                 try:
@@ -976,23 +968,27 @@ class ImageCache:
     def generate(self, prompt):
         if self.image_api == 'responses':
             return self.generate_responses(prompt)
+        request = dict(self.settings, prompt=prompt, n=1)
         data = post_json(
             'https://api.openai.com/v1/images/generations',
             'OpenAI',
             headers={'Authorization': f'Bearer {self.openai_key}'},
-            json=dict(self.settings, prompt=prompt, n=1),
+            json=request,
             timeout=(10, 300),
         )
-        return self.decode_images(data)
+        image, metadata = self.decode_images(data)
+        metadata['generation_request'] = request
+        return image, metadata
 
     def generate_edit(self, prompt, source_filename):
+        request = dict(self.settings, prompt=prompt, n=1)
         try:
             with open(source_filename, 'rb') as source:
                 data = post_json(
                     'https://api.openai.com/v1/images/edits',
                     'OpenAI',
                     headers={'Authorization': f'Bearer {self.openai_key}'},
-                    data=dict(self.settings, prompt=prompt, n=1),
+                    data=request,
                     files={'image[]': ('source.png', source, 'image/png')},
                     timeout=(10, 300),
                 )
@@ -1000,7 +996,9 @@ class ImageCache:
             raise ImageError(
                 'Could not read the source PNG; check image storage.'
             ) from None
-        return self.decode_images(data)
+        image, metadata = self.decode_images(data)
+        metadata['generation_request'] = request
+        return image, metadata
 
     @staticmethod
     def decode_images(data):
@@ -1075,6 +1073,7 @@ class ImageCache:
             image, item = candidates[0]
             metadata = {
                 'api': 'responses',
+                'generation_request': request,
                 'response_id': identifier,
                 'previous_response_id': previous_response_id,
                 'store': self.responses_store and data.get('store') is True,
