@@ -328,6 +328,16 @@ song quote library.
 Generating artwork variations
 -----------------------------
 
+Artwork history stays in one horizontally scrollable row. Its arrow buttons,
+touch/trackpad scrolling, and thumbnail links work at narrow and wide sizes.
+With a thumbnail focused, Left/Right moves focus, Home/End reaches either end,
+and Enter/Space selects artwork. Selection updates artwork, prompt, metadata,
+and variation source together without reloading; the URL supports sharing,
+refresh, and Back/Forward. Without JavaScript, thumbnail links open album pages.
+Variation edits are remembered separately for each image while the page remains
+open. Selection temporarily disables submission; a failed selection retains the
+previous image and draft and offers Retry. Refreshing clears unsaved drafts.
+
 On an album page with artwork, the variation form starts from that image's
 saved structured properties, or canonical album and artist properties for
 legacy images. Band name, album title, and canonical database records remain

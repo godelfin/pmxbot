@@ -1,0 +1,152 @@
+<script id="artwork-history-script">
+(() => {
+  const strip = document.getElementById('image-history');
+  if (!strip) return;
+  const links = [...strip.querySelectorAll('a[data-image-id]')];
+  const left = document.getElementById('history-left');
+  const right = document.getElementById('history-right');
+  const status = document.getElementById('history-status');
+  const retry = document.getElementById('history-retry');
+  const form = document.getElementById('variation-form');
+  const drafts = new Map();
+  let selected = strip.querySelector('[aria-current]')?.dataset.imageId || null;
+  let committedURL = location.href;
+  let sequence = 0;
+  let controller;
+  let failedSelection;
+  const motion = () => matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+  function boundaries() {
+    left.disabled = strip.scrollLeft <= 1;
+    right.disabled = strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1;
+  }
+  left.parentElement.hidden = false;
+  document.getElementById('history-help').hidden = false;
+  left.addEventListener('click', () => strip.scrollBy({left: -Math.max(128, strip.clientWidth * .8), behavior: motion()}));
+  right.addEventListener('click', () => strip.scrollBy({left: Math.max(128, strip.clientWidth * .8), behavior: motion()}));
+  strip.addEventListener('scroll', boundaries);
+  window.addEventListener('resize', boundaries);
+  if (typeof ResizeObserver === 'function') new ResizeObserver(boundaries).observe(strip);
+  boundaries();
+  function reveal(link) {
+    if (!link) return;
+    const bounds = strip.getBoundingClientRect();
+    const item = link.getBoundingClientRect();
+    if (item.left < bounds.left) strip.scrollBy({left: item.left - bounds.left - 8, behavior: motion()});
+    else if (item.right > bounds.right) strip.scrollBy({left: item.right - bounds.right + 8, behavior: motion()});
+  }
+  reveal(links.find(link => link.dataset.imageId === selected));
+  strip.addEventListener('keydown', event => {
+    if (event.target.closest('input, textarea, select, [contenteditable]')) return;
+    const link = event.target.closest('a[data-image-id]') || links.find(link => link.dataset.imageId === selected);
+    const index = links.indexOf(link);
+    if (index < 0 || event.altKey || event.ctrlKey || event.metaKey) return;
+    const destinations = {ArrowLeft: Math.max(0, index - 1), ArrowRight: Math.min(links.length - 1, index + 1), Home: 0, End: links.length - 1};
+    if (event.key in destinations) {
+      event.preventDefault();
+      const target = links[destinations[event.key]];
+      target.focus({preventScroll: true});
+      reveal(target);
+    } else if (event.key === ' ' || (event.key === 'Enter' && event.target === strip)) {
+      event.preventDefault();
+      link.click();
+    }
+  });
+  function rememberDraft() {
+    if (form && selected) drafts.set(selected, [...form.querySelectorAll('select, textarea')].map(field => [field.name, field.value]));
+  }
+  function fragment(html) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    return template.content;
+  }
+  async function select(url, navigation = false) {
+    const current = ++sequence;
+    controller?.abort();
+    controller = new AbortController();
+    failedSelection = null;
+    retry.hidden = true;
+    strip.setAttribute('aria-busy', 'true');
+    status.textContent = 'Loading artwork…';
+    // Prevent submitting the old source while a new selection is being resolved.
+    if (form) form.querySelector('button[type=submit]').disabled = true;
+    try {
+      const response = await fetch(url, {headers: {Accept: 'application/json'}, signal: controller.signal, cache: 'no-store'});
+      if (!response.ok) throw new Error('selection');
+      const data = await response.json();
+      if (current !== sequence) return;
+      const parts = data.fragments;
+      if (!parts || !data.image_id || !['artwork', 'prompt', 'metadata', 'cache_key'].every(name => typeof parts[name] === 'string')) throw new Error('selection');
+      if (form && ![...form.querySelectorAll('select, textarea')].every(field => typeof data.properties?.[field.name] === 'string')) throw new Error('selection');
+      // Build all nodes before changing the visible selection.
+      const nodes = {artwork: fragment(parts.artwork), metadata: fragment(parts.metadata)};
+      const pagePosition = {left: window.scrollX, top: window.scrollY};
+      rememberDraft();
+      if (form) {
+        const saved = drafts.get(String(data.image_id));
+        for (const field of form.querySelectorAll('select, textarea')) {
+          const edited = saved?.find(([name]) => name === field.name);
+          const value = edited ? edited[1] : data.properties[field.name];
+          if (field.tagName === 'SELECT') {
+            field.querySelectorAll('[data-source-only]').forEach(option => option.remove());
+            if (![...field.options].some(option => option.value === value)) {
+              const option = new Option(value, value);
+              option.dataset.sourceOnly = '';
+              field.add(option);
+            }
+          }
+          field.value = value;
+        }
+        form.elements.source_image_id.value = String(data.image_id);
+        form.querySelector('button[type=submit]').dataset.available = String(data.variation_available);
+        const signIn = document.getElementById('variation-sign-in');
+        if (signIn) {
+          const destination = new URL(signIn.href);
+          destination.searchParams.set('return_to', new URL(url).pathname + '?source_image_id=' + data.image_id);
+          signIn.href = destination.href;
+        }
+        const error = document.getElementById('generation-error');
+        if (error) error.hidden = true;
+        document.getElementById('variation-error')?.remove();
+      }
+      document.getElementById('selected-artwork').replaceChildren(nodes.artwork);
+      document.getElementById('selected-prompt').textContent = fragment(parts.prompt).textContent;
+      document.getElementById('selected-metadata').replaceChildren(nodes.metadata);
+      document.getElementById('selected-cache-key').textContent = fragment(parts.cache_key).textContent;
+      selected = String(data.image_id);
+      for (const link of links) {
+        const active = link.dataset.imageId === selected;
+        link.classList.toggle('current-image', active);
+        if (active) link.setAttribute('aria-current', 'page');
+        else link.removeAttribute('aria-current');
+        link.querySelector('span:last-child').textContent = `${active ? 'Currently viewing' : 'View'} image #${link.dataset.imageId}`;
+      }
+      if (!navigation) window.history.pushState(null, '', url);
+      committedURL = location.href;
+      window.scrollTo({...pagePosition, behavior: 'instant'});
+      reveal(links.find(link => link.dataset.imageId === selected));
+      status.textContent = `Viewing image #${selected}${drafts.has(selected) ? '. Saved variation edits restored.' : '.'}`;
+    } catch (failure) {
+      if (current !== sequence) return;
+      failedSelection = {url, navigation};
+      if (navigation) window.history.replaceState(null, '', committedURL);
+      status.textContent = 'Could not load artwork. The previous image and variation edits are still displayed.';
+      retry.hidden = false;
+    } finally {
+      if (current === sequence) {
+        strip.setAttribute('aria-busy', 'false');
+        document.dispatchEvent(new Event('artwork-selected'));
+      }
+    }
+  }
+  strip.addEventListener('click', event => {
+    const link = event.target.closest('a[data-image-id]');
+    if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    select(link.href);
+  });
+  retry.addEventListener('click', () => {
+    if (failedSelection) select(failedSelection.url);
+  });
+  window.addEventListener('popstate', () => select(location.href, true));
+})();
+</script>
