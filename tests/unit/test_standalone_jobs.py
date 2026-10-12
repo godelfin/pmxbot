@@ -12,7 +12,7 @@ from cherrypy.process.wspbus import Bus
 
 import pmxbot
 from pmxbot import core, images, jobs
-from pmxbot.music import MusicLibrary
+from pmxbot.music import MusicLibrary, generate_album_image
 from tests.unit.test_album_page import page, variation  # noqa: F401
 from tests.unit.test_images import config, post, r2, responses_post  # noqa: F401
 
@@ -143,6 +143,47 @@ def test_music_failure_safe_notification(config, post, r2, failure):
     assert done['status'] == 'failed' and done['result_image_id'] is None
     assert 'secret' not in done['error']
     assert list(images.durable_music_results()) == ['#music', 'alice: ' + jobs.FAILURE]
+
+
+def test_existing_music_returns_artwork_without_queueing(config, post, r2):
+    cache, store, identifier = music_job(config)
+    library = MusicLibrary(cache.database)
+    url = generate_album_image(library, cache, 1, 'original', '#music')
+    # A different prompt and backend settings must not regenerate this release.
+    config.update(irc_generation_standalone=True, images_quality='high')
+    post.reset_mock()
+    r2.put_object.reset_mock()
+    post.side_effect = RuntimeError('provider unavailable')
+    result = images._start_image(
+        None, '#music', 'alice', None, album_data={'artist': 'Band', 'title': 'Album'}
+    )
+    assert result == (
+        f'Band: Band; Album: Album; #1 {url}\nhttps://bot.example.com/albums/1'
+    )
+    assert store.claim(('music',))['id'] == identifier
+    assert store.claim(('music',)) is None
+    post.assert_not_called()
+    r2.put_object.assert_not_called()
+
+
+def test_queued_music_reuses_artwork_saved_before_execution(config, post, r2):
+    cache, store, identifier = music_job(config)
+    url = generate_album_image(MusicLibrary(cache.database), cache, 1)
+    image = cache.latest_album_image_record(1)
+    post.reset_mock()
+    r2.put_object.reset_mock()
+    post.side_effect = RuntimeError('provider unavailable')
+    jobs.process_job(store, store.claim(('music',)), config)
+    done = store.get(identifier)
+    assert done['status'] == 'succeeded'
+    assert done['result_image_id'] == image['id']
+    assert list(images.durable_music_results()) == [
+        '#music',
+        f'alice: #1 {url}',
+        'https://bot.example.com/albums/1',
+    ]
+    post.assert_not_called()
+    r2.put_object.assert_not_called()
 
 
 def test_pending_music_dedup_and_concurrent_delivery(config):

@@ -709,10 +709,14 @@ class ImageCache:
 
     def latest_album_image(self, album_id):
         """Return the newest hosted cache entry linked to an existing album."""
+        return self.latest_album_image_record(album_id)['hosted_url']
+
+    def latest_album_image_record(self, album_id):
+        """Return the newest hosted image record and count its reuse."""
         MusicLibrary(self.database).get_album(album_id)
         with closing(self.connect()) as db:
             row = db.execute(
-                '''SELECT image_cache.cache_key, hosted_url FROM image_cache
+                '''SELECT image_cache.* FROM image_cache
                 JOIN album_images USING (cache_key)
                 WHERE album_id = ? AND hosted_url IS NOT NULL AND hosted_url != ''
                 ORDER BY image_cache.created_at DESC, image_cache.rowid DESC
@@ -726,7 +730,7 @@ class ImageCache:
                 last_accessed_at = CURRENT_TIMESTAMP WHERE cache_key = ?''',
                 (row['cache_key'],),
             )
-            return row['hosted_url']
+            return dict(row)
 
     def get(self, prompt, nick='', channel='', *, inputs=None):
         return self._get(prompt, nick, channel, self.cache_key(prompt), inputs=inputs)
@@ -1283,6 +1287,15 @@ def _queue_music(album_data, channel, nick):
         cache = ImageCache(pmxbot.config)
         library = MusicLibrary(cache.database)
         album = library.create_album(**album_data, created_by=nick)
+        try:
+            url = cache.latest_album_image(album['id'])
+        except ImageError:
+            pass  # Albums without hosted artwork still need a generation job.
+        else:
+            return (
+                f"{_album_details(album)}; #{album['id']} {url}\n"
+                f"{_album_url(album['id'])}"
+            )
         JobStore(cache.database).enqueue_music(
             library.get_album(album['id']), cache, nick, channel
         )
