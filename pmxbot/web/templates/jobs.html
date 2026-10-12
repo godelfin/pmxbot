@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Generation jobs</title>
+{% if job and job.status in ('queued', 'running') %}
+<meta http-equiv="refresh" content="5">
+{% endif %}
+</head>
+<body>
+{% include "auth_nav.html" %}
+<main>
+<h1>{% if job %}Generation job{% else %}Your generation jobs{% endif %}</h1>
+{% if job %}
+<p>{% if job.status == 'queued' %}Waiting for generation.
+{% elif job.status == 'running' %}Artwork is being generated.
+{% elif job.status == 'succeeded' %}Artwork is ready.
+<a href="{{ base }}/albums/{{ job.album_id }}?source_image_id={{ job.result_image_id }}">View generated artwork</a>
+{% else %}Generation failed. {{ job.error }}{% endif %}</p>
+<p>Created: {{ job.created_at }} UTC</p>
+<p>You can continue browsing and return to this URL later. Bookmark it to keep track of this job.</p>
+<a href="{{ base }}/albums/{{ job.album_id }}?source_image_id={{ job.source_image_id }}">Return to album</a>
+{% else %}
+<ul>
+{% for item in jobs %}
+<li><a href="{{ base }}/jobs/{{ item.id }}">Album #{{ item.album_id }} — {{ item.status }} — {{ item.created_at }} UTC</a></li>
+{% else %}<li>No generation jobs in this account or browser session.</li>{% endfor %}
+</ul>
+{% endif %}
+<p><a href="{{ base }}/">Browse albums</a></p>
+</main>
+</body>
+</html>

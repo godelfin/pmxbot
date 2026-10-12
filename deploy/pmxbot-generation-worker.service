@@ -1,0 +1,16 @@
+[Unit]
+Description=pmxbot shared image generation worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ircbot
+WorkingDirectory=/home/ircbot/pmxbot
+EnvironmentFile=/etc/ircbot.env
+ExecStart=/home/ircbot/venv/bin/pmxbot-generation-worker /home/ircbot/data/config.yaml
+TimeoutStopSec=600
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 
 import pmxbot
 from pmxbot.images import ImageCache, ImageError
+from pmxbot.users import User
 from pmxbot.music import MusicLibrary
 from pmxbot.web import viewer, auth
 from http.cookies import SimpleCookie
@@ -20,11 +21,12 @@ ORIGINAL_UPLOAD = ImageCache.upload
 
 
 @pytest.fixture
-def page(tmp_path, monkeypatch):
+def page(tmp_path, monkeypatch, request):
+    base = getattr(request, 'param', '/bot')
     config = pmxbot.core.ConfigDict(
         database=f'sqlite:{tmp_path / "bot.sqlite"}',
         images_directory=str(tmp_path / 'images'),
-        web_base='/bot',
+        web_base=base,
         bot_nickname='pmxbot',
         logo='/bot/pmxbot.png',
     )
@@ -38,11 +40,11 @@ def page(tmp_path, monkeypatch):
     )
     config.web_session_secure = False
     app = cherrypy.Application(
-        viewer.PmxbotPages(), '/bot', {'/': auth.session_config(config)}
+        viewer.PmxbotPages(), base, {'/': auth.session_config(config)}
     )
     cookies = SimpleCookie()
 
-    def request(path='/albums/42', method='GET', data=None):
+    def request(path='/albums/42', method='GET', data=None, accept=None):
         if method == 'POST' and data and 'csrf_token' not in data:
             initial = BeautifulSoup(request(path)['body'], 'html.parser')
             token = initial.select_one('[name=csrf_token]')
@@ -51,7 +53,7 @@ def page(tmp_path, monkeypatch):
         path, _, query = path.partition('?')
         env = {
             'REQUEST_METHOD': method,
-            'SCRIPT_NAME': '/bot',
+            'SCRIPT_NAME': base,
             'PATH_INFO': path,
             'QUERY_STRING': query,
             'SERVER_NAME': 'localhost',
@@ -71,6 +73,8 @@ def page(tmp_path, monkeypatch):
             'wsgi.multiprocess': False,
             'wsgi.run_once': False,
         }
+        if accept:
+            env['HTTP_ACCEPT'] = accept
         response = {}
 
         def start(status, headers, exc_info=None):
@@ -263,13 +267,16 @@ def test_selected_image_continuation_capability(
     soup = BeautifulSoup(
         request('/albums/42?source_image_id=42')['body'], 'html.parser'
     )
-    status = soup.select_one('#continuation-capability')
-    assert status['data-available'] == str(available).lower()
-    assert reason in status.get_text()
+    configured_cache = ImageCache(pmxbot.config)
+    status, message = configured_cache.continuation_capability(cache.get_image(42))
+    assert status is available
+    assert reason in message
+    assert soup.select_one('[name=source_image_id]')['value'] == '42'
     assert soup.select_one('button[type=submit]').get_text() == 'Generate variation'
     assert 'Generate a new version' not in soup.get_text()
     latest = BeautifulSoup(request()['body'], 'html.parser')
-    assert latest.select_one('#continuation-capability')['data-available'] == 'false'
+    assert latest.select_one('[name=source_image_id]')['value'] == '43'
+    assert configured_cache.continuation_capability(cache.get_image(43))[0] is False
     assert cache.database.read_bytes() == before
 
 
@@ -977,7 +984,12 @@ def test_gallery_invalid_sort_does_not_create_storage(page, sort):
     assert not cache.directory.exists()
 
 
-def test_preparation_is_immutable_and_has_no_generation(page):
+def test_preparation_is_immutable_and_has_no_generation(page, monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        'current_user',
+        Mock(return_value=User(1, 'Alice', 'alice', None, '2026', True, False)),
+    )
     cache, request = page
     insert(cache)
     before = cache.database.read_bytes()
@@ -1029,7 +1041,12 @@ def test_shared_generation_inputs(page):
         source.prepare(dict(values, description=['duplicate']), {})
 
 
-def test_legacy_values_prepare_and_selected_source_stays_fixed(page):
+def test_legacy_values_prepare_and_selected_source_stays_fixed(page, monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        'current_user',
+        Mock(return_value=User(1, 'Alice', 'alice', None, '2026', True, False)),
+    )
     cache, request = page
     insert(cache)
     with sqlite3.connect(cache.database) as db:
@@ -1046,7 +1063,7 @@ def test_legacy_values_prepare_and_selected_source_stays_fixed(page):
     soup = BeautifulSoup(
         request('/albums/42?source_image_id=42')['body'], 'html.parser'
     )
-    form = soup.form
+    form = soup.select_one('#variation-form')
     values = {
         control['name']: control.get('value', control.get_text())
         for control in form.select('input, textarea')
@@ -1058,7 +1075,12 @@ def test_legacy_values_prepare_and_selected_source_stays_fixed(page):
     assert values['artist_genre'] == 'Retired genre'
     response = request(method='POST', data=values)
     assert response['status'] == 409
-    assert 'Source image #42' in response['body']
+    assert (
+        BeautifulSoup(response['body'], 'html.parser').select_one(
+            '[name=source_image_id]'
+        )['value']
+        == '42'
+    )
     assert 'disabled' in response['body']
     assert cache.database.read_bytes() == before
 
@@ -1287,6 +1309,11 @@ def test_catalog_creation_dates_precede_ids(page):
 
 @pytest.fixture
 def variation(page, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        auth,
+        'current_user',
+        Mock(return_value=User(1, 'Alice', 'alice', None, '2026', True, False)),
+    )
     import base64
     from pmxbot import images
 
@@ -1355,6 +1382,27 @@ def enable_responses(cache, post):
     )
 
 
+def complete_variation(variation, data=None):
+    from pmxbot.jobs import JobStore, process_job
+
+    cache, request, post, client, values, source = variation
+    calls = post.call_count, client.put_object.call_count
+    response = request(method='POST', data=data or values)
+    assert response['status'] == 303
+    assert calls == (post.call_count, client.put_object.call_count)
+    identifier = response['headers']['Location'].rsplit('/', 1)[1]
+    store = JobStore(cache.database)
+    job = store.claim()
+    assert job['id'] == identifier
+    process_job(store, job, pmxbot.config)
+    result = store.get(identifier)
+    assert result['status'] == 'succeeded'
+    response['headers'][
+        'Location'
+    ] = f"/bot/albums/42?source_image_id={result['result_image_id']}"
+    return response
+
+
 @pytest.mark.parametrize('api', ['images', 'responses'])
 def test_generate_variation_prg_and_provenance(variation, api):
     cache, request, post, client, values, source = variation
@@ -1375,8 +1423,10 @@ def test_generate_variation_prg_and_provenance(variation, api):
             db.execute('SELECT * FROM artists').fetchall(),
         )
     capability = BeautifulSoup(request()['body'], 'html.parser')
-    assert capability.select_one('#variation-capability')['data-available'] == 'true'
-    result = request(method='POST', data=values)
+    assert not capability.select_one('#variation-form button[type=submit]').has_attr(
+        'disabled'
+    )
+    result = complete_variation(variation)
     assert result['status'] == 303
     target = result['headers']['Location']
     child_id = int(target.rsplit('=', 1)[1])
@@ -1464,15 +1514,19 @@ def test_variation_failures_redirect_and_preserve_source(variation, failure):
             db.execute(
                 "CREATE TRIGGER fail_link BEFORE INSERT ON album_images BEGIN SELECT RAISE(ABORT, 'secret storage detail'); END"
             )
+    from pmxbot.jobs import JobStore, process_job
+
     result = request(method='POST', data=values)
     assert result['status'] == 303
-    assert result['headers']['Location'] == '/bot/albums/42?source_image_id=42'
-    page = request('/albums/42?source_image_id=42')
-    soup = BeautifulSoup(page['body'], 'html.parser')
-    assert soup.select_one('[role=alert]')
+    target = result['headers']['Location']
+    store = JobStore(cache.database)
+    process_job(store, store.claim(), pmxbot.config)
+    job = store.get(target.rsplit('/', 1)[1])
+    assert job['status'] == 'failed'
+    assert job['result_image_id'] is None
+    page = request(target[len('/bot') :])
+    assert 'Generation failed' in page['body']
     assert 'secret ' not in page['body']
-    if failure == 'expired_context':
-        assert 'No source image was uploaded' in page['body']
     assert cache.get_image(42) == original
     with sqlite3.connect(cache.database) as db:
         assert db.execute('SELECT count(*) FROM image_cache').fetchone()[0] == (
@@ -1489,14 +1543,14 @@ def test_variation_failures_redirect_and_preserve_source(variation, failure):
 def test_responses_variations_branch_from_selected_image(variation):
     cache, request, post, client, values, source = variation
     enable_responses(cache, post)
-    first = request(method='POST', data=values)
+    first = complete_variation(variation)
     first_id = int(first['headers']['Location'].rsplit('=', 1)[1])
     post.return_value.json.return_value['id'] = 'resp_second'
-    second = request(method='POST', data=dict(values, source_image_id=str(first_id)))
+    second = complete_variation(variation, dict(values, source_image_id=str(first_id)))
     second_id = int(second['headers']['Location'].rsplit('=', 1)[1])
     assert post.call_args.kwargs['json']['previous_response_id'] == 'resp_child'
     post.return_value.json.return_value['id'] = 'resp_branch'
-    branch = request(method='POST', data=values)
+    branch = complete_variation(variation)
     branch_id = int(branch['headers']['Location'].rsplit('=', 1)[1])
     assert post.call_args.kwargs['json']['previous_response_id'] == 'resp_source'
     assert len({42, first_id, second_id, branch_id}) == 4
@@ -1520,6 +1574,10 @@ def test_images_variation_hosting_retry_never_regenerates(variation):
     cache, request, post, client, values, source = variation
     client.put_object.side_effect = images.BotoCoreError()
     assert request(method='POST', data=values)['status'] == 303
+    from pmxbot.jobs import JobStore, process_job
+
+    store = JobStore(cache.database)
+    process_job(store, store.claim(), pmxbot.config)
     _, child = cache.get_album_page(42)
     assert child['id'] != 42
     client.put_object.side_effect = None
@@ -1558,8 +1616,7 @@ def test_variation_capability_disables_unsupported_source(variation, case):
                 (json.dumps(metadata),),
             )
     soup = BeautifulSoup(request()['body'], 'html.parser')
-    assert soup.select_one('#variation-capability')['data-available'] == 'false'
-    assert soup.select_one('button[type=submit]').has_attr('disabled')
+    assert soup.select_one('#variation-form button[type=submit]').has_attr('disabled')
     assert request(method='POST', data=values)['status'] == 409
     post.assert_not_called()
 
@@ -1570,9 +1627,14 @@ def test_variation_file_save_failure_is_safe(variation, monkeypatch):
     monkeypatch.setattr(
         ImageCache, 'save', Mock(side_effect=OSError('secret disk detail'))
     )
-    assert request(method='POST', data=values)['status'] == 303
-    result = request('/albums/42?source_image_id=42')
-    assert 'check image storage' in result['body']
+    from pmxbot.jobs import JobStore, process_job
+
+    submitted = request(method='POST', data=values)
+    assert submitted['status'] == 303
+    store = JobStore(cache.database)
+    process_job(store, store.claim(), pmxbot.config)
+    result = request(submitted['headers']['Location'][len('/bot') :])
+    assert 'Generation failed' in result['body']
     assert 'secret disk detail' not in result['body']
     assert cache.get_image(42) == before
     with sqlite3.connect(cache.database) as db:

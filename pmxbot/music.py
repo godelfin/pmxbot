@@ -343,15 +343,23 @@ def album_prompt(album):
 
 
 def generate_album_image(
-    library, cache, album_id, nick='', channel='', *, include_metadata=True
+    library,
+    cache,
+    album_id,
+    nick='',
+    channel='',
+    *,
+    include_metadata=True,
+    snapshot=None,
+    exact_prompt=None,
 ):
     """Generate/cache an existing album's image; failed requests keep the album."""
-    album = library.get_album(album_id)
+    album = snapshot if snapshot is not None else library.get_album(album_id)
     if not include_metadata:
         album = dict(
             album, genre=None, description=None, format=None, format_description=None
         )
-    prompt = album_prompt(album)
+    prompt = exact_prompt if exact_prompt is not None else album_prompt(album)
     try:
         # Snapshot only properties used by this initial prompt. Band annotations
         # are supported by variations, but not included in initial generation.
