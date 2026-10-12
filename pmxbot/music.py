@@ -363,9 +363,16 @@ def generate_album_image(
     try:
         # Snapshot only properties used by this initial prompt. Band annotations
         # are supported by variations, but not included in initial generation.
+        # Existing durable IRC snapshots omit artist identity. Resolve only that
+        # stable ID; names, creative properties and prompt stay frozen at enqueue.
+        artist_id = (
+            album['artist_id']
+            if 'artist_id' in album
+            else library.get_album(album_id)['artist_id']
+        )
         inputs = dict(
             album_id=album['id'],
-            artist_id=album['artist_id'],
+            artist_id=artist_id,
             source_image_id=None,
             artist_name=album['artist_name'],
             title=album['title'],

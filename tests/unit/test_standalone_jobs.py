@@ -94,6 +94,26 @@ def test_music_persistence_settings_and_restart_delivery(
     image = cache.get_image(done['result_image_id'])
     assert image['prompt'] == frozen['prompt']
     assert image['requested_by'] == 'alice' and image['channel'] == '#music'
+    metadata = json.loads(image['generation_metadata_json'])
+    assert metadata['generation_inputs'] == dict(
+        album_id=1,
+        artist_id=MusicLibrary(cache.database).get_album(1)['artist_id'],
+        source_image_id=None,
+        artist_name=frozen['album']['artist_name'],
+        title=frozen['album']['title'],
+        **dict.fromkeys(
+            (
+                'genre',
+                'format',
+                'format_description',
+                'description',
+                'artist_genre',
+                'artist_description',
+            ),
+            '',
+        ),
+    )
+    assert metadata['generation_request'] == post.call_args.kwargs['json']
     if api == 'responses':
         payload = post.call_args.kwargs['json']
         assert payload['input'] == frozen['prompt']

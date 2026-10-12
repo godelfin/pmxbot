@@ -126,6 +126,8 @@ PNG bytes, multipart file handles and authentication headers are not recorded.
 The existing provider response metadata, prompt and `settings_json` are retained.
 
 Snapshots are written with the generated image and survive cache hits and upload
-retries unchanged. Older images are not backfilled from current album properties,
+retries unchanged. Queued generation uses its frozen creative properties, prompt
+and settings; older IRC queue snapshots that omit the artist ID resolve only that
+stable canonical ID when generating, without replacing the queued names or text. Older images are not backfilled from current album properties,
 since their original inputs cannot be reliably inferred. This change stores
 metadata only; structured regenerations still create distinct immutable images.
