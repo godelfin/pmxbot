@@ -320,8 +320,8 @@ def test_music_result_ids_persist_and_distinguish_albums(config, post):
         ).fetchone()
         Path(row[0]).unlink()
         db.execute('UPDATE image_cache SET hosted_url = NULL')
-    assert result(first['id']) == first_result
-    assert post.call_count == 3
+    assert 'refusing to replace immutable artwork' in result(first['id'])[0]
+    assert post.call_count == 2
 
 
 def test_music_strips_metadata_before_album_prompt(config, post, monkeypatch):
@@ -1855,3 +1855,147 @@ def test_continuation_source_id_validation(config, responses_post, source_id):
     with pytest.raises(images.ImageError, match='Invalid source image ID'):
         cache.continue_image(source_id, 'blue')
     responses_post.assert_not_called()
+
+
+@pytest.mark.parametrize('backend', ['images', 'responses'])
+@pytest.mark.parametrize('include_metadata', [True, False])
+def test_initial_album_generation_metadata(
+    config, responses_post, backend, include_metadata
+):
+    config.update(
+        image_api=backend,
+        images_model='gpt-image-1',
+        images_size='1536x1024',
+        images_quality='medium',
+    )
+    if backend == 'images':
+        responses_post.return_value.json.return_value = {
+            'data': [{'b64_json': base64.b64encode(PNG).decode()}]
+        }
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album(
+        'Band',
+        'Album',
+        genre='Rock',
+        format='Vinyl',
+        format_description='Deluxe',
+        description='Exact\nvisual cue',
+    )
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            'UPDATE artists SET genre = ?, description = ? WHERE id = ?',
+            ('Jazz', 'Band annotation', album['artist_id']),
+        )
+    generate_album_image(library, cache, album['id'], include_metadata=include_metadata)
+    saved = dict(read_row(cache))
+    metadata = json.loads(saved['generation_metadata_json'])
+    assert metadata['api'] == backend
+    inputs = metadata['generation_inputs']
+    assert inputs == dict(
+        album_id=album['id'],
+        artist_id=album['artist_id'],
+        source_image_id=None,
+        artist_name='Band',
+        title='Album',
+        genre='Rock' if include_metadata else '',
+        format='Vinyl' if include_metadata else '',
+        format_description='Deluxe' if include_metadata else '',
+        description='Exact\nvisual cue' if include_metadata else '',
+        artist_genre='',
+        artist_description='',
+    )
+    request = responses_post.call_args.kwargs['json']
+    assert metadata['generation_request'] == request
+    if backend == 'images':
+        assert request == dict(cache.settings, prompt=saved['prompt'], n=1)
+    else:
+        assert request['input'] == saved['prompt']
+        assert request['tools'] == [dict(cache.settings, type='image_generation')]
+        assert request['model'] == cache.responses_model
+        assert request['store'] is True
+        assert 'previous_response_id' not in request
+    # Subsequent canonical edits and cache hits must not rewrite the snapshot.
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            "UPDATE albums SET description = 'Later change' WHERE id = ?",
+            (album['id'],),
+        )
+    cache.get(saved['prompt'], inputs=dict(inputs, description='Unrelated draft'))
+    assert (
+        cache.get_image(saved['id'])['generation_metadata_json']
+        == saved['generation_metadata_json']
+    )
+    assert responses_post.call_count == 1
+    assert 'openai-secret' not in saved['generation_metadata_json']
+
+
+@pytest.mark.parametrize('backend', ['images', 'responses'])
+def test_album_regeneration_metadata_without_deduplication(
+    config, responses_post, backend
+):
+    from dataclasses import asdict, replace
+    from pmxbot.music import GenerationInputs, generate_album_variation
+
+    config['image_api'] = backend
+    if backend == 'images':
+        responses_post.return_value.json.return_value = {
+            'data': [{'b64_json': base64.b64encode(PNG).decode()}]
+        }
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
+    generate_album_image(library, cache, album['id'])
+    source = dict(read_row(cache))
+    draft = replace(
+        GenerationInputs.from_source(album, source),
+        genre='Rock',
+        artist_genre='Jazz',
+        format='Vinyl',
+        format_description='Deluxe',
+        description='Exact\nvisual cue',
+        artist_description='Band annotation',
+    )
+    children = []
+    for number in range(2):
+        responses_post.return_value.json.return_value['id'] = 'resp_child{}'.format(
+            number
+        )
+        child = generate_album_variation(library, cache, source['id'], draft)
+        children.append(child)
+        metadata = json.loads(child['generation_metadata_json'])
+        assert metadata['generation_inputs'] == asdict(draft)
+        assert child['parent_image_id'] == source['id']
+        request = responses_post.call_args.kwargs[
+            'json' if backend == 'responses' else 'data'
+        ]
+        assert metadata['generation_request'] == request
+        if backend == 'responses':
+            assert request['input'] == child['prompt']
+            assert request['previous_response_id'] == 'resp_root'
+        else:
+            assert request == dict(cache.settings, prompt=child['prompt'], n=1)
+            assert 'files' in responses_post.call_args.kwargs
+    assert children[0]['id'] != children[1]['id']
+    assert responses_post.call_count == 3
+    assert cache.get_image(source['id']) == source
+    with sqlite3.connect(cache.database) as db:
+        assert db.execute('SELECT COUNT(*) FROM image_cache').fetchone()[0] == 3
+        assert db.execute('SELECT COUNT(*) FROM album_images').fetchone()[0] == 3
+        assert (
+            db.execute(
+                'SELECT genre FROM albums WHERE id = ?', (album['id'],)
+            ).fetchone()[0]
+            is None
+        )
+
+
+def test_unstored_responses_request_metadata(config, responses_post):
+    config['responses_store'] = False
+    cache = images.ImageCache(config)
+    library = MusicLibrary(cache.database)
+    album = library.create_album('Band', 'Album')
+    generate_album_image(library, cache, album['id'])
+    metadata = json.loads(read_row(cache)['generation_metadata_json'])
+    assert metadata['generation_request']['store'] is False
+    assert metadata['generation_request'] == responses_post.call_args.kwargs['json']

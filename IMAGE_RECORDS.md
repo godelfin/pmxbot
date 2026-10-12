@@ -105,3 +105,29 @@ are preserved, with NULL ancestry; historical parents cannot be inferred.
 Back up the database before deployment. The earlier F1 numeric-ID prerequisite
 still applies. Read-only retrieval does not migrate storage: pre-F4 records
 lack the dictionary field until an image-cache connection initializes the schema.
+
+## Album generation metadata
+
+New album artwork and structured regenerations persist the exact creative inputs
+in `generation_metadata_json.generation_inputs`, alongside the canonical album
+and artist identity. Initial artwork has a null `source_image_id`; regenerations
+record the selected source ID and retain the immutable `parent_image_id` link.
+Empty creative values are stored as empty strings. When the initial generation
+omits album metadata, the omitted properties are recorded as empty, even if the
+canonical album contains them. Initial prompts do not include band genre or band
+description annotations, so those effective inputs are empty as well.
+
+Both API backends also persist `generation_request`: the exact Images request
+parameters or Responses JSON payload sent to OpenAI. It includes the prompt,
+requested models/settings/defaults, and, for Responses, the image tool,
+`tool_choice`, storage policy and optional `previous_response_id`. Images edits
+retain their source identity through the structured inputs and ancestry link;
+PNG bytes, multipart file handles and authentication headers are not recorded.
+The existing provider response metadata, prompt and `settings_json` are retained.
+
+Snapshots are written with the generated image and survive cache hits and upload
+retries unchanged. Queued generation uses its frozen creative properties, prompt
+and settings; older IRC queue snapshots that omit the artist ID resolve only that
+stable canonical ID when generating, without replacing the queued names or text. Older images are not backfilled from current album properties,
+since their original inputs cannot be reliably inferred. This change stores
+metadata only; structured regenerations still create distinct immutable images.

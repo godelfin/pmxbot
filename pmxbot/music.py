@@ -361,7 +361,28 @@ def generate_album_image(
         )
     prompt = exact_prompt if exact_prompt is not None else album_prompt(album)
     try:
-        url = cache.get(prompt, nick, channel)
+        # Snapshot only properties used by this initial prompt. Band annotations
+        # are supported by variations, but not included in initial generation.
+        # Existing durable IRC snapshots omit artist identity. Resolve only that
+        # stable ID; names, creative properties and prompt stay frozen at enqueue.
+        artist_id = (
+            album['artist_id']
+            if 'artist_id' in album
+            else library.get_album(album_id)['artist_id']
+        )
+        inputs = dict(
+            album_id=album['id'],
+            artist_id=artist_id,
+            source_image_id=None,
+            artist_name=album['artist_name'],
+            title=album['title'],
+            **{
+                field: album.get(field) or ''
+                for field in GenerationInputs.creative_fields
+            },
+        )
+        inputs.update(artist_genre='', artist_description='')
+        url = cache.get(prompt, nick, channel, inputs=inputs)
     except Exception as exc:
         try:
             library.record_image_failure(album_id, prompt, nick, channel, exc)
