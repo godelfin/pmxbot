@@ -27,4 +27,9 @@ git reset --hard origin/main
     '.[viewer]'
 /home/ircbot/venv/bin/python3 -m pip check
 
-sudo -n /usr/bin/systemctl restart ircbot.service
+sudo -n /usr/bin/systemctl restart ircbot.service pmxbotweb.service
+
+# Only opt-in deployments provision and enable the shared worker unit.
+if /usr/bin/systemctl is-enabled --quiet pmxbot-generation-worker.service 2>/dev/null; then
+    sudo -n /usr/bin/systemctl restart pmxbot-generation-worker.service
+fi

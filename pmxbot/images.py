@@ -1223,6 +1223,8 @@ def _start_image(rest, channel, nick, acknowledgement, album_data=None):
     "Start or queue an image request with a command-specific acknowledgement."
     if not pmxbot.config.get('images_enabled', False):
         return 'Image generation is disabled; configure images_enabled to enable it.'
+    if album_data is not None and pmxbot.config.get('irc_generation_standalone', False):
+        return _queue_music(album_data, channel, nick)
     started = _busy.acquire(blocking=False)
     if not started and _pending.full():
         return 'The image request queue is full; please try again shortly.'
@@ -1260,6 +1262,58 @@ def _start_image(rest, channel, nick, acknowledgement, album_data=None):
             _busy.release()
         return 'Could not start image request; check the image configuration.'
     return acknowledgement
+
+
+def _queue_music(album_data, channel, nick):
+    try:
+        from .jobs import JobStore
+
+        cache = ImageCache(pmxbot.config)
+        library = MusicLibrary(cache.database)
+        album = library.create_album(**album_data, created_by=nick)
+        JobStore(cache.database).enqueue_music(
+            library.get_album(album['id']), cache, nick, channel
+        )
+        return f"Album cover queued... {_album_details(album)}; #{album['id']}"
+    except Exception as exc:  # noqa: BLE001 - never expose credentials in IRC
+        log.error('Could not enqueue IRC generation (%s)', type(exc).__name__)
+        return 'Could not queue album cover; check the bot configuration.'
+
+
+@execdelay('durable music results', None, 1, repeat=True)
+def durable_music_results():
+    # Drain persisted notifications even after switching back to local generation.
+
+    if not pmxbot.config.get('images_enabled', False):
+        return
+    try:
+        cache = ImageCache(pmxbot.config)
+        # Avoid creating a job database just to poll legacy-only deployments.
+        if not cache.database.is_file():
+            return
+        with closing(cache.read_connection()) as db:
+            if not db.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'generation_jobs'"
+            ).fetchone():
+                return
+        from .jobs import JobStore
+
+        store = JobStore(cache.database)
+        job = store.take_irc_result()
+        if not job:
+            return
+        if job['status'] == 'failed':
+            result = job['error']
+        else:
+            image = cache.get_image(job['result_image_id'])
+            result = f"#{job['album_id']} {image['hosted_url']}\n{_album_url(job['album_id'])}"
+    except LookupError:
+        return
+    except Exception as exc:  # noqa: BLE001 - scheduled polling must keep running
+        log.error('Could not deliver IRC generation (%s)', type(exc).__name__)
+        return
+    yield SwitchChannel(job['channel'])
+    yield from f"{job['requested_by']}: {result}".splitlines()
 
 
 @execdelay('image results', None, 1, repeat=True)
