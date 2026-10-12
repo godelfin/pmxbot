@@ -294,7 +294,19 @@ class ImageCache:
 
     def variation_capability(self, image):
         if self.image_api == 'responses':
-            return self.continuation_capability(image)
+            if response_reference(image):
+                return self.continuation_capability(image)
+            try:
+                self.read_reference_png(image['local_filename'])
+            except ImageError:
+                return (
+                    False,
+                    'Legacy-image bootstrap unavailable: the source PNG is missing, unreadable, invalid, or too large.',
+                )
+            message = 'Legacy-image bootstrap available: uploads the saved artwork once as a visual reference.'
+            if not self.responses_store:
+                message += ' Responses storage is disabled; later variations will require another bootstrap.'
+            return True, message
         if (
             not self.settings['model'].startswith('gpt-image-')
             and self.settings['model'] != 'chatgpt-image-latest'
@@ -315,10 +327,6 @@ class ImageCache:
         return True, 'Images variation available using the saved source PNG.'
 
     def vary_image(self, source_image_id, prompt, nick='', channel='', *, inputs):
-        if self.image_api == 'responses':
-            return self.continue_image(
-                source_image_id, prompt, nick, channel, inputs=inputs
-            )
         if type(source_image_id) is not int or not 0 < source_image_id <= 2**63 - 1:
             raise ImageError('Invalid source image ID.')
         try:
@@ -329,6 +337,10 @@ class ImageCache:
             raise ImageError(
                 'Could not read the source; check image storage.'
             ) from None
+        if self.image_api == 'responses' and response_reference(source):
+            return self.continue_image(
+                source_image_id, prompt, nick, channel, inputs=inputs
+            )
         available, message = self.variation_capability(source)
         if not available:
             raise ImageError(message)
@@ -843,7 +855,16 @@ class ImageCache:
                         prompt, previous_response_id
                     )
                 elif source_filename:
-                    image, metadata = self.generate_edit(prompt, source_filename)
+                    if self.image_api == 'responses':
+                        image, metadata = self.generate_responses(
+                            prompt, source_filename=source_filename
+                        )
+                        metadata['bootstrap'] = {
+                            'source_image_id': parent_image_id,
+                            'reference_input_mode': 'input_image_data_url',
+                        }
+                    else:
+                        image, metadata = self.generate_edit(prompt, source_filename)
                 else:
                     image, metadata = self.generate(prompt)
                 if inputs is not None:
@@ -1023,7 +1044,26 @@ class ImageCache:
         except (KeyError, IndexError, TypeError, ValueError, binascii.Error):
             raise ImageError('OpenAI returned no valid PNG image.') from None
 
-    def generate_responses(self, prompt, previous_response_id=None):
+    @staticmethod
+    def read_reference_png(filename):
+        # Bound both memory use and the encoded input (20 MB API URL limit).
+        limit = 14 * 1024 * 1024
+        try:
+            if not Path(filename or '').is_file():
+                raise OSError('Source is not a regular file')
+            with open(filename or '', 'rb') as stream:
+                image = stream.read(limit + 1)
+        except (OSError, ValueError, TypeError):
+            raise ImageError(
+                'Could not read the source PNG; check image storage.'
+            ) from None
+        if len(image) > limit or not image.startswith(b'\x89PNG\r\n\x1a\n'):
+            raise ImageError('Source image must be a PNG no larger than 14 MiB.')
+        return image
+
+    def generate_responses(
+        self, prompt, previous_response_id=None, *, source_filename=None
+    ):
         tool = dict(self.settings, type='image_generation')
         request = dict(
             model=self.responses_model,
@@ -1034,6 +1074,21 @@ class ImageCache:
         )
         if previous_response_id:
             request['previous_response_id'] = previous_response_id
+        elif source_filename:
+            image = self.read_reference_png(source_filename)
+            request['input'] = [
+                {
+                    'role': 'user',
+                    'content': [
+                        {'type': 'input_text', 'text': prompt},
+                        {
+                            'type': 'input_image',
+                            'image_url': 'data:image/png;base64,'
+                            + base64.b64encode(image).decode('ascii'),
+                        },
+                    ],
+                }
+            ]
         try:
             data = post_json(
                 'https://api.openai.com/v1/responses',
@@ -1097,6 +1152,24 @@ class ImageCache:
                     name: item[name] for name in self.settings if name in item
                 },
             }
+            if source_filename and not previous_response_id:
+                # Persist reproducible provenance without duplicating the bitmap
+                # in SQLite or exposing it in metadata displays.
+                metadata['generation_request'] = dict(
+                    request,
+                    input=[
+                        {
+                            'role': 'user',
+                            'content': [
+                                {'type': 'input_text', 'text': prompt},
+                                {
+                                    'type': 'input_image',
+                                    'image_url': '[saved source PNG]',
+                                },
+                            ],
+                        }
+                    ],
+                )
             return image, metadata
         except (KeyError, TypeError, ValueError, binascii.Error):
             raise ImageError(
