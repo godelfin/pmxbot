@@ -35,17 +35,21 @@
     else if (item.right > bounds.right) strip.scrollBy({left: item.right - bounds.right + 8, behavior: motion()});
   }
   reveal(links.find(link => link.dataset.imageId === selected));
-  strip.addEventListener('keydown', event => {
-    if (event.target.closest('input, textarea, select, [contenteditable]')) return;
+  document.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.target.closest('input, textarea, select, [contenteditable], [role=textbox]') || document.querySelector('dialog[open]')) return;
+    const arrow = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
+    if (!arrow && !strip.contains(event.target)) return;
+    if (arrow && !strip.contains(event.target) && !event.target.closest('.history-controls, .artwork-preview') && event.target.closest('a, button')) return;
     const link = event.target.closest('a[data-image-id]') || links.find(link => link.dataset.imageId === selected);
     const index = links.indexOf(link);
-    if (index < 0 || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (index < 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
     const destinations = {ArrowLeft: Math.max(0, index - 1), ArrowRight: Math.min(links.length - 1, index + 1), Home: 0, End: links.length - 1};
     if (event.key in destinations) {
       event.preventDefault();
       const target = links[destinations[event.key]];
       target.focus({preventScroll: true});
       reveal(target);
+      if (arrow && target !== link) select(target.href);
     } else if (event.key === ' ' || (event.key === 'Enter' && event.target === strip)) {
       event.preventDefault();
       link.click();

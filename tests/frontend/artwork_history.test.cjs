@@ -89,7 +89,9 @@ for (const width of [360, 1400]) test(`single row, keyboard focus, overflow boun
   await page.waitForFunction(() => document.querySelector('#history-left').disabled);
   await page.keyboard.press('ArrowRight');
   assert.equal(await page.locator(':focus').getAttribute('data-image-id'), '61');
-  assert.equal(await page.locator('[name=source_image_id]').inputValue(), '42');
+  await selected(page, 61);
+  await page.keyboard.press('ArrowLeft'); await selected(page, 62);
+  await page.keyboard.press('ArrowRight'); await selected(page, 61);
   await page.keyboard.press(' '); await selected(page, 61);
   await page.locator('[name=description]').focus();
   await page.keyboard.press('Home');
@@ -167,5 +169,36 @@ test('selection disables submission while loading and submits the selected sourc
   assert.equal(submitted.get('description'), 'draft for 43');
   await thumbnail(page, 42).click(); await selected(page, 42);
   assert.equal(await page.locator('[name=description]').inputValue(), 'draft for 42');
+  await page.close();
+});
+
+test('arrows select artwork from page focus and scroll controls without overriding editing or dialogs', async () => {
+  const page = await setup();
+  await page.keyboard.press('ArrowLeft'); await selected(page, 43);
+  await page.keyboard.press('ArrowLeft'); await selected(page, 44);
+  await page.keyboard.press('ArrowRight'); await selected(page, 43);
+  await page.locator('#history-left').click();
+  await page.keyboard.press('ArrowLeft'); await selected(page, 44);
+  await page.locator('[name=description]').fill('keep this draft');
+  await page.keyboard.press('ArrowLeft');
+  assert.equal(await page.locator('[name=source_image_id]').inputValue(), '44');
+  await page.locator('[name=genre]').focus();
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await page.locator('[name=source_image_id]').inputValue(), '44');
+  await thumbnail(page, 43).click(); await selected(page, 43);
+  await page.locator('.artwork-preview').click();
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await page.locator('[name=source_image_id]').inputValue(), '43');
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('ArrowRight'); await selected(page, 42);
+  await thumbnail(page, 43).click(); await selected(page, 43);
+  await thumbnail(page, 43).focus();
+  await page.keyboard.press('Control+ArrowRight');
+  assert.equal(await page.locator('[name=source_image_id]').inputValue(), '43');
+  await page.keyboard.press('End');
+  assert.equal(await page.locator(':focus').getAttribute('data-image-id'), '42');
+  await page.keyboard.press('Enter'); await selected(page, 42);
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await page.locator('[name=source_image_id]').inputValue(), '42');
   await page.close();
 });
