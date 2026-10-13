@@ -282,7 +282,7 @@ does not pair IRC sessions or grant access based on IRC attribution strings.
 Background artwork generation
 -----------------------------
 
-Album variation POSTs validate the six creative properties, persist a job in the
+Album Create New and Edit POSTs validate the six creative properties, persist a job in the
 main SQLite database, and return JSON (202) to JavaScript on the album page.
 A gray Artwork history thumbnail shows a loading spinner while JavaScript polls
 the job every five seconds. Completion reloads the album with the generated
@@ -484,11 +484,22 @@ marked failed. Check album history and local artwork before manually submitting
 another variation; that explicit new submission may incur another API charge.
 The executor never automatically requeues a failed or abandoned job.
 
-F34 (#39) is not merged. Exact inputs/settings/source requests already queued or
-running are reused atomically within the same account or anonymous session.
-Different owners remain separate to avoid revealing private jobs. There is no
-new existing-artwork equivalence algorithm. F34's future shared lookup should
-run after validation and before ``JobStore.enqueue``; its versioned generation
-identity can replace the exact JSON comparison without changing job lifecycle
-or executor provider logic. Completed and failed jobs are currently not reused.
-There are no queue caps, per-user quotas, job expiration or automatic retries.
+Create New builds a standalone prompt from all six selected properties and uses
+fresh generation, without a source PNG or Responses continuation context. Edit
+uses the highlighted image: the Images API uploads its saved PNG to the editing
+endpoint, while the Responses API continues its stored response context. Legacy
+images without usable Responses context cannot be edited through Responses; the
+page explains the limitation and keeps Create New available. Both operations
+save complete structured properties, operation metadata and requester attribution.
+Edit results are immutable children of the selected source; Create New results
+have no parent. Existing artwork and canonical album properties are unchanged.
+
+Each explicit submission carries a random token. Retries with the same token
+reuse its job, even after completion; different tokens create separate jobs even
+with identical properties and while another request is pending. Reusing a token
+with changed inputs returns a conflict. JavaScript prevents double clicks and
+renews the token after acceptance; without JavaScript, the form redirects to the
+job page and returning to the album supplies a new token. The existing internal
+pending deduplication for older callers and IRC prompt caching remain unchanged.
+Explicit artwork operations bypass prompt caching and any future F34 equivalence
+lookup. F34 (#39) and legacy-to-Responses editing F35 (#40) are deferred.

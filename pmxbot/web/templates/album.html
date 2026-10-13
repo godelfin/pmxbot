@@ -111,6 +111,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 <li>
 <a data-image-id="{{ historical_image.id }}" href="{{ base }}/albums/{{ album.id }}?source_image_id={{ historical_image.id }}"{% if image and image.id == historical_image.id %} class="current-image" aria-current="page"{% endif %}>
 {% if historical_image.image_url %}<img src="{{ historical_image.image_url }}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" />{% elif not image or image.id != historical_image.id %}<span>Artwork unavailable</span>{% endif %}
+{% if historical_image.operation %}<small>{{ 'Create New' if historical_image.operation == 'create_new' else 'Edit' }}</small>{% endif %}
 <span>{% if image and image.id == historical_image.id %}Currently viewing{% else %}View{% endif %} image #{{ historical_image.id }}</span>
 </a>
 </li>
@@ -138,14 +139,15 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 </section>
 {% if album %}
 <section class="image-section" aria-labelledby="album-heading">
-<h2 id="album-heading">{% if draft %}Generate an image variation{% else %}Album details{% endif %}</h2>
+<h2 id="album-heading">{% if draft %}Generate album artwork{% else %}Album details{% endif %}</h2>
 <div class="album-details">
 {% if draft %}
 {% if variation_error %}<p id="variation-error" role="alert">{{ variation_error }}</p>{% endif %}
 <p id="generation-error" role="alert" hidden></p>
 <form id="variation-form" method="POST" action="{{ base }}/albums/{{ album.id }}">
+<input type="hidden" name="submission_token" value="{{ submission_token }}" />
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-<input type="hidden" name="source_image_id" value="{{ draft.source_image_id }}" />
+<input type="hidden" name="source_image_id" value="{{ draft.source_image_id or '' }}" />
 {% endif %}
 <dl class="image-details">
 <dt>Band</dt><dd id="album-band">{{ album.artist_name }}</dd>
@@ -165,9 +167,11 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 {% endfor %}
 </dl>
 {% if draft %}
-<button type="submit"{% if not variation_available or not current_user %} disabled{% endif %}>Generate variation</button>
+<button type="submit" name="operation" value="create_new"{% if not create_available or not current_user %} disabled{% endif %}>Create New</button>
+<button type="submit"{% if not variation_available or not current_user %} disabled{% endif %} name="operation" value="edit">Edit</button>
+<p id="edit-capability">{{ variation_message }}</p>
 {% if not current_user %}
-<a id="variation-sign-in" href="{{ base }}/login?return_to={{ (base ~ '/albums/' ~ album.id ~ '?source_image_id=' ~ draft.source_image_id)|urlencode }}">Sign in</a>
+<a id="variation-sign-in" href="{{ base }}/login?return_to={{ (base ~ '/albums/' ~ album.id ~ ('?source_image_id=' ~ draft.source_image_id if draft.source_image_id else ''))|urlencode }}">Sign in</a>
 {% endif %}
 </form>
 {% endif %}
@@ -247,9 +251,8 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
   const form = document.getElementById('variation-form');
   const history = document.getElementById('image-history');
   const error = document.getElementById('generation-error');
-  const button = form && form.querySelector('button[type=submit]');
-  const available = () => button && button.dataset.available === "true";
-  if (button) button.dataset.available = String(!button.disabled);
+  const buttons = form ? [...form.querySelectorAll('button[type=submit]')] : [];
+  buttons.forEach(button => button.dataset.available = String(!button.disabled));
   const pending = new Map();
   let submitting = false;
   const headers = { Accept: 'application/json' };
@@ -262,7 +265,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
   }
 
   function updateButton() {
-    if (button) button.disabled = !available() || submitting || pending.size > 0 || history.getAttribute("aria-busy") === "true";
+    buttons.forEach(button => button.disabled = button.dataset.available !== "true" || submitting || pending.size > 0 || history.getAttribute("aria-busy") === "true");
   }
 
   function placeholder() {
@@ -278,7 +281,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
     const label = document.createElement('span');
     label.className = 'generation-status';
     label.setAttribute('role', 'status');
-    label.textContent = 'Submitting variation…';
+    label.textContent = 'Submitting artwork…';
     item.append(box, label);
     history.prepend(item);
     return item;
@@ -348,19 +351,22 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
   if (!form) return;
   form.addEventListener('submit', async event => {
     event.preventDefault();
-    if (!available() || pending.size || button.disabled) return;
+    const button = event.submitter || buttons[0];
+    if (!button || button.dataset.available !== 'true' || submitting || pending.size || button.disabled) return;
     submitting = true;
-    button.disabled = true;
+    updateButton();
     error.hidden = true;
     const item = placeholder();
+    const body = new URLSearchParams(new FormData(form));
+    body.set('operation', button.value);
     try {
       const response = await fetch(form.action, {
-        method: 'POST', headers, body: new URLSearchParams(new FormData(form))
+        method: 'POST', headers, body
       });
       if (!response.ok) {
         let message = response.status === 401
-          ? 'Sign in before generating a variation. Reload this page after signing in.'
-          : 'Could not submit this variation. Check the form or reload the page and try again.';
+          ? 'Sign in before generating artwork. Reload this page after signing in.'
+          : 'Could not submit this artwork. Check the form or reload the page and try again.';
         if ((response.headers.get('Content-Type') || '').includes('application/json')) {
           message = (await response.json()).error || message;
         }
@@ -370,6 +376,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
         return;
       }
       const job = await response.json();
+      form.elements.submission_token.value = job.submission_token;
       track(job.status_url, item);
     } catch (failure) {
       item.remove();

@@ -47,7 +47,7 @@ class GenerationInputs:
     def from_source(cls, album, image):
         from .images import generation_metadata
 
-        saved = generation_metadata(image).get('generation_inputs', {})
+        saved = generation_metadata(image).get('generation_inputs', {}) if image else {}
         if not isinstance(saved, dict):
             saved = {}
         properties = {
@@ -64,7 +64,7 @@ class GenerationInputs:
         return cls(
             album_id=album['id'],
             artist_id=album['artist_id'],
-            source_image_id=image['id'],
+            source_image_id=image['id'] if image else 0,
             artist_name=album['artist_name'],
             title=album['title'],
             **properties,
@@ -393,6 +393,32 @@ def generate_album_image(
     return url
 
 
+def generate_album_new(library, cache, inputs, nick='', channel=''):
+    """Create standalone artwork with a unique request identity, never a cache hit."""
+    from dataclasses import replace
+
+    inputs = replace(inputs, source_image_id=0)
+    prompt = artwork_prompt(inputs)
+    try:
+        return cache.create_image(prompt, nick, channel, inputs=asdict(inputs))
+    except Exception as exc:
+        library.record_image_failure(inputs.album_id, prompt, nick, channel, exc)
+        raise
+
+
+def artwork_prompt(inputs):
+    prompt = album_prompt(inputs.album_properties())
+    for field, label in (
+        ('artist_genre', 'Band genre'),
+        ('artist_description', 'Band description'),
+    ):
+        if getattr(inputs, field):
+            prompt += (
+                f' {label}: {json.dumps(getattr(inputs, field), ensure_ascii=False)}.'
+            )
+    return prompt
+
+
 def generate_album_variation(
     library, cache, source_image_id, inputs, nick='', channel=''
 ):
@@ -445,16 +471,8 @@ def continue_album_image(
         raise ImageError(str(exc)) from None
     prompt = (
         'Continue the source artwork with this release interpretation: '
-        + album_prompt(inputs.album_properties())
+        + artwork_prompt(inputs)
     )
-    for field, label in (
-        ('artist_genre', 'Band genre'),
-        ('artist_description', 'Band description'),
-    ):
-        if getattr(inputs, field):
-            prompt += (
-                f' {label}: {json.dumps(getattr(inputs, field), ensure_ascii=False)}.'
-            )
     try:
         operation = cache.vary_image if variation else cache.continue_image
         return operation(source_image_id, prompt, nick, channel, inputs=asdict(inputs))
