@@ -14,8 +14,9 @@ through Playwright's request interception. No provider credentials or live image
 services are used. The dedicated GitHub Actions workflow runs them in Chromium.
 
 The history strip supports native horizontal scrolling and arrow buttons.
-While a thumbnail has focus, Left/Right moves focus, Home/End reaches either end,
-and Enter/Space selects. Focus movement does not select artwork. Variation edits
+Left/Right selects adjacent artwork, except while typing in a form field or
+viewing the full-size dialog. In history, Home/End moves focus to either end,
+and Enter/Space selects. Home/End focus movement does not select artwork. Variation edits
 are remembered separately for each image until the page is closed or refreshed.
 During a selection request, submission is disabled. Failed requests retain the
 previous image, matching source and draft; Retry repeats the failed selection.
