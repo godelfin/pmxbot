@@ -13,6 +13,15 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 .album-navigation { display: flex; gap: .75rem; }
 .album-navigation a, .album-navigation button { flex: 1; padding: .5rem .75rem; border: 1px solid #d4dbe2; border-radius: .25rem; background: #fff; font: inherit; text-align: center; text-decoration: none; }
 .album-navigation button:disabled { color: #6b7280; background: #edf0f3; }
+.album-navigation kbd { display: block; font: inherit; font-size: .6875rem; }
+.sr-only, .image-history .generation-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.history-unavailable { display: grid; place-items: center; width: 100%; aspect-ratio: 1; background: #edf0f3; }
+.history-unavailable::before { content: '◇'; font-size: 2rem; }
+.image-history .generation-job-link { font-size: 0; }
+.image-history .generation-job-link::after { content: '↗'; font-size: 1rem; }
+.image-section summary { cursor: pointer; }
+.image-section summary h2 { display: inline; }
+.image-section summary:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 .image-sidebar .image-details { grid-template-columns: minmax(0, 6rem) minmax(0, 1fr); gap: .4rem .75rem; }
 .image-content { display: grid; gap: 1.25rem; min-width: 0; }
 .image-section { min-width: 0; padding: 1.25rem; background: white; border: 1px solid #d4dbe2; border-radius: .5rem; overflow-wrap: anywhere; }
@@ -43,7 +52,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 .artwork-preview img { height: 100%; }
 @media (prefers-reduced-motion: reduce) { .image-history { scroll-behavior: auto; } #selected-artwork img { animation: none; } }
 .image-history li { min-width: 0; margin: 0; }
-.image-history a { display: grid; gap: .25rem; text-decoration: none; }
+.image-history a { position: relative; display: grid; gap: .25rem; text-decoration: none; }
 .image-history img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
 .image-history .current-image { font-weight: bold; }
 .pending-artwork-box { display: grid; place-items: center; width: 100%; aspect-ratio: 1; background: #d4d7db; border-radius: .25rem; }
@@ -95,10 +104,10 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 {% endblock %}</section>
 {% if image_history or draft or pending_jobs %}
 <section class="image-section" aria-labelledby="image-history-heading">
-<h2 id="image-history-heading">Artwork history</h2>
-<div class="history-controls" hidden><button type="button" id="history-left" aria-label="Scroll artwork history left" aria-controls="image-history">←</button><button type="button" id="history-right" aria-label="Scroll artwork history right" aria-controls="image-history">→</button></div>
-<p id="history-help" hidden>Left/Right selects adjacent artwork. In history, Home/End moves focus to either end; Enter/Space selects. Edited variation fields are saved for each image while this page is open.</p>
-<p id="history-status" role="status" aria-live="polite"></p><button id="history-retry" type="button" hidden>Retry selection</button>
+<h2 id="image-history-heading" class="sr-only">Artwork history</h2>
+<div class="history-controls" hidden><button type="button" id="history-left" aria-label="Scroll artwork history left" aria-controls="image-history">←</button><button type="button" id="history-right" aria-label="Scroll artwork history right" aria-controls="image-history">→</button><button id="history-retry" type="button" hidden aria-label="Retry artwork selection" title="Retry artwork selection">↻</button></div>
+<p id="history-help" class="sr-only" hidden>Left/Right selects adjacent artwork. In history, Home/End moves focus to either end. Edited variation fields are saved for each image while this page is open.</p>
+<p id="history-status" class="sr-only" role="status" aria-live="polite"></p>
 <ul class="image-history" id="image-history" tabindex="0" aria-label="Artwork history" aria-describedby="history-help">
 {% for job in pending_jobs %}
 <li class="pending-artwork" data-status-url="{{ base }}/jobs/{{ job.id }}" aria-busy="true">
@@ -110,8 +119,8 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 {% for historical_image in image_history %}
 <li>
 <a data-image-id="{{ historical_image.id }}" href="{{ base }}/albums/{{ album.id }}?source_image_id={{ historical_image.id }}"{% if image and image.id == historical_image.id %} class="current-image" aria-current="page"{% endif %}>
-{% if historical_image.image_url %}<img src="{{ historical_image.image_url }}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" />{% elif not image or image.id != historical_image.id %}<span>Artwork unavailable</span>{% endif %}
-<span>{% if image and image.id == historical_image.id %}Currently viewing{% else %}View{% endif %} image #{{ historical_image.id }}</span>
+{% if historical_image.image_url %}<img src="{{ historical_image.image_url }}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" />{% else %}<span class="history-unavailable" aria-hidden="true"></span>{% endif %}
+<span class="sr-only">{% if image and image.id == historical_image.id %}Currently viewing{% else %}View{% endif %} image #{{ historical_image.id }}</span>
 </a>
 </li>
 {% endfor %}
@@ -178,7 +187,9 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 <aside class="image-content image-sidebar" aria-label="Album navigation and image metadata">
 <nav class="album-navigation" aria-label="Album navigation">
 {% for direction, label in [('previous', 'Prev'), ('next', 'Next')] %}
-{% if neighbors[direction] %}<a href="{{ base }}/albums/{{ neighbors[direction] }}" rel="{{ 'prev' if direction == 'previous' else 'next' }}">{{ label }}</a>{% else %}<button type="button" disabled>{{ label }}</button>{% endif %}
+{% set shortcut = 'Shift+ArrowLeft' if direction == 'previous' else 'Shift+ArrowRight' %}
+{% set shortcut_label = 'Shift+←' if direction == 'previous' else 'Shift+→' %}
+{% if neighbors[direction] %}<a href="{{ base }}/albums/{{ neighbors[direction] }}" rel="{{ 'prev' if direction == 'previous' else 'next' }}" aria-keyshortcuts="{{ shortcut }}" aria-label="{{ 'Previous' if direction == 'previous' else 'Next' }} album"><span>{{ label }}</span><kbd aria-hidden="true">{{ shortcut_label }}</kbd></a>{% else %}<button type="button" disabled aria-keyshortcuts="{{ shortcut }}" aria-label="{{ 'Previous' if direction == 'previous' else 'Next' }} album"><span>{{ label }}</span><kbd aria-hidden="true">{{ shortcut_label }}</kbd></button>{% endif %}
 {% endfor %}
 </nav>
 <div id="selected-metadata">{% block selected_metadata %}
@@ -198,8 +209,10 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 {% for label, metadata in metadata_sections %}
 {% if metadata %}
 <section class="image-section" aria-labelledby="metadata-heading-{{ loop.index }}">
-<h2 id="metadata-heading-{{ loop.index }}">{{ label }}</h2>
+<details data-metadata-label="{{ label }}">
+<summary><h2 id="metadata-heading-{{ loop.index }}">{{ label }}</h2></summary>
 <pre>{{ metadata }}</pre>
+</details>
 </section>
 {% endif %}
 {% endfor %}
@@ -241,6 +254,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 })();
 </script>
 {% include "artwork_history.html" %}
+{% include "album_navigation.html" %}
 {% if draft or pending_jobs %}
 <script id="variation-script">
 (() => {

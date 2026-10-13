@@ -16,7 +16,11 @@ services are used. The dedicated GitHub Actions workflow runs them in Chromium.
 The history strip supports native horizontal scrolling and arrow buttons.
 Left/Right selects adjacent artwork, except while typing in a form field or
 viewing the full-size dialog. In history, Home/End moves focus to either end,
-and Enter/Space selects. Home/End focus movement does not select artwork. Variation edits
-are remembered separately for each image until the page is closed or refreshed.
+without selecting artwork. Shift+Left/Right opens the previous/next album,
+except in form fields and the full-size dialog. Artwork history is visually
+thumbnail-and-icon only, with accessible labels. Settings and generation
+metadata start collapsed and retain an expanded state across selections.
+Variation edits are remembered separately for each image until the page is
+closed or refreshed.
 During a selection request, submission is disabled. Failed requests retain the
 previous image, matching source and draft; Retry repeats the failed selection.

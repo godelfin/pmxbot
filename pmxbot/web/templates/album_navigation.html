@@ -1,0 +1,16 @@
+<script id="album-navigation-script">
+(() => {
+  const navigation = document.querySelector('.album-navigation');
+  if (!navigation) return;
+  document.addEventListener('keydown', event => {
+    if (event.defaultPrevented || !event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.target.closest('input, textarea, select, [contenteditable], [role=textbox]') || document.querySelector('dialog[open]')) return;
+    const direction = {ArrowLeft: 'prev', ArrowRight: 'next'}[event.key];
+    if (!direction) return;
+    const link = navigation.querySelector(`a[rel="${direction}"]`);
+    if (!link) return;
+    event.preventDefault();
+    window.location.assign(link.href);
+  });
+})();
+</script>

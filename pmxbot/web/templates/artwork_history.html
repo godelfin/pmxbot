@@ -9,6 +9,7 @@
   const retry = document.getElementById('history-retry');
   const form = document.getElementById('variation-form');
   const drafts = new Map();
+  const metadataExpansion = new Map();
   let selected = strip.querySelector('[aria-current]')?.dataset.imageId || null;
   let committedURL = location.href;
   let sequence = 0;
@@ -50,9 +51,6 @@
       target.focus({preventScroll: true});
       reveal(target);
       if (arrow && target !== link) select(target.href);
-    } else if (event.key === ' ' || (event.key === 'Enter' && event.target === strip)) {
-      event.preventDefault();
-      link.click();
     }
   });
   function rememberDraft() {
@@ -83,6 +81,8 @@
       if (form && ![...form.querySelectorAll('select, textarea')].every(field => typeof data.properties?.[field.name] === 'string')) throw new Error('selection');
       // Build all nodes before changing the visible selection.
       const nodes = {artwork: fragment(parts.artwork), metadata: fragment(parts.metadata)};
+      document.querySelectorAll('#selected-metadata details[data-metadata-label]').forEach(panel => metadataExpansion.set(panel.dataset.metadataLabel, panel.open));
+      nodes.metadata.querySelectorAll('details[data-metadata-label]').forEach(panel => { panel.open = metadataExpansion.get(panel.dataset.metadataLabel) || false; });
       const pagePosition = {left: window.scrollX, top: window.scrollY};
       rememberDraft();
       if (form) {
@@ -134,6 +134,7 @@
       failedSelection = {url, navigation};
       if (navigation) window.history.replaceState(null, '', committedURL);
       status.textContent = 'Could not load artwork. The previous image and variation edits are still displayed.';
+      retry.title = status.textContent + ' Retry selection.';
       retry.hidden = false;
     } finally {
       if (current === sequence) {
