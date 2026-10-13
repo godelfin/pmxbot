@@ -5,6 +5,15 @@ import pytest
 import pmxbot.util
 
 
+@pytest.fixture(scope='session')
+def mongodb_uri(request):
+    """Use a supplied test service without starting a local MongoDB binary."""
+    uri = request.config.getoption('mongodb_uri') or os.environ.get('MONGODB_URL')
+    if uri:
+        return uri
+    return request.getfixturevalue('mongodb_instance').get_uri()
+
+
 @pytest.fixture
 def needs_wordnik(needs_internet):
     if 'wordnik' not in dir(pmxbot.util):
