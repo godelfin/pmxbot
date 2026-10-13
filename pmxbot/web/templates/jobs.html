@@ -18,9 +18,10 @@
 {% elif job.status == 'succeeded' %}Artwork is ready.
 <a href="{{ base }}/albums/{{ job.album_id }}?source_image_id={{ job.result_image_id }}">View generated artwork</a>
 {% else %}Generation failed. {{ job.error }}{% endif %}</p>
+<p>Operation: {{ 'Create New' if job.operation == 'create_new' else 'Edit' }}</p>
 <p>Created: {{ job.created_at }} UTC</p>
 <p>You can continue browsing and return to this URL later. Bookmark it to keep track of this job.</p>
-<a href="{{ base }}/albums/{{ job.album_id }}?source_image_id={{ job.source_image_id }}">Return to album</a>
+<a href="{{ base }}/albums/{{ job.album_id }}{% if job.source_image_id %}?source_image_id={{ job.source_image_id }}{% endif %}">Return to album</a>
 {% else %}
 <ul>
 {% for item in jobs %}

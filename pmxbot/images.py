@@ -314,6 +314,17 @@ class ImageCache:
             )
         return True, 'Images variation available using the saved source PNG.'
 
+    def create_image(self, prompt, nick='', channel='', *, inputs):
+        """Explicit standalone request: fresh key, no source or Responses context."""
+        key = uuid.uuid4().hex
+        self._get(prompt, nick, channel, key, inputs=inputs, link_album=True)
+        with closing(self.read_connection()) as db:
+            return dict(
+                db.execute(
+                    'SELECT * FROM image_cache WHERE cache_key = ?', (key,)
+                ).fetchone()
+            )
+
     def vary_image(self, source_image_id, prompt, nick='', channel='', *, inputs):
         if self.image_api == 'responses':
             return self.continue_image(
@@ -567,11 +578,12 @@ class ImageCache:
             if not {'album_images', 'image_cache'} <= tables:
                 return []
             return [
-                dict(row)
+                dict(row, operation=generation_metadata(dict(row)).get('operation'))
                 for row in db.execute(
                     '''SELECT image_cache.id, image_cache.hosted_url,
                     image_cache.prompt, image_cache.requested_by,
-                    image_cache.channel, image_cache.created_at
+                    image_cache.channel, image_cache.created_at,
+                    image_cache.generation_metadata_json
                     FROM image_cache JOIN album_images USING (cache_key)
                     WHERE album_images.album_id = ?
                     ORDER BY image_cache.created_at DESC, image_cache.id DESC''',
@@ -793,6 +805,7 @@ class ImageCache:
         previous_response_id=None,
         inputs=None,
         source_filename=None,
+        link_album=False,
     ):
         if not normalize_prompt(prompt):
             raise ImageError('Usage: !image <prompt>')
@@ -848,6 +861,10 @@ class ImageCache:
                     image, metadata = self.generate(prompt)
                 if inputs is not None:
                     metadata['generation_inputs'] = inputs
+                    if link_album or parent_image_id is not None:
+                        metadata['operation'] = (
+                            'edit' if parent_image_id is not None else 'create_new'
+                        )
                 filename = self.directory / f'{key}.png'
                 db.execute('BEGIN IMMEDIATE')
                 try:
@@ -874,7 +891,9 @@ class ImageCache:
                         channel,
                         parent_image_id,
                     )
-                    if inputs is not None and parent_image_id is not None:
+                    if inputs is not None and (
+                        link_album or parent_image_id is not None
+                    ):
                         db.execute(
                             'INSERT INTO album_images (album_id, cache_key) VALUES (?, ?)',
                             (inputs['album_id'], key),
@@ -890,7 +909,7 @@ class ImageCache:
                     'UPDATE image_cache SET last_error = ? WHERE cache_key = ?',
                     (str(exc), key),
                 )
-                if parent_image_id is not None:
+                if parent_image_id is not None or link_album:
                     identifier = db.execute(
                         'SELECT id FROM image_cache WHERE cache_key = ?', (key,)
                     ).fetchone()[0]

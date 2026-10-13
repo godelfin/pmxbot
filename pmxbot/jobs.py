@@ -61,11 +61,17 @@ class JobStore:
                 ('kind', "TEXT NOT NULL DEFAULT 'variation'"),
                 ('channel', "TEXT NOT NULL DEFAULT ''"),
                 ('delivered_at', 'TEXT'),
+                ('operation', "TEXT NOT NULL DEFAULT 'edit'"),
+                ('submission_token', 'TEXT'),
             ):
                 if name not in columns:
                     db.execute(
                         f'ALTER TABLE generation_jobs ADD COLUMN {name} {definition}'
                     )
+            db.execute(
+                'CREATE INDEX IF NOT EXISTS generation_jobs_submission '
+                'ON generation_jobs(submission_token) WHERE submission_token IS NOT NULL'
+            )
             db.execute('COMMIT')
         except Exception:
             db.execute('ROLLBACK')
@@ -102,8 +108,10 @@ class JobStore:
         channel='',
         prompt=None,
         requested_by='',
+        operation='edit',
+        submission_token=None,
     ):
-        """Reuse exact pending requests within an owner; F34 image lookup is separate.
+        """Reuse submission tokens; older internal callers reuse exact pending inputs.
 
         Snapshots contain generation settings only, never credentials or paths.
         """
@@ -128,28 +136,45 @@ class JobStore:
         with closing(self.connect()) as db:
             db.execute('BEGIN IMMEDIATE')
             try:
-                row = db.execute(
-                    '''SELECT id FROM generation_jobs
-                    WHERE inputs_json = ? AND settings_json = ?
-                    AND user_id IS ? AND anonymous_owner = ?
-                    AND kind = ? AND channel = ?
-                    AND status IN ('queued', 'running') LIMIT 1''',
-                    (
-                        inputs_json,
-                        settings_json,
-                        user_id,
-                        anonymous_owner,
-                        kind,
-                        channel,
-                    ),
-                ).fetchone()
+                if submission_token is not None:
+                    row = db.execute(
+                        'SELECT * FROM generation_jobs WHERE submission_token = ? '
+                        'AND user_id IS ? AND anonymous_owner = ?',
+                        (submission_token, user_id, anonymous_owner),
+                    ).fetchone()
+                    if row and (
+                        row['inputs_json'] != inputs_json
+                        or row['settings_json'] != settings_json
+                        or row['operation'] != operation
+                        or row['kind'] != kind
+                        or row['channel'] != channel
+                    ):
+                        raise ValueError(
+                            'Submission token already used with different inputs.'
+                        )
+                else:
+                    row = db.execute(
+                        '''SELECT id FROM generation_jobs
+                        WHERE inputs_json = ? AND settings_json = ?
+                        AND user_id IS ? AND anonymous_owner = ?
+                        AND kind = ? AND channel = ?
+                        AND status IN ('queued', 'running') LIMIT 1''',
+                        (
+                            inputs_json,
+                            settings_json,
+                            user_id,
+                            anonymous_owner,
+                            kind,
+                            channel,
+                        ),
+                    ).fetchone()
                 identifier = row['id'] if row else uuid.uuid4().hex
                 if not row:
                     db.execute(
                         '''INSERT INTO generation_jobs
                         (id, album_id, source_image_id, inputs_json, settings_json,
-                         user_id, requested_by, anonymous_owner, kind, channel)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                         user_id, requested_by, anonymous_owner, kind, channel, operation, submission_token)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                         (
                             identifier,
                             inputs.album_id if kind == 'variation' else inputs['id'],
@@ -161,6 +186,8 @@ class JobStore:
                             anonymous_owner,
                             kind,
                             channel,
+                            operation,
+                            submission_token,
                         ),
                     )
                 db.execute('COMMIT')
@@ -301,13 +328,21 @@ def process_job(store, job, config):
                         (cache.cache_key(inputs['prompt']),),
                     ).fetchone()
         else:
-            result = generate_album_variation(
-                MusicLibrary(cache.database),
-                cache,
-                job['source_image_id'],
-                GenerationInputs(**json.loads(job['inputs_json'])),
-                job['requested_by'],
-            )
+            inputs = GenerationInputs(**json.loads(job['inputs_json']))
+            if job.get('operation') == 'create_new':
+                from .music import generate_album_new
+
+                result = generate_album_new(
+                    MusicLibrary(cache.database), cache, inputs, job['requested_by']
+                )
+            else:
+                result = generate_album_variation(
+                    MusicLibrary(cache.database),
+                    cache,
+                    job['source_image_id'],
+                    inputs,
+                    job['requested_by'],
+                )
     except Exception as exc:
         # Provider errors may include credentials, prompts or remote request details.
         log.error('Generation job %s failed (%s)', job['id'], type(exc).__name__)
