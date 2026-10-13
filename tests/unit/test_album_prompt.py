@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from pmxbot.music import album_prompt
+from pmxbot.music import GenerationInputs, album_prompt, artwork_prompt
 
 
 def prompt(band, title):
@@ -114,3 +114,38 @@ def test_medve_and_torta_clarifications_combine():
     value = prompt('Medve', 'Torta Aid')
     assert 'Torta is slang for "thicc Latina".' in value
     assert "Medve isn't a bear" in value
+
+
+@pytest.mark.parametrize('field', GenerationInputs.creative_fields)
+def test_artwork_details_are_visual_guidance(field):
+    values = dict.fromkeys(GenerationInputs.creative_fields, '')
+    values[field] = 'Creative cue'
+    inputs = GenerationInputs(
+        album_id=1,
+        artist_id=1,
+        source_image_id=0,
+        artist_name='Band',
+        title='Album',
+        **values,
+    )
+    value = artwork_prompt(inputs)
+    assert 'Creative cue' in value
+    assert 'as visual guidance only' in value
+    assert value.count('Do not literally add these details as text to the image.') == 1
+
+
+def test_combined_artwork_details_have_one_instruction():
+    inputs = GenerationInputs(
+        album_id=1,
+        artist_id=1,
+        source_image_id=0,
+        artist_name='Band',
+        title='Album',
+        **dict.fromkeys(GenerationInputs.creative_fields, 'Creative cue'),
+    )
+    assert (
+        artwork_prompt(inputs).count(
+            'Do not literally add these details as text to the image.'
+        )
+        == 1
+    )
