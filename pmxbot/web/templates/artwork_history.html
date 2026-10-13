@@ -70,7 +70,7 @@
     strip.setAttribute('aria-busy', 'true');
     status.textContent = 'Loading artwork…';
     // Prevent submitting the old source while a new selection is being resolved.
-    if (form) form.querySelector('button[type=submit]').disabled = true;
+    if (form) form.querySelectorAll('button[type=submit]').forEach(button => button.disabled = true);
     try {
       const response = await fetch(url, {headers: {Accept: 'application/json'}, signal: controller.signal, cache: 'no-store'});
       if (!response.ok) throw new Error('selection');
@@ -101,7 +101,8 @@
           field.value = value;
         }
         form.elements.source_image_id.value = String(data.image_id);
-        form.querySelector('button[type=submit]').dataset.available = String(data.variation_available);
+        form.querySelector('[name=operation][value=edit]').dataset.available = String(data.variation_available);
+        document.getElementById('edit-capability').textContent = data.variation_message;
         const signIn = document.getElementById('variation-sign-in');
         if (signIn) {
           const destination = new URL(signIn.href);

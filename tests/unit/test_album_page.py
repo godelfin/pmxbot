@@ -165,7 +165,7 @@ def test_render_and_read_only(page):
     ] == [
         'Artwork history',
         'Original prompt',
-        'Generate an image variation',
+        'Generate album artwork',
         'Image details',
         'Settings',
         'Generation metadata',
@@ -272,7 +272,7 @@ def test_selected_image_continuation_capability(
     assert status is available
     assert reason in message
     assert soup.select_one('[name=source_image_id]')['value'] == '42'
-    assert soup.select_one('button[type=submit]').get_text() == 'Generate variation'
+    assert soup.select_one('button[type=submit][value=edit]').get_text() == 'Edit'
     assert 'Generate a new version' not in soup.get_text()
     latest = BeautifulSoup(request()['body'], 'html.parser')
     assert latest.select_one('[name=source_image_id]')['value'] == '43'
@@ -388,7 +388,7 @@ def test_album_and_band_properties(page):
         'Band description': '<b>Band description</b>',
     }
     assert not cards[0].select('script, b, edition')
-    assert cards[0].select_one('button[type=submit]').get_text() == 'Generate variation'
+    assert cards[0].select_one('button[type=submit][value=edit]').get_text() == 'Edit'
     assert cache.database.read_bytes() == before
 
 
@@ -405,8 +405,9 @@ def test_album_navigation_and_columns(page):
     main = soup.select_one('.image-main')
     assert main.select_one('section[aria-label="Artwork"]') is not None
     assert [h.get_text() for h in main.select('h2')] == [
+        'Artwork history',
         'Original prompt',
-        'Album details',
+        'Generate album artwork',
     ]
     navigation = soup.select_one('.image-sidebar nav')
     assert navigation.select_one('button[disabled] span').get_text() == 'Prev'
@@ -454,7 +455,7 @@ def test_malformed_metadata(page, data):
     ] == [
         'Artwork history',
         'Original prompt',
-        'Generate an image variation',
+        'Generate album artwork',
         'Image details',
     ]
 
@@ -1435,9 +1436,9 @@ def test_generate_variation_prg_and_provenance(variation, api):
             db.execute('SELECT * FROM artists').fetchall(),
         )
     capability = BeautifulSoup(request()['body'], 'html.parser')
-    assert not capability.select_one('#variation-form button[type=submit]').has_attr(
-        'disabled'
-    )
+    assert not capability.select_one(
+        '#variation-form button[type=submit][value=edit]'
+    ).has_attr('disabled')
     result = complete_variation(variation)
     assert result['status'] == 303
     target = result['headers']['Location']
@@ -1628,7 +1629,9 @@ def test_variation_capability_disables_unsupported_source(variation, case):
                 (json.dumps(metadata),),
             )
     soup = BeautifulSoup(request()['body'], 'html.parser')
-    assert soup.select_one('#variation-form button[type=submit]').has_attr('disabled')
+    assert soup.select_one('#variation-form button[type=submit][value=edit]').has_attr(
+        'disabled'
+    )
     assert request(method='POST', data=values)['status'] == 409
     post.assert_not_called()
 

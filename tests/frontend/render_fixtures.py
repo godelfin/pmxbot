@@ -54,7 +54,14 @@ def main():
                             if identifier == 44
                             else 'https://art.example/' + str(identifier)
                         ),
-                        json.dumps({'revised_prompt': 'Metadata #' + str(identifier)}),
+                        json.dumps(
+                            {
+                                'revised_prompt': 'Metadata #' + str(identifier),
+                                'operation': (
+                                    'create_new' if identifier == 43 else 'edit'
+                                ),
+                            }
+                        ),
                     ),
                 )
             library.record_image(42, str(identifier))

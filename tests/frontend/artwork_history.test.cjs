@@ -143,12 +143,14 @@ for (const fixture of ['one', 'empty']) test(`${fixture} history has usable boun
     await page.keyboard.press('ArrowLeft');
     assert.equal(await page.locator(':focus').getAttribute('data-image-id'), '42');
   } else {
-    assert.equal(await page.locator('#variation-form').count(), 0);
+    assert.equal(await page.locator('#variation-form').count(), 1);
+    assert.equal(await page.getByRole('button', {name: 'Create New', exact: true}).isDisabled(), true);
+    assert.equal(await page.getByRole('button', {name: 'Edit', exact: true}).isDisabled(), true);
     assert.match(await page.locator('#selected-prompt').innerText(), /No artwork/);
   }
   await page.close();
 });
-test('selection disables submission while loading and submits the selected source with its draft', async () => {
+for (const operation of ['edit', 'create_new']) test(`selection disables both actions while loading and submits ${operation} with the selected draft`, async () => {
   let submitted;
   const page = await setup({signed: true, handle: async (route, id) => {
     if (route.request().method() === 'POST') {
@@ -161,15 +163,49 @@ test('selection disables submission while loading and submits the selected sourc
   }});
   await page.locator('[name=description]').fill('draft for 42');
   await thumbnail(page, 43).click();
-  assert.equal(await page.locator('#variation-form button[type=submit]').isDisabled(), true);
+  for (const name of ['Create New', 'Edit']) assert.equal(await page.getByRole('button', {name, exact: true}).isDisabled(), true);
   await selected(page, 43);
   await page.locator('[name=description]').fill('draft for 43');
-  await page.locator('#variation-form button[type=submit]').click();
+  await page.getByRole('button', {name: operation === 'edit' ? 'Edit' : 'Create New', exact: true}).click();
   await page.locator('#generation-error').waitFor({state: 'visible'});
+  assert.equal(submitted.get('operation'), operation);
+  assert.match(submitted.get('submission_token'), /^[0-9a-f]{32}$/);
   assert.equal(submitted.get('source_image_id'), '43');
   assert.equal(submitted.get('description'), 'draft for 43');
   await thumbnail(page, 42).click(); await selected(page, 42);
   assert.equal(await page.locator('[name=description]').inputValue(), 'draft for 42');
+  await page.close();
+});
+
+test('accepted requests disable both buttons, then allow intentional repeated Create New with a fresh token', async () => {
+  const submissions = [];
+  const page = await setup({signed: true, handle: async route => {
+    if (route.request().method() === 'POST') {
+      submissions.push(new URLSearchParams(route.request().postData()));
+      await new Promise(resolve => setTimeout(resolve, 100));
+      await route.fulfill({status: 202, contentType: 'application/json', body: JSON.stringify({
+        id: 'job', status_url: '/bot/jobs/job', submission_token: 'a'.repeat(32)
+      })});
+      return true;
+    }
+    if (route.request().url().includes('/jobs/')) {
+      await route.fulfill({contentType: 'application/json', body: JSON.stringify({status: 'failed', error: 'Test failure'})});
+      return true;
+    }
+    return false;
+  }});
+  const create = page.getByRole('button', {name: 'Create New', exact: true});
+  await create.click();
+  assert.equal(await create.isDisabled(), true);
+  assert.equal(await page.getByRole('button', {name: 'Edit', exact: true}).isDisabled(), true);
+  await page.locator('#generation-error').waitFor({state: 'visible'});
+  await create.click();
+  await page.locator('#generation-error').waitFor({state: 'visible'});
+  assert.equal(submissions.length, 2);
+  assert.notEqual(submissions[0].get('submission_token'), submissions[1].get('submission_token'));
+  assert.equal(submissions[1].get('submission_token'), 'a'.repeat(32));
+  assert.equal(submissions[0].get('description'), submissions[1].get('description'));
+  assert.equal(submissions[1].get('operation'), 'create_new');
   await page.close();
 });
 
@@ -212,7 +248,7 @@ test('Shift+arrows navigate albums on page and navigation-button focus, includin
   await previous.focus();
   await page.keyboard.press('Shift+ArrowLeft');
   await page.waitForURL('**/albums/41');
-  assert.equal(await page.locator('#image-history').count(), 0);
+  assert.equal(await page.locator('#image-history a[data-image-id]').count(), 0);
   await page.keyboard.press('Shift+ArrowLeft');
   assert.match(page.url(), /albums\/41$/);
   await page.keyboard.press('Shift+ArrowRight');
@@ -253,6 +289,8 @@ test('history has no visible prose or custom Enter/Space selection bindings', as
   assert.equal(await history.locator('h2').evaluate(el => getComputedStyle(el).clipPath), 'inset(50%)');
   assert.equal(await history.locator('#history-help').evaluate(el => getComputedStyle(el).clipPath), 'inset(50%)');
   assert.equal(await thumbnail(page, 43).locator('span:last-child').evaluate(el => getComputedStyle(el).clipPath), 'inset(50%)');
+  assert.equal(await thumbnail(page, 43).locator('small').evaluate(el => getComputedStyle(el).clipPath), 'inset(50%)');
+  assert.equal(await thumbnail(page, 43).locator('small').textContent(), 'Create New');
   assert.match(await thumbnail(page, 43).textContent(), /View image #43/);
   await page.locator('#image-history').focus();
   await page.keyboard.press('Enter');

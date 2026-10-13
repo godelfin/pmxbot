@@ -10,6 +10,9 @@ import contextlib
 import functools
 import json
 import sqlite3
+import uuid
+import re
+from dataclasses import replace
 
 import cherrypy
 import jinja2.loaders
@@ -402,7 +405,20 @@ class AlbumPage:
             if cherrypy.request.method == 'POST'
             else None
         )
-        source_id = params.pop('source_image_id', None)
+        explicit_operation = 'operation' in params
+        operation = params.pop('operation', 'edit')
+        submission_token = params.pop('submission_token', None)
+        if cherrypy.request.method == 'POST':
+            if operation not in ('create_new', 'edit'):
+                raise cherrypy.HTTPError(400, 'Invalid artwork operation')
+            if explicit_operation and submission_token is None:
+                raise cherrypy.HTTPError(400, 'A submission token is required')
+            if submission_token is not None and (
+                not isinstance(submission_token, str)
+                or not re.fullmatch('[0-9a-f]{32}', submission_token)
+            ):
+                raise cherrypy.HTTPError(400, 'Invalid submission token')
+        source_id = params.pop('source_image_id', None) or None
         if source_id is not None:
             if (
                 not isinstance(source_id, str)
@@ -413,9 +429,15 @@ class AlbumPage:
             ):
                 raise cherrypy.HTTPError(400, 'Invalid source image ID')
             source_id = int(source_id)
-        if cherrypy.request.method == 'POST' and source_id is None:
+        if (
+            cherrypy.request.method == 'POST'
+            and operation == 'edit'
+            and source_id is None
+        ):
             raise cherrypy.HTTPError(400, 'A source image is required')
-        if cherrypy.request.method != 'POST' and params:
+        if cherrypy.request.method != 'POST' and (
+            params or explicit_operation or submission_token is not None
+        ):
             raise cherrypy.HTTPError(400, 'Unexpected variation fields')
         try:
             cache = ImageCache(pmxbot.config)
@@ -462,8 +484,15 @@ class AlbumPage:
             ),
             image_url=safe_image_url(image['hosted_url']) if image else None,
         )
-        draft = GenerationInputs.from_source(album, image) if image else None
-        context.update(draft=draft, variation_error=None)
+        draft = GenerationInputs.from_source(album, image)
+        context.update(
+            draft=draft,
+            variation_error=None,
+            submission_token=uuid.uuid4().hex,
+            create_available=pmxbot.config.get('images_enabled', False),
+            variation_available=False,
+            variation_message='Edit requires a selected image.',
+        )
         if image:
             available, message = cache.continuation_capability(image)
             variation_available, variation_message = cache.variation_capability(image)
@@ -479,8 +508,6 @@ class AlbumPage:
                 variation_message=variation_message,
             )
         if cherrypy.request.method == 'POST':
-            if draft is None:
-                raise cherrypy.HTTPError(400, 'A source image is required')
             try:
                 draft = draft.prepare(
                     params,
@@ -496,16 +523,30 @@ class AlbumPage:
                 context['variation_error'] = str(exc)
             else:
                 context.update(draft=draft)
+                if operation == 'create_new':
+                    draft = replace(draft, source_image_id=0)
                 auth.require_csrf(csrf)
-                if not context['variation_available']:
+                if not context['create_available'] or (
+                    operation == 'edit' and not context['variation_available']
+                ):
                     cherrypy.response.status = 409
-                    context['variation_error'] = context['variation_message']
+                    context['variation_error'] = (
+                        context['variation_message']
+                        if context['create_available']
+                        else 'Image generation is disabled.'
+                    )
                 else:
                     user = requesting_user
                     try:
                         identifier = JobStore(cache.database).enqueue(
-                            draft, cache, user
+                            draft,
+                            cache,
+                            user,
+                            operation=operation,
+                            submission_token=submission_token,
                         )
+                    except ValueError as exc:
+                        raise cherrypy.HTTPError(409, str(exc)) from None
                     except (sqlite3.Error, OSError):
                         raise cherrypy.HTTPError(
                             503, 'Generation job storage is unavailable'
@@ -513,7 +554,12 @@ class AlbumPage:
                     status_url = f"{context['base']}/jobs/{identifier}"
                     if wants_json():
                         return json_response(
-                            dict(id=identifier, status_url=status_url), 202
+                            dict(
+                                id=identifier,
+                                status_url=status_url,
+                                submission_token=uuid.uuid4().hex,
+                            ),
+                            202,
                         )
                     auth.redirect(status_url)
         if cherrypy.request.method == 'POST' and wants_json():
@@ -537,6 +583,7 @@ class AlbumPage:
                         if draft
                         else {}
                     ),
+                    variation_message=context['variation_message'],
                     variation_available=bool(
                         context.get('variation_available') and context['current_user']
                     ),

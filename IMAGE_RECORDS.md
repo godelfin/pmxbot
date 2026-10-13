@@ -112,6 +112,14 @@ New album artwork and structured regenerations persist the exact creative inputs
 in `generation_metadata_json.generation_inputs`, alongside the canonical album
 and artist identity. Initial artwork has a null `source_image_id`; regenerations
 record the selected source ID and retain the immutable `parent_image_id` link.
+Explicit web Create New requests use a unique random cache key, save all selected
+properties (including band annotations), have no parent, and use `source_image_id`
+0 as the no-source sentinel in their structured snapshot and job. Edit requests
+save the highlighted source ID and parent link. Their generation metadata records
+`operation` as `create_new` or `edit`; history shows the operation. Job submission
+tokens deduplicate HTTP retries independently of artwork properties, including
+retries after completion. IRC generation retains its existing prompt cache.
+
 Empty creative values are stored as empty strings. When the initial generation
 omits album metadata, the omitted properties are recorded as empty, even if the
 canonical album contains them. Initial prompts do not include band genre or band
