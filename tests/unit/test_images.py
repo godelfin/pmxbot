@@ -821,6 +821,23 @@ def test_r2_upload_content_type(config, r2, tmp_path, extension, content_type):
     assert r2.put_object.call_args.kwargs['ContentType'] == content_type
 
 
+@pytest.mark.parametrize('extension', ['.webp', '.WEBP'])
+def test_r2_webp_without_system_mime_type(config, r2, tmp_path, monkeypatch, extension):
+    monkeypatch.setattr(images.mimetypes, 'guess_type', lambda filename: (None, None))
+    cache = images.ImageCache(config)
+    filename = tmp_path / ('image' + extension)
+    filename.write_bytes(b'image data')
+    destination = {
+        'endpoint_url': config['r2_endpoint_url'],
+        'bucket': config['r2_bucket'],
+        'key': filename.name,
+    }
+
+    cache.upload(filename, destination)
+
+    assert r2.put_object.call_args.kwargs['ContentType'] == 'image/webp'
+
+
 def test_imgbb_entry_migrates_without_regeneration(config, post, r2):
     cache = images.ImageCache(config)
     cache.get('cat')

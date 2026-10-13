@@ -1207,7 +1207,11 @@ class ImageCache:
                     Bucket=destination['bucket'],
                     Key=destination['key'],
                     Body=stream,
-                    ContentType=mimetypes.guess_type(str(filename))[0]
+                    ContentType=(
+                        'image/webp'
+                        if filename.suffix.lower() == '.webp'
+                        else mimetypes.guess_type(str(filename))[0]
+                    )
                     or 'application/octet-stream',
                 )
             return dict(destination, etag=result.get('ETag'))
