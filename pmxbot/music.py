@@ -280,7 +280,7 @@ _TITLE_CONTEXTS = (
     ),
     (
         r"anal|sex|sexual|sexy|fuck|fucking|blowjobs?|handjobs?|gangbangs?|orgy|"
-        r"orgies|porn|cum|semen|masturbation|incest|bestiality|goon",
+        r"orgies|porn|cum|semen|ejaculation|masturbation|incest|bestiality|goon",
         "Do not depict sexual acts or explicit sexual content.",
     ),
     (
