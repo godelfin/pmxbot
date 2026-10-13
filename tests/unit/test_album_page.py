@@ -1453,7 +1453,10 @@ def test_generate_variation_prg_and_provenance(variation, api):
     assert child['prompt'] == sent['input' if api == 'responses' else 'prompt']
     assert values['description'] in child['prompt']
     assert 'Band cue' in child['prompt']
-    assert 'Do not literally add these details as text to the image.' in child['prompt']
+    assert (
+        'Do not literally add the album description as text to the image.'
+        in child['prompt']
+    )
     assert child['parent_image_id'] == 42
     meta = json.loads(child['generation_metadata_json'])
     assert meta['generation_inputs']['description'] == values['description']

@@ -311,10 +311,21 @@ def album_title_context(album):
 
 
 _ALBUM_ARTWORK_FIELDS = ('format', 'format_description', 'genre', 'description')
-_ARTWORK_DETAILS_CONTEXT = (
-    ' Use the format, edition, genres, and descriptions as visual guidance only. '
-    'Do not literally add these details as text to the image.'
-)
+_ARTWORK_DETAIL_LABELS = {
+    'format': 'format',
+    'format_description': 'format description',
+    'genre': 'album genre',
+    'description': 'album description',
+    'artist_genre': 'band genre',
+    'artist_description': 'band description',
+}
+
+
+def artwork_detail_context(field):
+    return (
+        f' Do not literally add the {_ARTWORK_DETAIL_LABELS[field]} '
+        'as text to the image.'
+    )
 
 
 def album_prompt(album):
@@ -328,14 +339,12 @@ def album_prompt(album):
     if edition:
         prompt += f" this is the {edition} edition."
     if album['genre']:
-        prompt += (
-            f" the genre of music is {album['genre']}, "
-            "but nowhere should the genre be mentioned."
-        )
+        prompt += f" the genre of music is {album['genre']}."
     if album['description']:
         prompt += f" {album['description']}"
-    if any(album.get(field) for field in _ALBUM_ARTWORK_FIELDS):
-        prompt += _ARTWORK_DETAILS_CONTEXT
+    for field in _ALBUM_ARTWORK_FIELDS:
+        if album.get(field):
+            prompt += artwork_detail_context(field)
     if re.search(r'\btortas?\b', normalize(album['title'])):
         prompt += ' Torta is slang for "thicc Latina".'
     if re.search(r'\btortas?\b', normalize(album['artist_name'])):
@@ -425,10 +434,7 @@ def artwork_prompt(inputs):
             prompt += (
                 f' {label}: {json.dumps(getattr(inputs, field), ensure_ascii=False)}.'
             )
-    if (inputs.artist_genre or inputs.artist_description) and not any(
-        getattr(inputs, field) for field in _ALBUM_ARTWORK_FIELDS
-    ):
-        prompt += _ARTWORK_DETAILS_CONTEXT
+            prompt += artwork_detail_context(field)
     return prompt
 
 

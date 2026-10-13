@@ -56,7 +56,7 @@ def test_repeated_create_new_is_fresh_and_retry_is_idempotent(variation, api):
         assert 'Continue the source' not in record['prompt']
         assert values['artist_description'] in record['prompt']
         assert (
-            'Do not literally add these details as text to the image.'
+            'Do not literally add the album description as text to the image.'
             in record['prompt']
         )
         metadata = json.loads(record['generation_metadata_json'])

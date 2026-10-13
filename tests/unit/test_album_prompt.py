@@ -130,11 +130,21 @@ def test_artwork_details_are_visual_guidance(field):
     )
     value = artwork_prompt(inputs)
     assert 'Creative cue' in value
-    assert 'as visual guidance only' in value
-    assert value.count('Do not literally add these details as text to the image.') == 1
+    labels = {
+        'format': 'format',
+        'format_description': 'format description',
+        'genre': 'album genre',
+        'description': 'album description',
+        'artist_genre': 'band genre',
+        'artist_description': 'band description',
+    }
+    for candidate, label in labels.items():
+        instruction = f'Do not literally add the {label} as text to the image.'
+        assert (instruction in value) == (candidate == field)
+    assert 'visual guidance only' not in value
 
 
-def test_combined_artwork_details_have_one_instruction():
+def test_combined_artwork_details_have_field_specific_instructions():
     inputs = GenerationInputs(
         album_id=1,
         artist_id=1,
@@ -143,9 +153,6 @@ def test_combined_artwork_details_have_one_instruction():
         title='Album',
         **dict.fromkeys(GenerationInputs.creative_fields, 'Creative cue'),
     )
-    assert (
-        artwork_prompt(inputs).count(
-            'Do not literally add these details as text to the image.'
-        )
-        == 1
-    )
+    value = artwork_prompt(inputs)
+    assert value.count('Do not literally add the ') == 6
+    assert 'these details' not in value

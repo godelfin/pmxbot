@@ -84,9 +84,8 @@ def test_music_prompt_and_shared_worker(
         assert album_prompt(album) == (
             'an album cover for the band "Second Band". the name of the album is "First Album".'
         ) + (
-            ' the genre of music is Jazz, but nowhere should the genre be mentioned.'
-            ' Use the format, edition, genres, and descriptions as visual guidance only. '
-            'Do not literally add these details as text to the image.'
+            ' the genre of music is Jazz.'
+            ' Do not literally add the album genre as text to the image.'
             if existing
             else ''
         )
@@ -454,9 +453,11 @@ def test_album_persistence_is_independent_of_images(config, post, r2):
     assert post.call_args.kwargs['json']['prompt'] == (
         'an album cover for the band "Bänd". the name of the album is "First". '
         'this is the Vinyl, Remastered edition. '
-        'the genre of music is Jazz, but nowhere should the genre be mentioned. Minimalist'
-        ' Use the format, edition, genres, and descriptions as visual guidance only. '
-        'Do not literally add these details as text to the image.'
+        'the genre of music is Jazz. Minimalist'
+        ' Do not literally add the format as text to the image.'
+        ' Do not literally add the format description as text to the image.'
+        ' Do not literally add the album genre as text to the image.'
+        ' Do not literally add the album description as text to the image.'
     )
     assert url == hosted_url(cache, album_prompt(first))
     saved = restarted.get_album(first['id'])
