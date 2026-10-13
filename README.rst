@@ -260,16 +260,28 @@ as their name, have ``image/png`` content type, and no requested expiration.
 Public URLs do not use expiring signatures. Keep the database private because
 it contains prompts and requester information.
 
+Each saved original also produces a 128x128 JPEG thumbnail, preserving its aspect
+ratio with white padding and flattening transparency onto white. Thumbnails are
+saved and uploaded separately as ``<cache_key>_thumb.jpg`` with ``image/jpeg``
+content type. Their public URL is stored in ``image_cache.thumb_url``; existing
+databases gain this nullable column automatically. Existing hosted images gain
+thumbnails on their next request if the saved original is available.
+
 Existing ImgBB cache entries are moved to R2 when next requested, by uploading
 the saved local image and updating the same SQLite row after a successful
-upload. No new OpenAI call is needed if the local file exists; a missing file
-is regenerated. Old ImgBB uploads are not deleted. Changing the R2 bucket or
+upload. No new OpenAI call is needed; a missing original must be restored before
+retrying. Old ImgBB uploads are not deleted. Changing the R2 bucket or
 endpoint similarly reuploads saved images on demand. Changing only the public
 base URL updates cached links without uploading or generating again.
 
 If uploading fails, the saved image and cache row remain. Repeat the same
 prompt to retry only the upload. If that pending image file is missing, the
-bot regenerates it. Cached hosted URLs are not checked for expiration or
+bot regenerates it only when the original has not been hosted and is not an
+immutable variation or Responses image. If only thumbnail creation or upload
+fails, the original's hosted URL remains saved. Repeat the prompt or call
+``ImageCache.retry_upload(id)`` to recreate the thumbnail from the saved original
+and retry its upload without another OpenAI request or original upload.
+Cached hosted URLs are not checked for expiration or
 external deletion; delete the corresponding SQLite row to generate a new
 image. Files and rows are retained until manually removed. Use one bot process
 per cache; simultaneous processes sharing a cache are not coordinated.

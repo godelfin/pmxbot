@@ -19,6 +19,7 @@ import unicodedata
 import uuid
 from collections.abc import Mapping
 from contextlib import closing
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
@@ -26,6 +27,7 @@ import boto3
 import requests
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
+from PIL import Image, ImageOps
 
 import pmxbot
 
@@ -814,23 +816,31 @@ class ImageCache:
             raise ImageError('Usage: !image <prompt>')
         destination = self.destination(key)
         url = self.r2['public_url'].rstrip('/') + '/' + quote(destination['key'])
+        thumbnail_destination = dict(destination, key=f'{key}_thumb.jpg')
+        thumb_url = (
+            self.r2['public_url'].rstrip('/')
+            + '/'
+            + quote(thumbnail_destination['key'])
+        )
         with closing(self.connect()) as db:
             row = db.execute(
                 'SELECT * FROM image_cache WHERE cache_key = ?', (key,)
             ).fetchone()
             metadata = json.loads(row['host_metadata_json'] or '{}') if row else {}
-            if (
+            original_hosted = bool(
                 row
                 and row['host'] == 'r2'
                 and row['hosted_url']
                 and all(
                     metadata.get(name) == value for name, value in destination.items()
                 )
-            ):
+            )
+            if original_hosted and row['thumb_url']:
                 db.execute(
                     '''UPDATE image_cache SET hit_count = hit_count + 1,
-                    hosted_url = ?, last_accessed_at = CURRENT_TIMESTAMP WHERE cache_key = ?''',
-                    (url, key),
+                    hosted_url = ?, thumb_url = ?,
+                    last_accessed_at = CURRENT_TIMESTAMP WHERE cache_key = ?''',
+                    (url, thumb_url, key),
                 )
                 return url
             for name in ('access_key_id', 'secret_access_key'):
@@ -842,6 +852,11 @@ class ImageCache:
                 Path(row['local_filename']) if row else self.directory / f'{key}.png'
             )
             if not row or not filename.is_file():
+                if row and row['hosted_url']:
+                    raise ImageError(
+                        'Saved original is missing; cannot create its thumbnail. '
+                        'Restore the original file and retry hosting by image ID.'
+                    )
                 if row and generation_metadata(dict(row)).get('generation_inputs'):
                     raise ImageError(
                         'Saved variation PNG is missing; refusing to replace immutable artwork.'
@@ -906,7 +921,16 @@ class ImageCache:
                     db.execute('ROLLBACK')
                     raise
             try:
-                metadata = self.upload(filename, destination)
+                if not original_hosted:
+                    metadata = self.upload(filename, destination)
+                    db.execute(
+                        '''UPDATE image_cache SET hosted_url = ?, thumb_url = NULL,
+                        host_metadata_json = ?, host = 'r2',
+                        uploaded_at = CURRENT_TIMESTAMP WHERE cache_key = ?''',
+                        (url, json.dumps(metadata), key),
+                    )
+                thumbnail = self.save_thumbnail(filename, key)
+                self.upload(thumbnail, thumbnail_destination)
             except ImageError as exc:
                 db.execute(
                     'UPDATE image_cache SET last_error = ? WHERE cache_key = ?',
@@ -923,10 +947,10 @@ class ImageCache:
                     'Image saved locally, but upload failed. Repeat the prompt to retry.'
                 ) from None
             db.execute(
-                '''UPDATE image_cache SET hosted_url = ?, host_metadata_json = ?, host = 'r2',
-                uploaded_at = CURRENT_TIMESTAMP, last_accessed_at = CURRENT_TIMESTAMP,
+                '''UPDATE image_cache SET hosted_url = ?, thumb_url = ?,
+                last_accessed_at = CURRENT_TIMESTAMP,
                 last_error = NULL WHERE cache_key = ?''',
-                (url, json.dumps(metadata), key),
+                (url, thumb_url, key),
             )
             return url
 
@@ -972,7 +996,7 @@ class ImageCache:
                 settings_json = excluded.settings_json,
                 local_filename = excluded.local_filename,
                 generation_metadata_json = excluded.generation_metadata_json,
-                hosted_url = NULL, host_metadata_json = NULL,
+                hosted_url = NULL, thumb_url = NULL, host_metadata_json = NULL,
                 uploaded_at = NULL, last_error = NULL, host = 'r2' ''',
             (
                 key,
@@ -1139,6 +1163,27 @@ class ImageCache:
         finally:
             if temporary and temporary.exists():
                 temporary.unlink()
+
+    def save_thumbnail(self, filename, key):
+        """Save a square JPEG with the full original fitted on a white canvas."""
+        thumbnail = self.directory / f'{key}_thumb.jpg'
+        try:
+            with Image.open(filename) as original:
+                image = ImageOps.exif_transpose(original).convert('RGBA')
+                image = ImageOps.contain(
+                    image, (128, 128), method=Image.Resampling.LANCZOS
+                )
+                canvas = Image.new('RGB', (128, 128), 'white')
+                offset = ((128 - image.width) // 2, (128 - image.height) // 2)
+                canvas.paste(image, offset, image)
+                with BytesIO() as output:
+                    canvas.save(output, format='JPEG', quality=85)
+                    self.save(thumbnail, output.getvalue())
+            return thumbnail
+        except (OSError, ValueError, Image.DecompressionBombError):
+            raise ImageError(
+                'Thumbnail creation failed; check the saved original and image storage.'
+            ) from None
 
     def upload(self, filename, destination):
         try:

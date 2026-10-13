@@ -2,18 +2,22 @@ import base64
 import json
 import sqlite3
 import threading
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 import requests
+from PIL import Image
 
 import pmxbot
 from pmxbot import core, images, music, quotes
 from pmxbot.dictlib import ConfigDict
 from pmxbot.music import MusicLibrary, album_prompt, generate_album_image
 
-PNG = b'\x89PNG\r\n\x1a\nimage bytes'
+with BytesIO() as output:
+    Image.new('RGBA', (256, 128), (0, 0, 255, 255)).save(output, format='PNG')
+    PNG = output.getvalue()
 URL = 'https://images.example.com/image.png'
 ALBUMS_URL = 'https://bot.example.com/'
 
@@ -576,6 +580,7 @@ def test_upload_failure_retries_only_upload(config, post, r2):
             {'Error': {'Code': 'AccessDenied', 'Message': 'secret'}}, 'PutObject'
         ),
         {'ETag': 'ok'},
+        {'ETag': 'thumb'},
     ]
     cache = images.ImageCache(config)
     with pytest.raises(images.ImageError, match='saved locally'):
@@ -585,12 +590,144 @@ def test_upload_failure_retries_only_upload(config, post, r2):
     assert 'secret' not in read_row(cache)['last_error']
     assert cache.get('CAT') == hosted_url(cache, 'cat')
     assert post.call_count == 1
-    assert r2.put_object.call_count == 2
+    assert r2.put_object.call_count == 3
     assert read_row(cache)['last_error'] is None
 
 
+@pytest.mark.parametrize(
+    ('size', 'padding_point'),
+    [((256, 128), (64, 8)), ((128, 256), (8, 64)), ((256, 256), None)],
+)
+def test_thumbnail_dimensions_and_aspect_ratio(config, tmp_path, size, padding_point):
+    cache = images.ImageCache(config)
+    cache.directory.mkdir()
+    original = tmp_path / 'original.png'
+    Image.new('RGBA', size, (255, 0, 0, 255)).save(original)
+    before = original.read_bytes()
+
+    thumbnail = cache.save_thumbnail(original, 'test')
+
+    assert thumbnail.name == 'test_thumb.jpg'
+    assert original.read_bytes() == before
+    with Image.open(thumbnail) as image:
+        assert image.format == 'JPEG'
+        assert image.mode == 'RGB'
+        assert image.size == (128, 128)
+        red, green, blue = image.getpixel((64, 64))
+        assert red > 240 and green < 10 and blue < 10
+        if padding_point:
+            assert all(channel > 240 for channel in image.getpixel(padding_point))
+
+
+def test_thumbnail_flattens_transparency(config, tmp_path):
+    cache = images.ImageCache(config)
+    cache.directory.mkdir()
+    original = tmp_path / 'transparent.png'
+    Image.new('RGBA', (128, 128), (0, 0, 0, 0)).save(original)
+
+    with Image.open(cache.save_thumbnail(original, 'transparent')) as image:
+        assert image.getpixel((64, 64)) == (255, 255, 255)
+
+
+@pytest.mark.parametrize('api', ['images', 'responses'])
+def test_thumbnail_upload_retry_uses_saved_original(config, responses_post, r2, api):
+    config.update(image_api=api, responses_model='test-model')
+    if api == 'images':
+        responses_post.return_value.json.return_value = {
+            'data': [{'b64_json': base64.b64encode(PNG).decode()}]
+        }
+    cache = images.ImageCache(config)
+    r2.put_object.side_effect = [
+        {'ETag': 'original'},
+        images.BotoCoreError(),
+        {'ETag': 'thumbnail'},
+    ]
+    with pytest.raises(images.ImageError, match='saved locally'):
+        cache.get('cat')
+    saved = dict(read_row(cache))
+    assert saved['hosted_url'] == hosted_url(cache, 'cat')
+    assert saved['thumb_url'] is None
+    assert saved['last_error']
+    thumbnail = cache.directory / f'{saved["cache_key"]}_thumb.jpg'
+    thumbnail.unlink()
+
+    retried = cache.retry_upload(saved['id'])
+
+    assert thumbnail.is_file()
+    assert retried['thumb_url'] == (
+        f'https://images.example.com/{saved["cache_key"]}_thumb.jpg'
+    )
+    assert retried['hosted_url'] == saved['hosted_url']
+    assert retried['generation_metadata_json'] == saved['generation_metadata_json']
+    assert retried['last_error'] is None
+    assert responses_post.call_count == 1
+    assert r2.put_object.call_count == 3
+    assert [call.kwargs['Key'] for call in r2.put_object.call_args_list] == [
+        f'{saved["cache_key"]}.png',
+        f'{saved["cache_key"]}_thumb.jpg',
+        f'{saved["cache_key"]}_thumb.jpg',
+    ]
+    assert r2.put_object.call_args.kwargs['ContentType'] == 'image/jpeg'
+    assert cache.get('cat') == saved['hosted_url']
+    assert responses_post.call_count == 1
+    assert r2.put_object.call_count == 3
+
+
+def test_existing_hosted_image_gets_thumbnail_without_regeneration(config, post, r2):
+    cache = images.ImageCache(config)
+    cache.get('cat')
+    saved = dict(read_row(cache))
+    with sqlite3.connect(cache.database) as db:
+        db.execute('UPDATE image_cache SET thumb_url = NULL')
+    r2.reset_mock()
+
+    retried = cache.retry_upload(saved['id'])
+
+    assert retried['thumb_url'].endswith('_thumb.jpg')
+    assert post.call_count == 1
+    assert r2.put_object.call_count == 1
+    assert r2.put_object.call_args.kwargs['Key'].endswith('_thumb.jpg')
+
+
+def test_thumbnail_retry_with_missing_original_never_regenerates(config, post, r2):
+    cache = images.ImageCache(config)
+    cache.get('cat')
+    saved = dict(read_row(cache))
+    with sqlite3.connect(cache.database) as db:
+        db.execute('UPDATE image_cache SET thumb_url = NULL')
+    Path(saved['local_filename']).unlink()
+    r2.reset_mock()
+
+    with pytest.raises(images.ImageError, match='Saved original is missing'):
+        cache.retry_upload(saved['id'])
+
+    assert post.call_count == 1
+    r2.put_object.assert_not_called()
+
+
+def test_thumbnail_creation_failure_can_be_retried(config, post, r2, monkeypatch):
+    cache = images.ImageCache(config)
+    with monkeypatch.context() as patch:
+        patch.setattr(images.Image, 'open', Mock(side_effect=OSError('secret')))
+        with pytest.raises(images.ImageError, match='saved locally'):
+            cache.get('cat')
+    saved = dict(read_row(cache))
+    assert saved['hosted_url']
+    assert saved['thumb_url'] is None
+    assert 'Thumbnail creation failed' in saved['last_error']
+    assert 'secret' not in saved['last_error']
+
+    assert cache.retry_upload(saved['id'])['thumb_url']
+    assert post.call_count == 1
+    assert r2.put_object.call_count == 2
+
+
 def test_missing_local_file_regenerates_pending_upload(config, post, r2):
-    r2.put_object.side_effect = [images.BotoCoreError(), {'ETag': 'ok'}]
+    r2.put_object.side_effect = [
+        images.BotoCoreError(),
+        {'ETag': 'ok'},
+        {'ETag': 'thumb'},
+    ]
     cache = images.ImageCache(config)
     with pytest.raises(images.ImageError):
         cache.get('cat')
@@ -644,8 +781,9 @@ def test_r2_upload_parameters(config, post, r2):
 
     r2.put_object.side_effect = upload
     cache.get('cat')
-    assert received == [PNG]
-    args = r2.put_object.call_args.kwargs
+    assert received[0] == PNG
+    assert len(received) == 2
+    args = r2.put_object.call_args_list[0].kwargs
     assert args['Bucket'] == 'bot-images'
     assert args['Key'] == cache.cache_key('cat') + '.png'
     assert args['ContentType'] == 'image/png'
@@ -655,7 +793,7 @@ def test_r2_upload_parameters(config, post, r2):
     assert client_args['aws_access_key_id'] == 'r2-access-secret'
     assert client_args['aws_secret_access_key'] == 'r2-secret'
     assert client_args['config'].signature_version == 's3v4'
-    r2.close.assert_called_once()
+    assert r2.close.call_count == 2
 
 
 @pytest.mark.parametrize(
@@ -699,7 +837,7 @@ def test_imgbb_entry_migrates_without_regeneration(config, post, r2):
     assert cache.get('cat') == hosted_url(cache, 'cat')
     assert read_row(cache)['host'] == 'r2'
     assert post.call_count == 1
-    assert r2.put_object.call_count == 3
+    assert r2.put_object.call_count == 5
 
 
 @pytest.mark.parametrize(
@@ -715,7 +853,7 @@ def test_changed_r2_destination_reuploads_local_image(config, post, r2, setting,
     cache = images.ImageCache(config)
     assert cache.get('cat') == hosted_url(cache, 'cat')
     assert post.call_count == 1
-    assert r2.put_object.call_count == 2
+    assert r2.put_object.call_count == 4
 
 
 def test_changed_public_url_reuses_object(config, post, r2):
@@ -726,7 +864,10 @@ def test_changed_public_url_reuses_object(config, post, r2):
     assert url == hosted_url(cache, 'cat')
     assert read_row(cache)['hosted_url'] == url
     assert post.call_count == 1
-    assert r2.put_object.call_count == 1
+    assert r2.put_object.call_count == 2
+    assert read_row(cache)['thumb_url'] == (
+        f'https://new.example.com/{cache.cache_key("cat")}_thumb.jpg'
+    )
 
 
 @pytest.mark.parametrize('name', ['r2_endpoint_url', 'r2_public_url'])
@@ -1340,9 +1481,12 @@ def test_image_thumbnail_initialization(config, existing):
                 ('https://images.example.com/old-thumb.png',),
             )
             images.initialize_image_records(db)
-            assert db.execute(
-                'SELECT thumb_url FROM image_cache WHERE id = 42'
-            ).fetchone()[0] == 'https://images.example.com/old-thumb.png'
+            assert (
+                db.execute(
+                    'SELECT thumb_url FROM image_cache WHERE id = 42'
+                ).fetchone()[0]
+                == 'https://images.example.com/old-thumb.png'
+            )
 
 
 @pytest.mark.parametrize('existing', [False, True])
@@ -1622,7 +1766,8 @@ def test_responses_continuation_and_branching_without_source_bitmap(
         assert isinstance(call.kwargs['json']['input'], str)
         assert 'image' not in call.kwargs['json']
         assert 'files' not in call.kwargs
-    assert responses_post.call_count == r2.put_object.call_count == 4
+    assert responses_post.call_count == 4
+    assert r2.put_object.call_count == 8
 
 
 def test_structured_album_continuation_contract(config, responses_post):
@@ -1780,7 +1925,7 @@ def test_responses_multiple_outputs_require_unambiguous_image(
     data['output'].append(dict(data['output'][-1], id='ig_other'))
     with pytest.raises(images.ImageError, match='single completed PNG'):
         cache.get('multiple images')
-    assert r2.put_object.call_count == 1
+    assert r2.put_object.call_count == 2
 
 
 @pytest.mark.parametrize(
@@ -1815,7 +1960,7 @@ def test_unavailable_responses_context_is_safe_and_has_no_fallback(
     with sqlite3.connect(cache.database) as db:
         assert db.execute('SELECT COUNT(*) FROM image_cache').fetchone()[0] == 1
     assert responses_post.call_count == 2
-    assert r2.put_object.call_count == 1
+    assert r2.put_object.call_count == 2
 
 
 def test_responses_upload_failure_keeps_id_and_context_for_retry(
@@ -1917,7 +2062,7 @@ def test_continuation_filesystem_failure_is_safe(
     with pytest.raises(images.ImageError, match='check image storage') as caught:
         cache.continue_image(source['id'], 'blue')
     assert 'secret' not in str(caught.value)
-    assert r2.put_object.call_count == 1
+    assert r2.put_object.call_count == 2
     assert responses_post.call_count == (1 if stage == 'read' else 2)
 
 

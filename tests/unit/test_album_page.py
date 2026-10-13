@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 
 import cherrypy
 import pytest
+from PIL import Image
 from bs4 import BeautifulSoup
 
 import pmxbot
@@ -18,6 +19,9 @@ from http.cookies import SimpleCookie
 
 ORIGINAL_GENERATE = ImageCache.generate
 ORIGINAL_UPLOAD = ImageCache.upload
+with io.BytesIO() as output:
+    Image.new('RGB', (256, 128), 'blue').save(output, format='PNG')
+    PNG = output.getvalue()
 
 
 @pytest.fixture
@@ -1342,7 +1346,7 @@ def variation(page, monkeypatch, tmp_path):
         r2_secret_access_key='test',
     )
     source = tmp_path / 'source.png'
-    source.write_bytes(b'\x89PNG\r\n\x1a\nsource')
+    source.write_bytes(PNG)
     with sqlite3.connect(cache.database) as db:
         db.execute(
             'UPDATE image_cache SET local_filename = ? WHERE id = 42', (str(source),)
@@ -1351,7 +1355,7 @@ def variation(page, monkeypatch, tmp_path):
     monkeypatch.setattr(ImageCache, 'upload', ORIGINAL_UPLOAD)
     response = Mock()
     response.json.return_value = {
-        'data': [{'b64_json': base64.b64encode(b'\x89PNG\r\n\x1a\nchild').decode()}]
+        'data': [{'b64_json': base64.b64encode(PNG).decode()}]
     }
     post = Mock(return_value=response)
     monkeypatch.setattr(images.requests, 'post', post)
@@ -1389,7 +1393,7 @@ def enable_responses(cache, post):
                 type='image_generation_call',
                 id='ig_child',
                 status='completed',
-                result=base64.b64encode(b'\x89PNG\r\n\x1a\nchild').decode(),
+                result=base64.b64encode(PNG).decode(),
             )
         ],
     )
@@ -1476,7 +1480,7 @@ def test_generate_variation_prg_and_provenance(variation, api):
         assert child['prompt'] in page.get_text()
         assert str(child_id) in page.get_text()
     assert post.call_count == 1
-    assert client.put_object.call_count == 1
+    assert client.put_object.call_count == 2
 
 
 @pytest.mark.parametrize(
