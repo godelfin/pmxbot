@@ -125,6 +125,16 @@ retain their source identity through the structured inputs and ancestry link;
 PNG bytes, multipart file handles and authentication headers are not recorded.
 The existing provider response metadata, prompt and `settings_json` are retained.
 
+Under Responses, a variation without usable stored context bootstraps from the
+local PNG (up to 14 MiB), sent as an `input_image` data URL alongside the exact
+structured prompt. Its metadata records `bootstrap.source_image_id` and
+`bootstrap.reference_input_mode` separately from `previous_response_id`. The
+persisted request substitutes `[saved source PNG]` for the data URL to avoid
+duplicating artwork in SQLite. The child retains its response ID and tool metadata;
+later variations use that ID without reading or uploading the PNG. With Responses
+storage disabled, later variations require another bootstrap. Remote expiration
+of otherwise valid context remains an explicit continuation failure.
+
 Snapshots are written with the generated image and survive cache hits and upload
 retries unchanged. Queued generation uses its frozen creative properties, prompt
 and settings; older IRC queue snapshots that omit the artist ID resolve only that

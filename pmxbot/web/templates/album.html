@@ -139,6 +139,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 {% if album %}
 <section class="image-section" aria-labelledby="album-heading">
 <h2 id="album-heading">{% if draft %}Generate an image variation{% else %}Album details{% endif %}</h2>
+{% if image %}<p id="variation-capability">{{ variation_message }}</p>{% endif %}
 <div class="album-details">
 {% if draft %}
 {% if variation_error %}<p id="variation-error" role="alert">{{ variation_error }}</p>{% endif %}

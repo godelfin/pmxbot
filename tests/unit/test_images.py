@@ -1462,6 +1462,64 @@ def test_invalid_image_api_configuration(config, post, settings):
     post.assert_not_called()
 
 
+@pytest.mark.parametrize('store', [True, False])
+def test_bootstrap_storage_policy_and_upload_retry(config, responses_post, r2, store):
+    config['responses_store'] = store
+    cache = images.ImageCache(config)
+    cache.get('legacy')
+    source = dict(read_row(cache))
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            "UPDATE image_cache SET generation_metadata_json = '{}' WHERE id = ?",
+            (source['id'],),
+        )
+    source = cache.get_image(source['id'])
+    available, message = cache.variation_capability(source)
+    assert available
+    assert ('storage is disabled' in message) is (not store)
+    r2.put_object.side_effect = images.BotoCoreError()
+    with pytest.raises(images.ImageError, match='saved locally'):
+        cache.vary_image(source['id'], 'Exact bootstrap prompt', inputs=None)
+    with sqlite3.connect(cache.database) as db:
+        child_id = db.execute(
+            'SELECT id FROM image_cache WHERE parent_image_id = ?', (source['id'],)
+        ).fetchone()[0]
+    child = cache.get_image(child_id)
+    assert child['hosted_url'] is None
+    assert (images.response_reference(child) is not None) is store
+    assert responses_post.call_args.kwargs['json']['store'] is store
+    assert (
+        json.loads(child['generation_metadata_json'])['bootstrap']['source_image_id']
+        == source['id']
+    )
+    Path(source['local_filename']).unlink()
+    r2.put_object.side_effect = None
+    retried = cache.retry_upload(child_id)
+    assert retried['hosted_url']
+    assert retried['generation_metadata_json'] == child['generation_metadata_json']
+    assert responses_post.call_count == 2
+
+
+def test_bootstrap_unreadable_reference(config, responses_post, monkeypatch):
+    cache = images.ImageCache(config)
+    cache.get('legacy')
+    source = dict(read_row(cache))
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            "UPDATE image_cache SET generation_metadata_json = '{}' WHERE id = ?",
+            (source['id'],),
+        )
+    monkeypatch.setattr(
+        'builtins.open', Mock(side_effect=PermissionError('secret detail'))
+    )
+    responses_post.reset_mock()
+    with pytest.raises(images.ImageError, match='missing, unreadable'):
+        cache.vary_image(source['id'], 'bootstrap', inputs=None)
+    responses_post.assert_not_called()
+    with sqlite3.connect(cache.database) as db:
+        assert db.execute('SELECT COUNT(*) FROM image_cache').fetchone()[0] == 1
+
+
 def test_responses_generation_persistence_and_cache(config, responses_post):
     cache = images.ImageCache(config)
     original = '  Exact Café\n prompt  '

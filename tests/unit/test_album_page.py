@@ -1403,6 +1403,92 @@ def complete_variation(variation, data=None):
     return response
 
 
+@pytest.mark.parametrize(
+    'metadata', [{}, {'api': 'images'}, {'api': 'responses', 'store': False}]
+)
+def test_legacy_bootstrap_then_continuation(variation, metadata):
+    import base64
+    from pathlib import Path
+
+    cache, request, post, client, values, source = variation
+    enable_responses(cache, post)
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            'UPDATE image_cache SET generation_metadata_json = ? WHERE id = 42',
+            (json.dumps(metadata),),
+        )
+    original = cache.get_image(42)
+    body = request()['body']
+    assert 'Legacy-image bootstrap available' in body
+    assert 'uploads the saved artwork once' in body
+    result = complete_variation(variation)
+    child_id = int(result['headers']['Location'].rsplit('=', 1)[1])
+    child = cache.get_image(child_id)
+    sent = post.call_args.kwargs['json']
+    assert 'previous_response_id' not in sent
+    assert sent['input'] == [
+        {
+            'role': 'user',
+            'content': [
+                {'type': 'input_text', 'text': child['prompt']},
+                {
+                    'type': 'input_image',
+                    'image_url': 'data:image/png;base64,'
+                    + base64.b64encode(source.read_bytes()).decode(),
+                },
+            ],
+        }
+    ]
+    meta = json.loads(child['generation_metadata_json'])
+    assert meta['response_id'] == 'resp_child'
+    assert meta['generation_request']['input'][0]['content'] == [
+        {'type': 'input_text', 'text': child['prompt']},
+        {'type': 'input_image', 'image_url': '[saved source PNG]'},
+    ]
+    assert meta['bootstrap'] == {
+        'source_image_id': 42,
+        'reference_input_mode': 'input_image_data_url',
+    }
+    assert child['parent_image_id'] == 42
+    assert meta['generation_inputs']['source_image_id'] == 42
+    assert cache.get_album_page(42, child_id)[1]['id'] == child_id
+    assert cache.get_image(42) == original
+    source.unlink()
+    Path(child['local_filename']).unlink()
+    new_cache = ImageCache(pmxbot.config)
+    grandchild = new_cache.vary_image(
+        child_id,
+        'Exact next prompt',
+        inputs=dict(meta['generation_inputs'], source_image_id=child_id),
+    )
+    assert grandchild['parent_image_id'] == child_id
+    assert post.call_args.kwargs['json']['previous_response_id'] == 'resp_child'
+    assert post.call_args.kwargs['json']['input'] == 'Exact next prompt'
+    assert 'bootstrap' not in json.loads(grandchild['generation_metadata_json'])
+
+
+@pytest.mark.parametrize(
+    'content',
+    [None, b'not a PNG', b'\x89PNG\r\n\x1a\n' + b'x' * (14 * 1024 * 1024)],
+    ids=['missing', 'invalid', 'too_large'],
+)
+def test_bootstrap_invalid_source_no_provider_call(variation, content):
+    cache, request, post, client, values, source = variation
+    enable_responses(cache, post)
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            "UPDATE image_cache SET generation_metadata_json = '{}' WHERE id = 42"
+        )
+    if content is None:
+        source.unlink()
+    else:
+        source.write_bytes(content)
+    assert 'Legacy-image bootstrap unavailable' in request()['body']
+    assert request(method='POST', data=values)['status'] == 409
+    post.assert_not_called()
+    client.put_object.assert_not_called()
+
+
 @pytest.mark.parametrize('api', ['images', 'responses'])
 def test_generate_variation_prg_and_provenance(variation, api):
     cache, request, post, client, values, source = variation
@@ -1475,6 +1561,7 @@ def test_variation_rejected_without_provider(variation, case):
         pmxbot.config['images_enabled'] = False
     elif case == 'legacy':
         pmxbot.config.update(image_api='responses', responses_model='gpt-5')
+        source.unlink()
     elif case == 'missing_file':
         source.unlink()
     elif case == 'invalid':
@@ -1491,11 +1578,18 @@ def test_variation_rejected_without_provider(variation, case):
     assert cache.get_image(42) == original
 
 
+@pytest.mark.parametrize('backend', ['images', 'responses'])
 @pytest.mark.parametrize('failure', ['api', 'upload', 'storage', 'expired_context'])
-def test_variation_failures_redirect_and_preserve_source(variation, failure):
+def test_variation_failures_redirect_and_preserve_source(variation, failure, backend):
     from pmxbot import images
 
     cache, request, post, client, values, source = variation
+    if backend == 'responses':
+        enable_responses(cache, post)
+        with sqlite3.connect(cache.database) as db:
+            db.execute(
+                "UPDATE image_cache SET generation_metadata_json = '{}' WHERE id = 42"
+            )
     original = cache.get_image(42)
     if failure == 'expired_context':
         enable_responses(cache, post)
@@ -1607,6 +1701,7 @@ def test_variation_capability_disables_unsupported_source(variation, case):
         pmxbot.config['images_model'] = 'dall-e-3'
     else:
         enable_responses(cache, post)
+        source.unlink()
         metadata = dict(api='responses', store=case != 'unstored')
         if case == 'unstored':
             metadata['response_id'] = 'resp_source'
