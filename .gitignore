@@ -16,3 +16,6 @@ pyvenv.cfg
 .venv/
 .zed
 images/
+.codex
+.mypy_cache/
+.ruff_cache/
