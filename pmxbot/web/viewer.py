@@ -522,6 +522,30 @@ class AlbumPage:
             )
         # Escape the entire inherited layout too, without changing legacy pages.
         page = jenv.overlay(autoescape=True).get_template('album.html')
+        if cherrypy.request.method in ('GET', 'HEAD') and wants_json():
+            rendering = page.new_context(context)
+            names = ('artwork', 'prompt', 'metadata', 'cache_key')
+            return json_response(
+                dict(
+                    # Preserve SQLite's 64-bit IDs across JavaScript's number limit.
+                    image_id=str(image['id']) if image else None,
+                    properties=(
+                        {
+                            field: getattr(draft, field)
+                            for field in GenerationInputs.creative_fields
+                        }
+                        if draft
+                        else {}
+                    ),
+                    variation_available=bool(
+                        context.get('variation_available') and context['current_user']
+                    ),
+                    fragments={
+                        name: ''.join(page.blocks['selected_' + name](rendering))
+                        for name in names
+                    },
+                )
+            )
         return page.render(**context).encode('utf-8')
 
 

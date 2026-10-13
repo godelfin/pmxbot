@@ -155,7 +155,7 @@ def test_render_and_read_only(page):
         'Close full-size artwork'
     )
     script = soup.find('script').get_text()
-    assert "preview.addEventListener('click'" in script
+    assert "document.addEventListener('click'" in script
     assert 'event.preventDefault()' in script
     assert 'dialog.showModal()' in script
     assert 'dialog.close()' in script
@@ -1641,3 +1641,41 @@ def test_variation_file_save_failure_is_safe(variation, monkeypatch):
         assert db.execute('SELECT count(*) FROM image_cache').fetchone() == (1,)
         assert db.execute('SELECT count(*) FROM album_images').fetchone() == (1,)
     client.put_object.assert_not_called()
+
+
+@pytest.mark.parametrize('page', ['', '/bot'], indirect=True)
+def test_artwork_selection_fragments(page):
+    cache, request = page
+    insert(cache, url='javascript:alert(1)')
+    before = cache.database.read_bytes()
+    response = request('/albums/42?source_image_id=42', accept='application/json')
+    assert response['status'] == 200
+    data = json.loads(response['body'])
+    assert data['image_id'] == '42'
+    parts = data['fragments']
+    assert set(parts) == {'artwork', 'prompt', 'metadata', 'cache_key'}
+    assert 'javascript:' not in parts['artwork']
+    assert 'Hosted artwork is unavailable' in parts['artwork']
+    assert '<script>' not in parts['prompt']
+    assert BeautifulSoup(parts['prompt'], 'html.parser').get_text() == (
+        '  exact <script> & "prompt"\nsecond line  '
+    )
+    assert set(data['properties']) == set(viewer.GenerationInputs.creative_fields)
+    assert data['variation_available'] is False
+    assert '/private/secret' not in response['body']
+    assert cache.database.read_bytes() == before
+    assert (
+        request('/albums/42?source_image_id=999', accept='application/json')['status']
+        == 404
+    )
+
+
+@pytest.mark.parametrize('identifier', [42, 2**53 + 1, 2**63 - 1])
+def test_artwork_selection_preserves_image_id(page, identifier):
+    cache, request = page
+    insert(cache, image_id=identifier)
+    response = request(
+        '/albums/42?source_image_id=' + str(identifier), accept='application/json'
+    )
+    assert response['status'] == 200
+    assert json.loads(response['body'])['image_id'] == str(identifier)
