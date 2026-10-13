@@ -310,6 +310,13 @@ def album_title_context(album):
     )
 
 
+_ALBUM_ARTWORK_FIELDS = ('format', 'format_description', 'genre', 'description')
+_ARTWORK_DETAILS_CONTEXT = (
+    ' Use the format, edition, genres, and descriptions as visual guidance only. '
+    'Do not literally add these details as text to the image.'
+)
+
+
 def album_prompt(album):
     prompt = (
         f"an album cover for the band {json.dumps(album['artist_name'], ensure_ascii=False)}. "
@@ -327,6 +334,8 @@ def album_prompt(album):
         )
     if album['description']:
         prompt += f" {album['description']}"
+    if any(album.get(field) for field in _ALBUM_ARTWORK_FIELDS):
+        prompt += _ARTWORK_DETAILS_CONTEXT
     if re.search(r'\btortas?\b', normalize(album['title'])):
         prompt += ' Torta is slang for "thicc Latina".'
     if re.search(r'\btortas?\b', normalize(album['artist_name'])):
@@ -416,6 +425,10 @@ def artwork_prompt(inputs):
             prompt += (
                 f' {label}: {json.dumps(getattr(inputs, field), ensure_ascii=False)}.'
             )
+    if (inputs.artist_genre or inputs.artist_description) and not any(
+        getattr(inputs, field) for field in _ALBUM_ARTWORK_FIELDS
+    ):
+        prompt += _ARTWORK_DETAILS_CONTEXT
     return prompt
 
 
