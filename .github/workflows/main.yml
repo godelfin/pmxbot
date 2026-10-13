@@ -53,17 +53,24 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    container: python:3.9.2-buster
+    services:
+      mongodb:
+        image: mongo:8.0
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping: 1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v6
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.9.2"
+      - name: Verify production Python version
+        run: python -c "import sys; assert sys.version_info[:3] == (3, 9, 2), sys.version"
       - name: Install tox
         run: |
           python -m pip install tox
       - name: Run
-        run: tox -e py
+        run: tox -e py -- --mongodb-uri=mongodb://mongodb:27017
 
   docs:
     runs-on: ubuntu-latest
