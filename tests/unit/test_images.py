@@ -658,6 +658,31 @@ def test_r2_upload_parameters(config, post, r2):
     r2.close.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    ('extension', 'content_type'),
+    [
+        ('.png', 'image/png'),
+        ('.jpg', 'image/jpeg'),
+        ('.webp', 'image/webp'),
+        ('.gif', 'image/gif'),
+        ('.unknown', 'application/octet-stream'),
+    ],
+)
+def test_r2_upload_content_type(config, r2, tmp_path, extension, content_type):
+    cache = images.ImageCache(config)
+    filename = tmp_path / ('image' + extension)
+    filename.write_bytes(b'image data')
+    destination = {
+        'endpoint_url': config['r2_endpoint_url'],
+        'bucket': config['r2_bucket'],
+        'key': filename.name,
+    }
+
+    cache.upload(filename, destination)
+
+    assert r2.put_object.call_args.kwargs['ContentType'] == content_type
+
+
 def test_imgbb_entry_migrates_without_regeneration(config, post, r2):
     cache = images.ImageCache(config)
     cache.get('cat')

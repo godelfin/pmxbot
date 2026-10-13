@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import json
 import logging
+import mimetypes
 import os
 import queue
 import re
@@ -1159,7 +1160,8 @@ class ImageCache:
                     Bucket=destination['bucket'],
                     Key=destination['key'],
                     Body=stream,
-                    ContentType='image/png',
+                    ContentType=mimetypes.guess_type(str(filename))[0]
+                    or 'application/octet-stream',
                 )
             return dict(destination, etag=result.get('ETag'))
         except (BotoCoreError, ClientError, OSError):
