@@ -28,7 +28,9 @@ async function setup(options = {}) {
       if (options.handle && await options.handle(route, id)) return;
       await route.fulfill({contentType: 'application/json', body: fs.readFileSync(path.join(fixtures, id + suffix + '.json'), 'utf8')});
     } else {
-      await route.fulfill({contentType: 'text/html', body: fs.readFileSync(path.join(fixtures, options.fixture ? options.fixture + '.html' : id + suffix + '.html'), 'utf8')});
+      const album = new URL(request.url()).pathname.match(/\/albums\/(41|43)$/);
+      const filename = album ? 'album' + album[1] + '.html' : options.fixture ? options.fixture + '.html' : id + suffix + '.html';
+      await route.fulfill({contentType: 'text/html', body: fs.readFileSync(path.join(fixtures, filename), 'utf8')});
     }
   });
   await page.goto('http://album.test/bot/albums/42?source_image_id=42');
@@ -51,7 +53,7 @@ test('selection updates all data, retains form and per-image edits, restores his
   assert.equal(await page.evaluate(() => window.scrollY), scrollBefore);
   assert.equal(await page.locator('#selected-prompt').innerText(), 'Prompt #43');
   assert.equal(await page.locator('.artwork-preview').getAttribute('href'), 'https://art.example/43');
-  assert.match(await page.locator('#selected-metadata').innerText(), /Metadata #43/);
+  assert.match(await page.locator('#selected-metadata').textContent(), /Metadata #43/);
   assert.equal(await page.locator('[name=description]').inputValue(), '');
   assert.equal(await page.evaluate(() => window.originalForm === document.querySelector('#variation-form')), true);
   assert.equal(await page.evaluate(() => window.documentMarker), 1);
@@ -92,7 +94,6 @@ for (const width of [360, 1400]) test(`single row, keyboard focus, overflow boun
   await selected(page, 61);
   await page.keyboard.press('ArrowLeft'); await selected(page, 62);
   await page.keyboard.press('ArrowRight'); await selected(page, 61);
-  await page.keyboard.press(' '); await selected(page, 61);
   await page.locator('[name=description]').focus();
   await page.keyboard.press('Home');
   assert.equal(await page.locator(':focus').getAttribute('name'), 'description');
@@ -236,5 +237,86 @@ test('arrows select artwork from page focus and scroll controls without overridi
   await page.keyboard.press('Enter'); await selected(page, 42);
   await page.keyboard.press('ArrowRight');
   assert.equal(await page.locator('[name=source_image_id]').inputValue(), '42');
+  await page.close();
+});
+
+test('Shift+arrows navigate albums on page and navigation-button focus, including empty albums and boundaries', async () => {
+  const page = await setup();
+  const previous = page.locator('.album-navigation a[rel=prev]');
+  assert.equal(await previous.getAttribute('aria-keyshortcuts'), 'Shift+ArrowLeft');
+  assert.equal(await previous.locator('kbd').innerText(), 'Shift+←');
+  await previous.focus();
+  await page.keyboard.press('Shift+ArrowLeft');
+  await page.waitForURL('**/albums/41');
+  assert.equal(await page.locator('#image-history a[data-image-id]').count(), 0);
+  await page.keyboard.press('Shift+ArrowLeft');
+  assert.match(page.url(), /albums\/41$/);
+  await page.keyboard.press('Shift+ArrowRight');
+  await page.waitForURL('**/albums/42');
+  await page.keyboard.press('Shift+ArrowRight');
+  await page.waitForURL('**/albums/43');
+  await page.keyboard.press('Shift+ArrowRight');
+  assert.match(page.url(), /albums\/43$/);
+  await page.keyboard.press('Shift+ArrowLeft');
+  await page.waitForURL('**/albums/42');
+  await page.close();
+});
+
+test('album shortcuts leave form fields, modified shortcuts and the full-size dialog alone', async () => {
+  const page = await setup();
+  const initialURL = page.url();
+  for (const selector of ['[name=description]', '[name=genre]']) {
+    await page.locator(selector).focus();
+    await page.keyboard.press('Shift+ArrowLeft');
+    await page.keyboard.press('Shift+ArrowRight');
+    assert.equal(page.url(), initialURL);
+  }
+  await page.locator('.artwork-preview').click();
+  await page.keyboard.press('Shift+ArrowRight');
+  assert.equal(page.url(), initialURL);
+  await page.keyboard.press('Escape');
+  for (const modifier of ['Control', 'Meta', 'Alt']) {
+    await page.keyboard.press(modifier + '+Shift+ArrowRight');
+    assert.equal(page.url(), initialURL);
+  }
+  await page.close();
+});
+
+test('history has no visible prose or custom Enter/Space selection bindings', async () => {
+  const page = await setup();
+  const history = page.locator('section[aria-labelledby="image-history-heading"]');
+  // Accessibility labels remain available, while all prose is visually clipped.
+  assert.equal(await history.locator('h2').evaluate(el => getComputedStyle(el).clipPath), 'inset(50%)');
+  assert.equal(await history.locator('#history-help').evaluate(el => getComputedStyle(el).clipPath), 'inset(50%)');
+  assert.equal(await thumbnail(page, 43).locator('span:last-child').evaluate(el => getComputedStyle(el).clipPath), 'inset(50%)');
+  assert.equal(await thumbnail(page, 43).locator('small').evaluate(el => getComputedStyle(el).clipPath), 'inset(50%)');
+  assert.equal(await thumbnail(page, 43).locator('small').textContent(), 'Create New');
+  assert.match(await thumbnail(page, 43).textContent(), /View image #43/);
+  await page.locator('#image-history').focus();
+  await page.keyboard.press('Enter');
+  await page.keyboard.press(' ');
+  assert.equal(await page.locator('[name=source_image_id]').inputValue(), '42');
+  await page.keyboard.press('Home');
+  await page.keyboard.press(' ');
+  assert.equal(await page.locator('[name=source_image_id]').inputValue(), '42');
+  await page.close();
+});
+
+test('metadata panels start collapsed and preserve user expansion across artwork selection', async () => {
+  const page = await setup();
+  const panels = page.locator('#selected-metadata details');
+  assert.equal(await panels.count(), 2);
+  assert.equal(await page.locator('#selected-metadata details[open]').count(), 0);
+  const generation = page.locator('details[data-metadata-label="Generation metadata"]');
+  await generation.locator('summary').click();
+  assert.equal(await generation.evaluate(el => el.open), true);
+  await thumbnail(page, 43).click(); await selected(page, 43);
+  assert.equal(await generation.evaluate(el => el.open), true);
+  assert.match(await generation.locator('pre').innerText(), /Metadata #43/);
+  await generation.locator('summary').click();
+  await thumbnail(page, 42).click(); await selected(page, 42);
+  assert.equal(await page.locator('#selected-metadata details[open]').count(), 0);
+  await page.reload();
+  assert.equal(await page.locator('#selected-metadata details[open]').count(), 0);
   await page.close();
 });

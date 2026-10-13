@@ -31,6 +31,13 @@ def main():
         output.joinpath('empty.html').write_text(
             request('/albums/' + str(empty['id']))['body'], encoding='utf-8'
         )
+        earlier = library.create_album('Earlier', 'Previous album')
+        with sqlite3.connect(cache.database) as db:
+            db.execute('UPDATE albums SET id = 41 WHERE id = ?', (earlier['id'],))
+        for identifier in (41, 43):
+            output.joinpath('album' + str(identifier) + '.html').write_text(
+                request('/albums/' + str(identifier))['body'], encoding='utf-8'
+            )
         for identifier in range(43, 63):
             with sqlite3.connect(cache.database) as db:
                 db.execute(
@@ -47,7 +54,14 @@ def main():
                             if identifier == 44
                             else 'https://art.example/' + str(identifier)
                         ),
-                        json.dumps({'revised_prompt': 'Metadata #' + str(identifier)}),
+                        json.dumps(
+                            {
+                                'revised_prompt': 'Metadata #' + str(identifier),
+                                'operation': (
+                                    'create_new' if identifier == 43 else 'edit'
+                                ),
+                            }
+                        ),
                     ),
                 )
             library.record_image(42, str(identifier))

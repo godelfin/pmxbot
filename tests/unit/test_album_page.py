@@ -410,11 +410,21 @@ def test_album_navigation_and_columns(page):
         'Generate album artwork',
     ]
     navigation = soup.select_one('.image-sidebar nav')
-    assert navigation.select_one('button[disabled]').get_text() == 'Prev'
+    assert navigation.select_one('button[disabled] span').get_text() == 'Prev'
+    assert (
+        navigation.select_one('button[disabled]')['aria-keyshortcuts']
+        == 'Shift+ArrowLeft'
+    )
+    assert (
+        navigation.select_one('a[rel=next]')['aria-keyshortcuts'] == 'Shift+ArrowRight'
+    )
+    assert navigation.select_one('a[rel=next] kbd').get_text() == 'Shift+→'
     assert navigation.select_one('a[rel=next]')['href'] == f'/bot/albums/{last["id"]}'
     soup = BeautifulSoup(request(f'/albums/{last["id"]}')['body'], 'html.parser')
     assert soup.select_one('a[rel=prev]')['href'] == f'/bot/albums/{first["id"]}'
-    assert soup.select_one('.album-navigation button[disabled]').get_text() == 'Next'
+    assert (
+        soup.select_one('.album-navigation button[disabled] span').get_text() == 'Next'
+    )
     assert cache.database.read_bytes() == before
 
 
@@ -579,7 +589,9 @@ def test_album_selectable_image_history_updates_prompt_and_metadata(page):
     )
     assert (
         '"revised_prompt": "new details"'
-        in selected_soup.select_one('#metadata-heading-2 ~ pre').get_text()
+        in selected_soup.select_one('#metadata-heading-2')
+        .find_parent('details')
+        .pre.get_text()
     )
     assert (
         selected_soup.select_one(

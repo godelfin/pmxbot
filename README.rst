@@ -331,13 +331,20 @@ Generating artwork variations
 Artwork history stays in one horizontally scrollable row. Its arrow buttons,
 touch/trackpad scrolling, and thumbnail links work at narrow and wide sizes.
 Left/Right selects adjacent artwork when not editing a form field or viewing
-the full-size dialog. In history, Home/End moves focus to either end,
-and Enter/Space selects artwork. Selection updates artwork, prompt, metadata,
-and variation source together without reloading; the URL supports sharing,
-refresh, and Back/Forward. Without JavaScript, thumbnail links open album pages.
+the full-size dialog. In history, Home/End moves focus to either end without
+selecting artwork. Selection updates artwork, prompt, metadata, and variation
+source together without reloading; the URL supports sharing, refresh, and
+Back/Forward. Without JavaScript, thumbnail links open album pages.
 Variation edits are remembered separately for each image while the page remains
 open. Selection temporarily disables submission; a failed selection retains the
 previous image and draft and offers Retry. Refreshing clears unsaved drafts.
+
+Shift+Left/Right opens the previous/next album on both Mac and Windows; the
+navigation buttons show these shortcuts. Shortcuts leave form fields and the
+full-size dialog alone, and unavailable album neighbors do not navigate.
+Artwork history shows thumbnails and icons with accessible labels and status
+announcements. Settings and generation metadata start collapsed; expanded
+panels stay expanded when selecting another image.
 
 On an album page with artwork, the variation form starts from that image's
 saved structured properties, or canonical album and artist properties for
