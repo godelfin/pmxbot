@@ -97,7 +97,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 <section class="image-section" aria-labelledby="image-history-heading">
 <h2 id="image-history-heading">Artwork history</h2>
 <div class="history-controls" hidden><button type="button" id="history-left" aria-label="Scroll artwork history left" aria-controls="image-history">←</button><button type="button" id="history-right" aria-label="Scroll artwork history right" aria-controls="image-history">→</button></div>
-<p id="history-help" hidden>Arrow keys move focus; Home/End reach either end; Enter/Space select. Edited variation fields are saved for each image while this page is open.</p>
+<p id="history-help" hidden>Left/Right selects adjacent artwork. In history, Home/End moves focus to either end; Enter/Space selects. Edited variation fields are saved for each image while this page is open.</p>
 <p id="history-status" role="status" aria-live="polite"></p><button id="history-retry" type="button" hidden>Retry selection</button>
 <ul class="image-history" id="image-history" tabindex="0" aria-label="Artwork history" aria-describedby="history-help">
 {% for job in pending_jobs %}

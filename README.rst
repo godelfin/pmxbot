@@ -330,7 +330,8 @@ Generating artwork variations
 
 Artwork history stays in one horizontally scrollable row. Its arrow buttons,
 touch/trackpad scrolling, and thumbnail links work at narrow and wide sizes.
-With a thumbnail focused, Left/Right moves focus, Home/End reaches either end,
+Left/Right selects adjacent artwork when not editing a form field or viewing
+the full-size dialog. In history, Home/End moves focus to either end,
 and Enter/Space selects artwork. Selection updates artwork, prompt, metadata,
 and variation source together without reloading; the URL supports sharing,
 refresh, and Back/Forward. Without JavaScript, thumbnail links open album pages.
