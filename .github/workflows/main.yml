@@ -53,12 +53,11 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    container: python:3.9.2-buster
     steps:
       - uses: actions/checkout@v6
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.9.2"
+      - name: Verify production Python version
+        run: python -c "import sys; assert sys.version_info[:3] == (3, 9, 2), sys.version"
       - name: Install tox
         run: |
           python -m pip install tox
