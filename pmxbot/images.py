@@ -149,13 +149,13 @@ def post_json(url, provider, **kwargs):
 
 
 def initialize_image_records(db):
-    """Initialize image storage and add immutable ancestry to existing records."""
+    """Initialize image storage and migrate existing records in place."""
     db.execute(
         '''CREATE TABLE IF NOT EXISTS image_cache (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cache_key TEXT NOT NULL UNIQUE, prompt TEXT NOT NULL,
             normalized_prompt TEXT NOT NULL, settings_json TEXT NOT NULL,
-            local_filename TEXT NOT NULL, hosted_url TEXT,
+            local_filename TEXT NOT NULL, hosted_url TEXT, thumb_url TEXT,
             host TEXT NOT NULL DEFAULT 'r2', host_metadata_json TEXT,
             generation_metadata_json TEXT NOT NULL, requested_by TEXT,
             channel TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -171,6 +171,8 @@ def initialize_image_records(db):
     try:
         db.execute('UPDATE image_cache SET id = id WHERE 0')
         columns = {row[1] for row in db.execute('PRAGMA table_info(image_cache)')}
+        if 'thumb_url' not in columns:
+            db.execute('ALTER TABLE image_cache ADD COLUMN thumb_url TEXT')
         if 'parent_image_id' not in columns:
             db.execute(
                 'ALTER TABLE image_cache ADD COLUMN '

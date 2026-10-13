@@ -999,7 +999,12 @@ def test_existing_image_records_preserve_every_field_and_album_links(config, pos
     library.record_image(album['id'], 'old')
     with closing(cache.connect()) as db:
         db.execute(
-            '''INSERT INTO image_cache VALUES (
+            '''INSERT INTO image_cache (
+            id, cache_key, prompt, normalized_prompt, settings_json,
+            local_filename, hosted_url, host, host_metadata_json,
+            generation_metadata_json, requested_by, channel, created_at,
+            uploaded_at, last_accessed_at, hit_count, last_error, parent_image_id
+            ) VALUES (
             42, 'old', 'original prompt', 'original prompt', '{"quality":"low"}',
             '/missing/original.png', 'https://old.example/image.png', 'imgbb',
             '{"host":"original"}', '{"usage":42}', 'alice', '#test',
@@ -1296,6 +1301,48 @@ def test_three_concurrent_workers_and_queue(config, monkeypatch):
     assert not slots.acquire(blocking=False)
     for _ in range(3):
         slots.release()
+
+
+@pytest.mark.parametrize('existing', [False, True])
+def test_image_thumbnail_initialization(config, existing):
+    from contextlib import closing
+
+    cache = images.ImageCache(config)
+    with closing(sqlite3.connect(cache.database, isolation_level=None)) as db:
+        db.row_factory = sqlite3.Row
+        if existing:
+            images.initialize_image_records(db)
+            schema = db.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'image_cache'"
+            ).fetchone()[0]
+            db.execute('DROP TABLE image_cache')
+            db.execute(schema.replace(' thumb_url TEXT,', ''))
+            db.execute(
+                """INSERT INTO image_cache (id, cache_key, prompt, normalized_prompt,
+                settings_json, local_filename, hosted_url, generation_metadata_json)
+                VALUES (42, 'old', 'original', 'original', '{}', 'old.png',
+                'https://images.example.com/old.png', '{}')"""
+            )
+            before = dict(db.execute('SELECT * FROM image_cache').fetchone())
+        for _ in range(3):
+            images.initialize_image_records(db)
+        columns = {
+            row['name']: row for row in db.execute('PRAGMA table_info(image_cache)')
+        }
+        assert columns['thumb_url']['type'] == 'TEXT'
+        assert columns['thumb_url']['notnull'] == 0
+        if existing:
+            after = dict(db.execute('SELECT * FROM image_cache').fetchone())
+            assert after.pop('thumb_url') is None
+            assert after == before
+            db.execute(
+                'UPDATE image_cache SET thumb_url = ? WHERE id = 42',
+                ('https://images.example.com/old-thumb.png',),
+            )
+            images.initialize_image_records(db)
+            assert db.execute(
+                'SELECT thumb_url FROM image_cache WHERE id = 42'
+            ).fetchone()[0] == 'https://images.example.com/old-thumb.png'
 
 
 @pytest.mark.parametrize('existing', [False, True])
