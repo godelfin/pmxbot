@@ -19,8 +19,8 @@
 </nav>
 <form class="catalog-controls" action="{{ collection_path }}" method="get">
 <label>Search albums and artists<input name="q" value="{{ q }}" type="search" /></label>
-<label>Artist<input name="artist" value="{{ artist }}" /></label>
-<label>Album title<input name="album_title" value="{{ album_title }}" /></label>
+<label>Artist<input name="artist" value="{{ artist }}" placeholder="Part of artist name" /></label>
+<label>Album title<input name="album_title" value="{{ album_title }}" placeholder="Part of album title" /></label>
 <label>Sort by<select name="sort">
 {% for value, label in [('artist', 'Band'), ('album', 'Album'), ('chronology', 'Created'), ('variations', 'Image variations'), ('genre', 'Genre')] %}
 <option value="{{ value }}"{% if value == sort %} selected{% endif %}>{{ label }}</option>

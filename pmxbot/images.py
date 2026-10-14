@@ -662,8 +662,8 @@ class ImageCache:
                 ('albums.title', album_title),
             ):
                 if value:
-                    conditions.append(f'{column} = ? COLLATE BINARY')
-                    values.append(value)
+                    conditions.append(f'instr(casefold({column}), ?) > 0')
+                    values.append(value.casefold())
             source = 'FROM albums JOIN artists ON artists.id = albums.artist_id'
             where = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
             total = db.execute(f'SELECT COUNT(*) {source}{where}', values).fetchone()[0]

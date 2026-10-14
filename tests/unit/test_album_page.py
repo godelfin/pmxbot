@@ -1193,7 +1193,7 @@ def test_catalog_sort(page, sort, order, expected):
         ('q=+++', [3, 2, 1]),
         ('album_title=Apple', [3, 1]),
         ('artist=alpha', [3, 2]),
-        ('artist=Alpha', []),
+        ('artist=Alpha', [3, 2]),
         ('q=%25', []),
         ('q=%27+OR+1%3D1', []),
     ],
@@ -1211,7 +1211,7 @@ def test_catalog_filters(page, query, expected):
         assert 'No albums match' in soup.get_text()
 
 
-def test_catalog_exact_links_and_pagination(page):
+def test_catalog_filter_links_and_pagination(page):
     cache, request = page
     library = MusicLibrary(cache.database)
     artist, title = '<B & / + ü>', '<A & / + ü>'
@@ -1732,9 +1732,7 @@ def test_collection_round_trip(page, sort, order):
     for number in range(30):
         library.create_album('Mazel Vatos', f'Release {number:02}', genre='Jazz')
     library.create_album('Other', 'Release 99')
-    query = urlencode(
-        dict(q='Release', artist='Mazel Vatos', sort=sort, order=order, page=2)
-    )
+    query = urlencode(dict(q='Release', artist='vAt', sort=sort, order=order, page=2))
     catalog = BeautifulSoup(request('/?' + query)['body'], 'html.parser')
     gallery_url = catalog.select_one('.view-switch a[href*="/gallery"]')['href']
     gallery = BeautifulSoup(request(gallery_url[4:])['body'], 'html.parser')
@@ -1747,7 +1745,7 @@ def test_collection_round_trip(page, sort, order):
     assert parse_qs(urlsplit(list_url).query) == parse_qs(query)
     assert parse_qs(
         urlsplit(gallery.select_one('.pagination [rel=prev]')['href']).query
-    )['artist'] == ['Mazel Vatos']
+    )['artist'] == ['vAt']
     assert not gallery.select('form input[name=page]')
     assert parse_qs(urlsplit(catalog.select_one('.catalog th a')['href']).query)[
         'page'
@@ -1906,3 +1904,46 @@ def test_collection_all_filters_propagate(page):
     assert parse_qs(
         urlsplit(gallery.select_one('.view-switch a:not([aria-current])')['href']).query
     ) == dict(parse_qs(query), page=['1'])
+
+
+@pytest.mark.parametrize(
+    'view, selector', [('/', '.catalog-album a'), ('/gallery', '.gallery-card')]
+)
+@pytest.mark.parametrize(
+    'filters, expected',
+    [
+        ({'artist': 'AZEL'}, [2, 1]),
+        ({'album_title': 'NIGHT'}, [5, 4, 2, 1]),
+        ({'artist': 'azel', 'album_title': 'MOV'}, [1]),
+        ({'artist': 'STRASS'}, [4]),
+        ({'album_title': '_100%'}, [4]),
+        ({'artist': '%'}, []),
+        ({'album_title': "' OR 1=1"}, []),
+        ({'artist': '  vAtOs  '}, [1]),
+        ({'album_title': '  moves  '}, [1]),
+        ({'artist': '   ', 'album_title': '  '}, [5, 4, 3, 2, 1]),
+    ],
+)
+def test_collection_partial_artist_and_title_search(
+    page, view, selector, filters, expected
+):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    for artist, title in [
+        ('Mazel Vatos', 'Night Moves'),
+        ('Mazel Orchestra', 'Midnight Blues'),
+        ('Other', 'Mazel Diary'),
+        ('Straße', 'Night_100%'),
+        ('Else', 'NightX100Z'),
+    ]:
+        library.create_album(artist, title)
+    with sqlite3.connect(cache.database) as db:
+        db.execute("UPDATE albums SET created_at = '2026-01-01'")
+    response = request(view + '?' + urlencode(filters))
+    assert response['status'] == 200
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    assert [urlsplit(a['href']).path for a in soup.select(selector)] == [
+        f'/bot/albums/{identifier}' for identifier in expected
+    ]
+    for field, value in filters.items():
+        assert soup.select_one(f'[name={field}]')['value'] == value.strip()

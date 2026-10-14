@@ -834,6 +834,8 @@ class PmxbotPages:
         ):
             raise cherrypy.HTTPError(400, 'Invalid catalog parameters')
         q = q.strip()
+        artist = artist.strip()
+        album_title = album_title.strip()
         page_number = int(page)
 
         try:
