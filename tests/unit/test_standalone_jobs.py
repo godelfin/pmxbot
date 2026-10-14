@@ -109,6 +109,7 @@ def test_music_persistence_settings_and_restart_delivery(
                 'description',
                 'artist_genre',
                 'artist_description',
+                'style',
             ),
             '',
         ),
