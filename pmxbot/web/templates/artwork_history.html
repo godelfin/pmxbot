@@ -21,7 +21,6 @@
     right.disabled = strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1;
   }
   left.parentElement.hidden = false;
-  document.getElementById('history-help').hidden = false;
   left.addEventListener('click', () => strip.scrollBy({left: -Math.max(128, strip.clientWidth * .8), behavior: motion()}));
   right.addEventListener('click', () => strip.scrollBy({left: Math.max(128, strip.clientWidth * .8), behavior: motion()}));
   strip.addEventListener('scroll', boundaries);
@@ -125,7 +124,8 @@
         link.classList.toggle('current-image', active);
         if (active) link.setAttribute('aria-current', 'page');
         else link.removeAttribute('aria-current');
-        link.querySelector('span:last-child').textContent = `${active ? 'Currently viewing' : 'View'} image #${link.dataset.imageId}`;
+        link.querySelector('.selection-indicator').hidden = !active;
+        link.setAttribute('aria-label', `${link.dataset.historyLabel}${link.dataset.historyParent ? ', based on ' + link.dataset.historyParent : ''}, image #${link.dataset.imageId}${active ? ', Selected' : ''}`);
       }
       if (!navigation) window.history.pushState(null, '', url);
       committedURL = location.href;

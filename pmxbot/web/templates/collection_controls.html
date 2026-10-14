@@ -35,7 +35,7 @@
 <option value="{{ value }}"{% if value == selected_sort %} selected{% endif %}>{{ label }}</option>
 {% endfor %}
 </select></label>
-<button type="submit">Apply</button>
+<button type="submit">Search</button>
 </form>
 <div class="filter-chips" aria-label="Active filters">
 {% for field, label, value in [('q', 'Search', q), ('artist', 'Artist', artist), ('album_title', 'Album title', album_title)] %}

@@ -182,6 +182,52 @@ def results_return_to(value):
         return fallback
 
 
+def describe_artwork_history(history):
+    """Label proven roots/children; leave incomplete or legacy provenance neutral."""
+    chronological = sorted(history, key=lambda item: (item['created_at'], item['id']))
+    by_id = {item['id']: item for item in chronological}
+    roots = [
+        item['id']
+        for item in chronological
+        if item.get('operation') == 'create_new' and item.get('parent_image_id') is None
+    ]
+    labels = {
+        identifier: 'Original' if len(roots) == 1 else f'Original {number}'
+        for number, identifier in enumerate(roots, 1)
+    }
+    variations = set()
+    for item in chronological:
+        parent = item.get('parent_image_id')
+        if parent is None:
+            continue
+        seen = {item['id']}
+        while parent is not None and parent in by_id and parent not in seen:
+            seen.add(parent)
+            parent = by_id[parent].get('parent_image_id')
+        if parent is None:
+            variations.add(item['id'])
+    number = 0
+    for position, item in enumerate(chronological, 1):
+        if item['id'] in variations:
+            number += 1
+            labels[item['id']] = f'Variation {number}'
+        elif item['id'] not in labels:
+            labels[item['id']] = f'Image {position}'
+    return [
+        dict(
+            item,
+            history_label=labels[item['id']],
+            parent_label=(
+                labels.get(item.get('parent_image_id'))
+                if item['id'] in variations
+                else None
+            ),
+            image_url=safe_image_url(item['hosted_url']),
+        )
+        for item in history
+    ]
+
+
 def make_anchor(line):
     time, nick = line
     return "{}.{}".format(str(time).replace(':', '.'), nick)
@@ -579,10 +625,7 @@ class AlbumPage:
             navigation_sort_label=dict(SORT_OPTIONS)[
                 f"{browsing_filters['sort']}:{browsing_filters['order']}"
             ],
-            image_history=[
-                dict(item, image_url=safe_image_url(item['hosted_url']))
-                for item in image_history
-            ],
+            image_history=describe_artwork_history(image_history),
             failures=failures,
             formats=sorted(pmxbot.albums.formats),
             format_descriptions=sorted(pmxbot.albums.format_desc),

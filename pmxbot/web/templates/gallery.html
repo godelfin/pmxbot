@@ -11,13 +11,15 @@ h1 { margin: .75rem 0 .25rem; font-size: 1.5rem; }
 a { color: #135ba1; }
 a:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr)); gap: 1.25rem; padding: 0; list-style: none; }
-.gallery-card { display: block; height: 100%; overflow: hidden; border: 1px solid #d4dbe2; border-radius: .5rem; background: #fff; text-decoration: none; }
-.gallery-card:hover { border-color: #135ba1; }
+.gallery-item { height: 100%; overflow: hidden; border: 1px solid #d4dbe2; border-radius: .5rem; background: #fff; }
+.gallery-card { display: block; text-decoration: none; }
+.gallery-artist { display: block; box-sizing: border-box; min-height: 44px; padding: .15rem 1rem .75rem; overflow-wrap: anywhere; }
+.gallery-item a:focus-visible { outline-offset: -3px; }
+.gallery-item:hover { border-color: #135ba1; }
 .gallery-artwork { display: grid; place-items: center; aspect-ratio: 1; background: #e7ecf1; color: #596574; }
 .gallery-artwork img { display: block; width: 100%; height: 100%; aspect-ratio: 1; object-fit: contain; }
 .gallery-caption { display: block; padding: .75rem 1rem; overflow-wrap: anywhere; }
-.gallery-caption strong, .gallery-caption span { display: block; }
-.gallery-caption span { color: #596574; }
+.gallery-caption strong { display: block; }
 @media (max-width: 48rem) { main { padding: .75rem; } .gallery { gap: .75rem; } }
 </style>
 </head>
@@ -30,20 +32,21 @@ a:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
 {% if albums %}
 <ul class="gallery">
 {% for album in albums %}
-<li>
+<li><article class="gallery-item">
 <a class="gallery-card" data-album-link href="{{ album_url(album.id) }}">
 <span class="gallery-artwork"{% if sort == 'genre' %} title="Genre: {{ (album.genre or '')|trim or 'No genre' }}"{% endif %}>
 {% set artwork_url = album.thumb_url or album.image_url %}
 {% if artwork_url %}<img src="{{ artwork_url }}" alt="Artwork for {{ album.artist_name }} — {{ album.title }}" loading="lazy" decoding="async" referrerpolicy="no-referrer" />{% else %}<span>Artwork unavailable</span>{% endif %}
 </span>
-<span class="gallery-caption"><strong>{{ album.title }}</strong><span>{{ album.artist_name }}</span></span>
+<span class="gallery-caption"><strong>{{ album.title }}</strong></span>
 </a>
-</li>
+<a class="gallery-artist artist-link" href="{{ collection_url(q='', artist=album.artist_name, album_title='', page=1) }}">{{ album.artist_name }}</a>
+</article></li>
 {% endfor %}
 </ul>
 {% with pagination_position='bottom' %}{% include "collection_pagination.html" %}{% endwith %}
 {% else %}
-<p>{% if q or artist or album_title %}No albums match your search.{% else %}No albums yet.{% endif %}</p>
+<p>{% if q or artist or album_title %}No albums match your search. Try different keywords or clear filters.{% else %}No albums yet.{% endif %}</p>
 {% endif %}
 </main>
 {% include "collection_scroll.html" %}

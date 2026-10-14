@@ -42,8 +42,9 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 .image-history { display: flex; flex-wrap: nowrap; gap: 1rem; overflow-x: auto; list-style: none; padding: .5rem !important; scroll-behavior: smooth; }
 .image-history li { flex: 0 0 8rem; }
 .album-page .image-history li + li { margin-top: 0; }
-.image-history .current-image { outline: 3px solid #135ba1; outline-offset: 2px; }
+.image-history .current-image { background: #e8f1fa; outline: 3px solid #135ba1; outline-offset: 2px; }
 .history-controls[hidden] { display: none; }
+.history-controls button { min-width: 44px; min-height: 44px; font: inherit; cursor: pointer; }
 .history-controls { display: flex; gap: .5rem; margin-bottom: .5rem; }
 .image-history:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
@@ -59,6 +60,17 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 .image-history a { position: relative; display: grid; gap: .25rem; text-decoration: none; }
 .image-history img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
 .image-history .current-image { font-weight: bold; }
+.image-history a { padding: .25rem; border: 2px solid transparent; border-radius: .25rem; }
+.history-label { color: #252b34; }
+.selection-indicator { color: #135ba1; font-size: .75rem; font-weight: bold; }
+.selection-indicator[hidden] { display: block; visibility: hidden; }
+.keyboard-help { margin-bottom: .75rem; }
+.keyboard-help summary, .advanced-options summary { min-height: 44px; display: list-item; line-height: 44px; cursor: pointer; }
+.advanced-options { margin: 1rem 0; padding: .75rem; border: 1px solid #d4dbe2; border-radius: .25rem; }
+.variation-section { margin-top: 1.25rem; }
+.variation-section .album-details { max-width: 52rem; }
+#variation-form button { min-height: 44px; padding: .5rem .75rem; font: inherit; }
+.album-details :focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 .pending-artwork-box { display: grid; place-items: center; width: 100%; aspect-ratio: 1; background: #d4d7db; border-radius: .25rem; }
 .generation-spinner { width: 2rem; height: 2rem; border: .25rem solid #a5abb3; border-top-color: #444d59; border-radius: 50%; animation: generation-spin 1s linear infinite; }
 @keyframes generation-spin { to { transform: rotate(360deg); } }
@@ -68,6 +80,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 .image-details dt { font-weight: bold; }
 .image-details dd { margin: 0; }
 .album-details input[type="text"], .album-details select, .album-details textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: .4rem .5rem; font: inherit; color: inherit; border: 1px solid #d4dbe2; border-radius: .25rem; }
+.album-details select { min-height: 44px; }
 .music-description { white-space: pre-wrap; }
 .album-page ul { margin: 0; padding-left: 1.25rem; }
 .album-page li + li { margin-top: .5rem; }
@@ -115,9 +128,9 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 {% endblock %}</section>
 {% if image_history or draft or pending_jobs %}
 <section class="image-section" aria-labelledby="image-history-heading">
-<h2 id="image-history-heading" class="sr-only">Artwork history</h2>
+<h2 id="image-history-heading">Artwork history</h2>
 <div class="history-controls" hidden><button type="button" id="history-left" aria-label="Scroll artwork history left" aria-controls="image-history">←</button><button type="button" id="history-right" aria-label="Scroll artwork history right" aria-controls="image-history">→</button><button id="history-retry" type="button" hidden aria-label="Retry artwork selection" title="Retry artwork selection">↻</button></div>
-<p id="history-help" class="sr-only" hidden>Left/Right selects adjacent artwork. In history, Home/End moves focus to either end. Edited variation fields are saved for each image while this page is open.</p>
+<details class="keyboard-help"><summary>Keyboard help</summary><p id="history-help">Left/Right selects adjacent artwork. In history, Home/End moves focus to either end without changing the selected image. Shift+Left/Right opens the previous/next album. Shortcuts pause while typing or viewing full-size artwork. Edits are saved for each image while this page stays open.</p></details>
 <p id="history-status" class="sr-only" role="status" aria-live="polite"></p>
 <ul class="image-history" id="image-history" tabindex="0" aria-label="Artwork history" aria-describedby="history-help">
 {% for job in pending_jobs %}
@@ -129,10 +142,10 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 {% endfor %}
 {% for historical_image in image_history %}
 <li>
-<a data-image-id="{{ historical_image.id }}" href="{{ base }}/albums/{{ album.id }}?source_image_id={{ historical_image.id }}{{ return_query }}"{% if image and image.id == historical_image.id %} class="current-image" aria-current="page"{% endif %}>
+<a data-image-id="{{ historical_image.id }}" data-history-label="{{ historical_image.history_label }}" data-history-parent="{{ historical_image.parent_label or '' }}" aria-label="{{ historical_image.history_label }}{% if historical_image.parent_label %}, based on {{ historical_image.parent_label }}{% endif %}, image #{{ historical_image.id }}{% if image and image.id == historical_image.id %}, Selected{% endif %}" href="{{ base }}/albums/{{ album.id }}?source_image_id={{ historical_image.id }}{{ return_query }}"{% if image and image.id == historical_image.id %} class="current-image" aria-current="page"{% endif %}>
 {% if historical_image.image_url %}<img src="{{ historical_image.image_url }}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" />{% else %}<span class="history-unavailable" aria-hidden="true"></span>{% endif %}
-{% if historical_image.operation %}<small class="sr-only">{{ 'Create New' if historical_image.operation == 'create_new' else 'Edit' }}</small>{% endif %}
-<span class="sr-only">{% if image and image.id == historical_image.id %}Currently viewing{% else %}View{% endif %} image #{{ historical_image.id }}</span>
+<span class="history-label">{{ historical_image.history_label }}</span>
+<span class="selection-indicator"{% if not image or image.id != historical_image.id %} hidden{% endif %}>Selected</span>
 </a>
 </li>
 {% endfor %}
@@ -157,48 +170,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 <h2 id="prompt-heading">Original prompt</h2>
 <pre id="selected-prompt">{% block selected_prompt %}{% if image %}{{ image.prompt }}{% else %}No artwork has been generated for this album.{% endif %}{% endblock %}</pre>
 </section>
-{% if album %}
-<section class="image-section" aria-labelledby="album-heading">
-<h2 id="album-heading">{% if draft %}Generate album artwork{% else %}Album details{% endif %}</h2>
-<div class="album-details">
-{% if draft %}
-{% if variation_error %}<p id="variation-error" role="alert">{{ variation_error }}</p>{% endif %}
-<p id="generation-error" role="alert" hidden></p>
-<form id="variation-form" method="POST" action="{{ base }}/albums/{{ album.id }}">
-{% if return_query %}<input type="hidden" name="return_to" value="{{ return_to }}" />{% endif %}
-<input type="hidden" name="submission_token" value="{{ submission_token }}" />
-<input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-<input type="hidden" name="source_image_id" value="{{ draft.source_image_id or '' }}" />
-{% endif %}
-<dl class="image-details">
-<dt>Band</dt><dd id="album-band">{{ album.artist_name }}</dd>
-<dt>Title</dt><dd id="album-title">{{ album.title }}</dd>
-{% set properties = draft.album_properties() if draft else album %}
-{% for name, label, options in [('format', 'Format', formats), ('format_description', 'Format description', format_descriptions), ('genre', 'Album genre', genres), ('artist_genre', 'Band genre', genres)] %}
-<dt>{% if draft %}<label for="album-{{ name }}">{{ label }}</label>{% else %}{{ label }}{% endif %}</dt>
-<dd>{% if draft %}<select id="album-{{ name }}" name="{{ name }}">
-<option value=""{% if not properties[name] %} selected{% endif %}>None</option>
-{% if properties[name] and properties[name] not in options %}<option data-source-only value="{{ properties[name] }}" selected>{{ properties[name] }}</option>{% endif %}
-{% for option in options %}<option value="{{ option }}"{% if option == properties[name] %} selected{% endif %}>{{ option }}</option>{% endfor %}
-</select>{% else %}{{ properties[name] or '' }}{% endif %}</dd>
-{% endfor %}
-{% for name, label in [('description', 'Album description'), ('artist_description', 'Band description')] %}
-<dt>{% if draft %}<label for="album-{{ name }}">{{ label }}</label>{% else %}{{ label }}{% endif %}</dt>
-<dd class="music-description">{% if draft %}<textarea id="album-{{ name }}" name="{{ name }}" rows="4" maxlength="10000">{{ properties[name] or '' }}</textarea>{% else %}{{ properties[name] or '' }}{% endif %}</dd>
-{% endfor %}
-</dl>
-{% if draft %}
-<button type="submit" name="operation" value="create_new"{% if not create_available or not current_user %} disabled{% endif %}>Create New</button>
-<button type="submit"{% if not variation_available or not current_user %} disabled{% endif %} name="operation" value="edit">Edit</button>
-<p id="edit-capability">{{ variation_message }}</p>
-{% if not current_user %}
-<a id="variation-sign-in" href="{{ base }}/login?return_to={{ (base ~ '/albums/' ~ album.id ~ ('?source_image_id=' ~ draft.source_image_id ~ return_query if draft.source_image_id else ('?' ~ return_query[1:] if return_query else '')))|urlencode }}">Sign in</a>
-{% endif %}
-</form>
-{% endif %}
-</div>
-</section>
-{% endif %}
+
 </div>
 <aside class="image-content image-sidebar" aria-label="Image metadata">
 
@@ -228,6 +200,58 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 {% endfor %}
 {% endblock %}</div></aside>
 </div>
+{% if album %}
+<section class="image-section variation-section" aria-labelledby="album-heading">
+<h2 id="album-heading">{% if draft %}Create a variation{% else %}Album details{% endif %}</h2>
+<p>Create New generates fresh artwork from these settings. Edit uses the selected image as a starting point and saves a new image. Existing artwork is kept.</p>
+<div class="album-details">
+{% if draft %}
+{% if variation_error %}<p id="variation-error" role="alert">{{ variation_error }}</p>{% endif %}
+<p id="generation-error" role="alert" hidden></p>
+<form id="variation-form" method="POST" action="{{ base }}/albums/{{ album.id }}">
+{% if return_query %}<input type="hidden" name="return_to" value="{{ return_to }}" />{% endif %}
+<input type="hidden" name="submission_token" value="{{ submission_token }}" />
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+<input type="hidden" name="source_image_id" value="{{ draft.source_image_id or '' }}" />
+{% endif %}
+<dl class="image-details">
+<dt>Band</dt><dd id="album-band">{{ album.artist_name }}</dd>
+<dt>Title</dt><dd id="album-title">{{ album.title }}</dd>
+{% set properties = draft.album_properties() if draft else album %}
+{% for name, label, options in [('genre', 'Album genre', genres)] %}
+<dt><label for="album-{{ name }}">{{ label }}</label></dt><dd><select id="album-{{ name }}" name="{{ name }}">
+<option value=""{% if not properties[name] %} selected{% endif %}>None</option>
+{% if properties[name] and properties[name] not in options %}<option data-source-only value="{{ properties[name] }}" selected>{{ properties[name] }}</option>{% endif %}
+{% for option in options %}<option value="{{ option }}"{% if option == properties[name] %} selected{% endif %}>{{ option }}</option>{% endfor %}
+</select></dd>
+{% endfor %}
+<dt><label for="album-description">Album description</label></dt><dd class="music-description"><textarea id="album-description" name="description" rows="4" maxlength="10000">{{ properties.description or '' }}</textarea></dd>
+</dl>
+<details class="advanced-options" id="variation-advanced">
+<summary>Advanced options</summary>
+<dl class="image-details">
+{% for name, label, options in [('format', 'Format', formats), ('format_description', 'Format description', format_descriptions), ('artist_genre', 'Band genre', genres)] %}
+<dt><label for="album-{{ name }}">{{ label }}</label></dt><dd><select id="album-{{ name }}" name="{{ name }}">
+<option value=""{% if not properties[name] %} selected{% endif %}>None</option>
+{% if properties[name] and properties[name] not in options %}<option data-source-only value="{{ properties[name] }}" selected>{{ properties[name] }}</option>{% endif %}
+{% for option in options %}<option value="{{ option }}"{% if option == properties[name] %} selected{% endif %}>{{ option }}</option>{% endfor %}
+</select></dd>
+{% endfor %}
+<dt><label for="album-artist_description">Band description</label></dt><dd class="music-description"><textarea id="album-artist_description" name="artist_description" rows="4" maxlength="10000">{{ properties.artist_description or '' }}</textarea></dd>
+</dl>
+</details>
+{% if draft %}
+<button type="submit" name="operation" value="create_new"{% if not create_available or not current_user %} disabled{% endif %}>Create New</button>
+<button type="submit"{% if not variation_available or not current_user %} disabled{% endif %} name="operation" value="edit">Edit</button>
+<p id="edit-capability">{{ variation_message }}</p>
+{% if not current_user %}
+<a id="variation-sign-in" href="{{ base }}/login?return_to={{ (base ~ '/albums/' ~ album.id ~ ('?source_image_id=' ~ draft.source_image_id ~ return_query if draft.source_image_id else ('?' ~ return_query[1:] if return_query else '')))|urlencode }}">Sign in</a>
+{% endif %}
+</form>
+{% endif %}
+</div>
+</section>
+{% endif %}
 <p{% if image %} class="image-cache-key"{% endif %} id="selected-cache-key">{% block selected_cache_key %}{% if image %}Cache key: {{ image.cache_key }}{% endif %}{% endblock %}</p>
 </main>
 <script>

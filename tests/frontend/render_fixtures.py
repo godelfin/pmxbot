@@ -45,8 +45,8 @@ def main():
                 db.execute(
                     '''INSERT INTO image_cache
                     (id, cache_key, prompt, normalized_prompt, settings_json,
-                     local_filename, hosted_url, generation_metadata_json, created_at)
-                    VALUES (?, ?, ?, 'prompt', '{}', '/unused', ?, ?, '2026-01-03')''',
+                     local_filename, hosted_url, generation_metadata_json, created_at, parent_image_id)
+                    VALUES (?, ?, ?, 'prompt', '{}', '/unused', ?, ?, '2026-01-03', ?)''',
                     (
                         identifier,
                         str(identifier),
@@ -64,6 +64,7 @@ def main():
                                 ),
                             }
                         ),
+                        None if identifier == 43 else identifier - 1,
                     ),
                 )
             library.record_image(42, str(identifier))
@@ -94,6 +95,28 @@ def main():
                     )['body'],
                     encoding='utf-8',
                 )
+
+        # Collection fixtures are rendered last so album shortcut fixtures retain
+        # their three-album boundaries.
+        for number in range(27):
+            album = library.create_album('<Band>', f'<Album> {number:02}')
+            key = f'gallery-{number}'
+            with sqlite3.connect(cache.database) as db:
+                db.execute(
+                    """INSERT INTO image_cache
+                (cache_key, prompt, normalized_prompt, settings_json,
+                 local_filename, hosted_url, generation_metadata_json)
+                VALUES (?, '', '', '{}', '/unused', ?, '{}')""",
+                    (key, f'https://art.example/gallery-{number}'),
+                )
+            library.record_image(album['id'], key)
+        query = '?q=%3CAlbum%3E&artist=%3CBand%3E&sort=album&order=asc&page=1'
+        output.joinpath('gallery.html').write_text(
+            request('/gallery' + query)['body'], encoding='utf-8'
+        )
+        output.joinpath('catalog.html').write_text(
+            request('/' + query)['body'], encoding='utf-8'
+        )
 
 
 if __name__ == "__main__":

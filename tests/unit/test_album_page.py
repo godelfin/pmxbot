@@ -169,7 +169,6 @@ def test_render_and_read_only(page):
     ] == [
         'Artwork history',
         'Original prompt',
-        'Generate album artwork',
         'Image details',
         'Settings',
         'Generation metadata',
@@ -416,7 +415,6 @@ def test_album_navigation_and_columns(page):
     assert [h.get_text() for h in main.select('h2')] == [
         'Artwork history',
         'Original prompt',
-        'Generate album artwork',
     ]
     navigation = soup.select_one('main > .album-navigation')
     assert (
@@ -468,7 +466,6 @@ def test_malformed_metadata(page, data):
     ] == [
         'Artwork history',
         'Original prompt',
-        'Generate album artwork',
         'Image details',
     ]
 
@@ -589,7 +586,9 @@ def test_album_selectable_image_history_updates_prompt_and_metadata(page):
     soup = BeautifulSoup(response['body'], 'html.parser')
     entries = soup.select('#image-history-heading ~ ul li')
     assert len(entries) == 3
-    assert 'Currently viewing image #44' in entries[0].get_text()
+    assert entries[0].select_one('.history-label').get_text() == 'Image 3'
+    assert entries[0].select_one('.selection-indicator').get_text() == 'Selected'
+    assert not entries[0].select_one('.selection-indicator').has_attr('hidden')
     assert entries[0].select_one('img') is None
     assert entries[1].select_one('a')['href'] == ('/bot/albums/42?source_image_id=43')
     assert entries[1].select_one('img')['src'] == ('https://albums.example/newer.png')
@@ -612,7 +611,7 @@ def test_album_selectable_image_history_updates_prompt_and_metadata(page):
         selected_soup.select_one(
             '#image-history-heading ~ ul li .current-image'
         ).get_text(strip=True)
-        == 'Currently viewing image #43'
+        == 'Image 2Selected'
     )
     assert cache.database.read_bytes() == before
 
@@ -841,7 +840,7 @@ def test_gallery_pagination_and_album_links(page):
     assert len(soup.select('.gallery img')) == 24
     assert cards[0].img['loading'] == 'lazy'
     assert cards[0].img['referrerpolicy'] == 'no-referrer'
-    assert '<Band>' in cards[0].get_text()
+    assert '<Band>' in cards[0].parent.get_text()
     assert not soup.select('band')
     assert (
         soup.select_one('a[rel=next]')['href']
@@ -2174,3 +2173,248 @@ def test_album_neighbors_keep_original_page_and_scroll(page):
         urlsplit(neighbor.select_one('.album-navigation [rel=next]')['href']).path
         == '/bot/albums/25'
     )
+
+
+@pytest.mark.parametrize('view', ['/', '/gallery'])
+def test_artist_discovery_links_preserve_view_without_nested_links(page, view):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    artist = 'Mazel Vatos & <Co> ü / +'
+    for number in range(25):
+        library.create_album(artist, f'Night {number:02}')
+    library.create_album('Other', 'Night 99')
+    values = dict(
+        q='Night', artist='vat', album_title='Night', sort='album', order='asc', page=2
+    )
+    soup = BeautifulSoup(request(view + '?' + urlencode(values))['body'], 'html.parser')
+    artist_link = soup.select_one('.artist-link')
+    assert artist_link.get_text() == artist
+    destination = artist_link['href']
+    assert urlsplit(destination).path == '/bot' + view
+    assert parse_qs(urlsplit(destination).query) == dict(
+        artist=[artist], sort=['album'], order=['asc'], page=['1']
+    )
+    discovered = BeautifulSoup(request(destination[4:])['body'], 'html.parser')
+    assert discovered.select_one('[name=artist]')['value'] == artist
+    assert (
+        artist
+        in discovered.select_one(
+            '.filter-chips a[aria-label^="Remove Artist"]'
+        ).get_text()
+    )
+    assert discovered.select_one('.result-range').get_text() == 'Showing 1–24 of 25'
+    if view == '/gallery':
+        card = soup.select_one('.gallery-item')
+        assert len(card.select('a')) == 2
+        assert not card.select('a a')
+        album_link = card.select_one('a.gallery-card[data-album-link]')
+        assert album_link.select_one('.gallery-artwork')
+        assert album_link.select_one('strong').get_text() == 'Night 24'
+        assert card.select_one('.gallery-artist') == artist_link
+        assert not artist_link.has_attr('data-album-link')
+        assert parse_qs(urlsplit(album_link['href']).query)['return_to'] == [
+            '/bot/gallery?' + urlencode(values)
+        ]
+
+
+def test_gallery_search_controls_and_state(page):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    for number in range(25):
+        library.create_album('Mazel Vatos', f'Night {number:02}')
+    library.create_album('Other', 'Night other')
+    values = dict(
+        q='NiGhT', artist='vAt', album_title='igh', sort='album', order='asc', page=2
+    )
+    soup = BeautifulSoup(
+        request('/gallery?' + urlencode(values))['body'], 'html.parser'
+    )
+    form = soup.select_one('form.catalog-controls')
+    assert (
+        form.select_one('[name=q]').find_parent('label').get_text()
+        == 'Search albums and artists'
+    )
+    assert form.select_one('button[type=submit]').get_text() == 'Search'
+    assert not form.select('[name=page]')
+    assert soup.select_one('.result-range').get_text() == 'Showing 25–25 of 25'
+    assert len(soup.select('.gallery-card')) == 1
+    previous = soup.select_one('.pagination [rel=prev]')['href']
+    assert parse_qs(urlsplit(previous).query) == {
+        key: [str(value)] for key, value in dict(values, page=1).items()
+    }
+    remove = soup.select_one('.filter-chips a[aria-label^="Remove Search"]')['href']
+    assert parse_qs(urlsplit(remove).query) == dict(
+        artist=['vAt'], album_title=['igh'], sort=['album'], order=['asc'], page=['1']
+    )
+    artist_remove = soup.select_one('.filter-chips a[aria-label^="Remove Artist"]')[
+        'href'
+    ]
+    assert parse_qs(urlsplit(artist_remove).query)['q'] == ['NiGhT']
+    list_url = soup.select_one('.view-switch a:not([aria-current])')['href']
+    assert parse_qs(urlsplit(list_url).query) == {
+        key: [str(value)] for key, value in values.items()
+    }
+    album_link = soup.select_one('.gallery-card')['href']
+    album = BeautifulSoup(request(album_link[4:])['body'], 'html.parser')
+    assert album.select_one('#back-to-results')['href'] == '/bot/gallery?' + urlencode(
+        values
+    )
+    empty = BeautifulSoup(request('/gallery?q=missing')['body'], 'html.parser')
+    assert empty.select_one('.result-range').get_text() == 'Showing 0–0 of 0'
+    assert 'Try different keywords or clear filters.' in empty.get_text()
+    assert empty.select_one('.filter-chips a[aria-label^="Remove Search"]')
+
+
+def test_variation_section_follows_browsing_with_advanced_disclosure(page):
+    cache, request = page
+    insert(cache)
+    soup = BeautifulSoup(request()['body'], 'html.parser')
+    section = soup.select_one('main > .variation-section')
+    assert section.h2.get_text() == 'Create a variation'
+    assert (
+        soup.select_one('.image-layout').find_next(
+            'section', class_='variation-section'
+        )
+        == section
+    )
+    assert not soup.select_one('.image-layout #variation-form')
+    assert 'Create New generates fresh artwork' in section.get_text()
+    assert 'Edit uses the selected image' in section.get_text()
+    assert 'Existing artwork is kept.' in section.get_text()
+    form = section.select_one('form')
+    advanced = form.select_one('details#variation-advanced')
+    assert advanced.summary.get_text() == 'Advanced options'
+    assert not advanced.has_attr('open')
+    assert {field['name'] for field in advanced.select('select, textarea')} == {
+        'format',
+        'format_description',
+        'artist_genre',
+        'artist_description',
+    }
+    assert not form.select_one('[name=genre]').find_parent('details')
+    assert not form.select_one('[name=description]').find_parent('details')
+    assert {field['name'] for field in form.select('select, textarea')} == set(
+        viewer.GenerationInputs.creative_fields
+    )
+    help_panel = soup.select_one('.keyboard-help')
+    assert help_panel.summary.get_text() == 'Keyboard help'
+    assert not help_panel.has_attr('open')
+    assert 'Left/Right' in help_panel.get_text() and 'Home/End' in help_panel.get_text()
+
+
+def test_artwork_history_labels_use_real_relationships_and_selection(page):
+    cache, request = page
+    insert(cache)
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            'UPDATE image_cache SET generation_metadata_json = ? WHERE id = 42',
+            (json.dumps({'operation': 'create_new'}),),
+        )
+        for identifier, parent, operation in [
+            (43, 42, 'edit'),
+            (44, 43, 'edit'),
+            (45, None, 'create_new'),
+        ]:
+            db.execute(
+                """INSERT INTO image_cache (id, cache_key, prompt, normalized_prompt, settings_json, local_filename, hosted_url, generation_metadata_json, created_at, parent_image_id) VALUES (?, ?, '', '', '{}', '', ?, ?, ?, ?)""",
+                (
+                    identifier,
+                    f'history-{identifier}',
+                    f'https://history.example/{identifier}.png',
+                    json.dumps({'operation': operation}),
+                    f'2026-01-{identifier-40:02}',
+                    parent,
+                ),
+            )
+    library = MusicLibrary(cache.database)
+    for identifier in (43, 44, 45):
+        library.record_image(42, f'history-{identifier}')
+    before = cache.database.read_bytes()
+    soup = BeautifulSoup(
+        request('/albums/42?source_image_id=43')['body'], 'html.parser'
+    )
+    links = {
+        int(link['data-image-id']): link
+        for link in soup.select('#image-history a[data-image-id]')
+    }
+    assert {
+        identifier: link.select_one('.history-label').get_text()
+        for identifier, link in links.items()
+    } == {42: 'Original 1', 43: 'Variation 1', 44: 'Variation 2', 45: 'Original 2'}
+    assert links[43]['aria-current'] == 'page'
+    assert (
+        links[43]['aria-label']
+        == 'Variation 1, based on Original 1, image #43, Selected'
+    )
+    assert links[44]['aria-label'] == 'Variation 2, based on Variation 1, image #44'
+    for identifier, link in links.items():
+        assert link.select_one('.selection-indicator').has_attr('hidden') == (
+            identifier != 43
+        )
+    assert cache.database.read_bytes() == before
+
+
+def test_history_labels_do_not_invent_legacy_or_broken_relationships():
+    history = [
+        dict(
+            id=identifier,
+            created_at=f'2026-{identifier:02}',
+            hosted_url=None,
+            parent_image_id=parent,
+            operation=operation,
+        )
+        for identifier, parent, operation in [
+            (1, None, None),
+            (2, None, 'edit'),
+            (3, 99, 'edit'),
+            (4, 4, 'edit'),
+            (5, 6, 'edit'),
+            (6, 5, 'edit'),
+            (7, 4, 'edit'),
+            (8, None, 'create_new'),
+            (9, 1, 'edit'),
+            (10, 3, 'edit'),
+        ]
+    ]
+    described = viewer.describe_artwork_history(history[::-1])
+    labels = {item['id']: item['history_label'] for item in described}
+    assert labels == {
+        1: 'Image 1',
+        2: 'Image 2',
+        3: 'Image 3',
+        4: 'Image 4',
+        5: 'Image 5',
+        6: 'Image 6',
+        7: 'Image 7',
+        8: 'Original',
+        9: 'Variation 1',
+        10: 'Image 10',
+    }
+    assert [item['id'] for item in described] == list(range(10, 0, -1))
+    assert (
+        next(item for item in described if item['id'] == 9)['parent_label'] == 'Image 1'
+    )
+    assert viewer.describe_artwork_history([]) == []
+
+
+def test_history_without_parent_column_is_neutral_and_read_only(page):
+    cache, request = page
+    insert(cache)
+    with sqlite3.connect(cache.database) as db:
+        columns = [
+            row[1]
+            for row in db.execute('PRAGMA table_info(image_cache)')
+            if row[1] != 'parent_image_id'
+        ]
+        db.execute(
+            'CREATE TABLE legacy_images AS SELECT '
+            + ', '.join(columns)
+            + ' FROM image_cache'
+        )
+        db.execute('DROP TABLE image_cache')
+        db.execute('ALTER TABLE legacy_images RENAME TO image_cache')
+    before = cache.database.read_bytes()
+    history = cache.album_image_history(42)
+    assert history[0]['parent_image_id'] is None
+    assert viewer.describe_artwork_history(history)[0]['history_label'] == 'Image 1'
+    assert cache.database.read_bytes() == before

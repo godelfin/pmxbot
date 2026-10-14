@@ -22,6 +22,15 @@ async function setup(options = {}) {
   await page.route('http://album.test/**', async route => {
     const request = route.request();
     const id = new URL(request.url()).searchParams.get('source_image_id') || '42';
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === '/bot/pmxbot.png') {
+      await route.fulfill({contentType: 'image/png', body: fs.readFileSync('pmxbot/web/templates/pmxbot.png')});
+      return;
+    }
+    if (pathname === '/bot/gallery' || pathname === '/bot/') {
+      await route.fulfill({contentType: 'text/html', body: fs.readFileSync(path.join(fixtures, pathname === '/bot/gallery' ? 'gallery.html' : 'catalog.html'), 'utf8')});
+      return;
+    }
     const suffix = options.signed ? '-signed' : '';
     if (request.method() === 'POST' && options.handle) { await options.handle(route, id); return; }
     if (request.headers().accept === 'application/json') {
@@ -282,16 +291,25 @@ test('album shortcuts leave form fields, modified shortcuts and the full-size di
   await page.close();
 });
 
-test('history has no visible prose or custom Enter/Space selection bindings', async () => {
+test('history labels, selection indicator, and keyboard help stay clear without overriding Enter/Space', async () => {
   const page = await setup();
   const history = page.locator('section[aria-labelledby="image-history-heading"]');
-  // Accessibility labels remain available, while all prose is visually clipped.
-  assert.equal(await history.locator('h2').evaluate(el => getComputedStyle(el).clipPath), 'inset(50%)');
-  assert.equal(await history.locator('#history-help').evaluate(el => getComputedStyle(el).clipPath), 'inset(50%)');
-  assert.equal(await thumbnail(page, 43).locator('span:last-child').evaluate(el => getComputedStyle(el).clipPath), 'inset(50%)');
-  assert.equal(await thumbnail(page, 43).locator('small').evaluate(el => getComputedStyle(el).clipPath), 'inset(50%)');
-  assert.equal(await thumbnail(page, 43).locator('small').textContent(), 'Create New');
-  assert.match(await thumbnail(page, 43).textContent(), /View image #43/);
+  assert.equal(await history.locator('h2').innerText(), 'Artwork history');
+  const help = history.locator('.keyboard-help');
+  assert.equal(await help.evaluate(el => el.open), false);
+  await help.locator('summary').click();
+  assert.equal(await help.locator('#history-help').isVisible(), true);
+  assert.match(await help.locator('#history-help').innerText(), /Left\/Right/);
+  await help.locator('summary').click();
+  assert.equal(await thumbnail(page, 43).locator('.history-label').innerText(), 'Original');
+  assert.equal(await thumbnail(page, 44).locator('.history-label').innerText(), 'Variation 1');
+  assert.equal(await thumbnail(page, 42).locator('.history-label').innerText(), 'Image 1');
+  assert.equal(await thumbnail(page, 42).locator('.selection-indicator').isVisible(), true);
+  await thumbnail(page, 44).click(); await selected(page, 44);
+  assert.equal(await thumbnail(page, 44).locator('.selection-indicator').isVisible(), true);
+  assert.equal(await thumbnail(page, 42).locator('.selection-indicator').isVisible(), false);
+  assert.match(await thumbnail(page, 44).getAttribute('aria-label'), /Variation 1, based on Original.*Selected/);
+  await thumbnail(page, 42).click(); await selected(page, 42);
   await page.locator('#image-history').focus();
   await page.keyboard.press('Enter');
   await page.keyboard.press(' ');
@@ -299,6 +317,36 @@ test('history has no visible prose or custom Enter/Space selection bindings', as
   await page.keyboard.press('Home');
   await page.keyboard.press(' ');
   assert.equal(await page.locator('[name=source_image_id]').inputValue(), '42');
+  await page.close();
+});
+
+test('advanced form settings retain values and expansion across artwork selection', async () => {
+  const page = await setup({signed: true});
+  const form = page.locator('#variation-form');
+  const advanced = form.locator('#variation-advanced');
+  assert.equal(await advanced.evaluate(el => el.open), false);
+  assert.equal(await form.locator('[name=description]').isVisible(), true);
+  assert.equal(await form.locator('[name=genre]').isVisible(), true);
+  assert.equal(await form.locator('[name=artist_description]').isVisible(), false);
+  await form.locator('[name=description]').fill('album cue');
+  await advanced.locator('summary').click();
+  await form.locator('[name=artist_description]').fill('band cue');
+  await form.locator('[name=format]').selectOption({index: 1});
+  const format = await form.locator('[name=format]').inputValue();
+  await advanced.locator('summary').click();
+  assert.equal(await form.locator('[name=artist_description]').inputValue(), 'band cue');
+  assert.equal(await form.evaluate(el => new FormData(el).get('artist_description')), 'band cue');
+  await advanced.locator('summary').click();
+  await thumbnail(page, 43).click(); await selected(page, 43);
+  assert.equal(await advanced.evaluate(el => el.open), true);
+  await form.locator('[name=artist_description]').fill('other band cue');
+  await thumbnail(page, 42).click(); await selected(page, 42);
+  assert.equal(await advanced.evaluate(el => el.open), true);
+  assert.equal(await form.locator('[name=artist_description]').inputValue(), 'band cue');
+  assert.equal(await form.locator('[name=description]').inputValue(), 'album cue');
+  assert.equal(await form.locator('[name=format]').inputValue(), format);
+  await thumbnail(page, 43).click(); await selected(page, 43);
+  assert.equal(await form.locator('[name=artist_description]').inputValue(), 'other band cue');
   await page.close();
 });
 
@@ -318,5 +366,40 @@ test('metadata panels start collapsed and preserve user expansion across artwork
   assert.equal(await page.locator('#selected-metadata details[open]').count(), 0);
   await page.reload();
   assert.equal(await page.locator('#selected-metadata details[open]').count(), 0);
+  await page.close();
+});
+
+
+for (const width of [320, 1400]) test(`browsing and editing layout and independent artist links at ${width}px`, async () => {
+  const page = await setup({signed: true, width});
+  await thumbnail(page, 43).click(); await selected(page, 43);
+  await page.waitForFunction(() => document.querySelector('.artwork-preview img').naturalWidth > 0);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  assert.equal(await page.evaluate(() => document.querySelector('.variation-section').getBoundingClientRect().top >= document.querySelector('.image-layout').getBoundingClientRect().bottom), true);
+  const screenshots = process.env.BROWSER_SCREENSHOTS_DIR;
+  if (screenshots) {
+    fs.mkdirSync(screenshots, {recursive: true});
+    await page.screenshot({path: path.join(screenshots, `album-${width}.png`), fullPage: true});
+    await page.locator('#variation-advanced summary').click();
+    await page.screenshot({path: path.join(screenshots, `album-advanced-${width}.png`), fullPage: true});
+  }
+  for (const view of ['gallery', 'catalog']) {
+    await page.goto(`http://album.test/bot/${view === 'gallery' ? 'gallery' : ''}?q=%3CAlbum%3E&artist=%3CBand%3E&sort=album&order=asc&page=1`);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.equal(await page.getByLabel('Search albums and artists').inputValue(), '<Album>');
+    assert.equal(await page.getByRole('button', {name: 'Search', exact: true}).count(), 1);
+    const artist = page.locator('.artist-link').first();
+    const destination = new URL(await artist.getAttribute('href'), page.url());
+    assert.equal(destination.pathname, view === 'gallery' ? '/bot/gallery' : '/bot/');
+    assert.equal(destination.searchParams.get('artist'), '<Band>');
+    assert.equal(destination.searchParams.get('page'), '1');
+    assert.equal(destination.searchParams.has('q'), false);
+    if (view === 'gallery') {
+      assert.equal(await page.locator('.gallery-item a a').count(), 0);
+      assert.equal(await page.locator('.gallery-item').first().locator('a').count(), 2);
+    }
+    await artist.focus();
+    if (screenshots) await page.screenshot({path: path.join(screenshots, `${view}-${width}.png`), fullPage: true});
+  }
   await page.close();
 });

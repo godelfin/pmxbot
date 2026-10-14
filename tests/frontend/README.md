@@ -20,10 +20,16 @@ without selecting artwork. Shift+Left/Right opens the previous/next album,
 except in form fields and the full-size dialog. Album Previous/Next follows the
 originating collection filters and sort across page boundaries; direct album
 URLs use newest-first order. These controls appear below the album title.
-Artwork history is visually
-thumbnail-and-icon only, with accessible labels. Settings and generation
+Artwork history shows provenance-aware labels and a Selected indicator.
+Detailed shortcuts live in a Keyboard help disclosure. Settings and generation
 metadata start collapsed and retain an expanded state across selections.
+Common variation controls stay visible, while format and band settings live in
+Advanced options; toggling it preserves values and expansion across selections.
 Variation edits are remembered separately for each image until the page is
 closed or refreshed.
 During a selection request, submission is disabled. Failed requests retain the
 previous image, matching source and draft; Retry repeats the failed selection.
+
+CI retains desktop (1400px) and mobile (320px) screenshots of collection views
+and album editing states in the `ui-screenshots` artifact for seven days. Set
+`BROWSER_SCREENSHOTS_DIR` when running locally to capture the same views.

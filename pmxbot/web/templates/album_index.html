@@ -46,7 +46,7 @@ th:last-child, td:last-child { text-align: right; }
 <tbody>
 {% for album in albums %}
 <tr>
-<td class="catalog-band">{{ album.artist_name }}</td>
+<td class="catalog-band"><a class="artist-link" href="{{ collection_url(q='', artist=album.artist_name, album_title='', page=1) }}">{{ album.artist_name }}</a></td>
 <td class="catalog-album"><a data-album-link href="{{ album_url(album.id) }}">{{ album.title }}</a></td>
 <td><time>{{ album.created_at }}</time></td>
 <td class="catalog-variations">{{ album.image_count }}</td>

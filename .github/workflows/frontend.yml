@@ -20,4 +20,14 @@ jobs:
       - name: Install Chromium
         run: tests/frontend/node_modules/.bin/playwright install --with-deps chromium
       - name: Run browser tests
+        env:
+          BROWSER_SCREENSHOTS_DIR: ${{ runner.temp }}/pmxbot-ui-screenshots
         run: node --test tests/frontend/artwork_history.test.cjs
+      - name: Save desktop and mobile UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-screenshots
+          path: ${{ runner.temp }}/pmxbot-ui-screenshots
+          if-no-files-found: ignore
+          retention-days: 7

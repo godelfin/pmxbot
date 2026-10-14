@@ -583,13 +583,20 @@ class ImageCache:
             }
             if not {'album_images', 'image_cache'} <= tables:
                 return []
+            columns = {row[1] for row in db.execute('PRAGMA table_info(image_cache)')}
+            parent = (
+                'image_cache.parent_image_id'
+                if 'parent_image_id' in columns
+                else 'NULL'
+            )
             return [
                 dict(row, operation=generation_metadata(dict(row)).get('operation'))
                 for row in db.execute(
-                    '''SELECT image_cache.id, image_cache.hosted_url,
+                    f'''SELECT image_cache.id, image_cache.hosted_url,
                     image_cache.prompt, image_cache.requested_by,
                     image_cache.channel, image_cache.created_at,
-                    image_cache.generation_metadata_json
+                    image_cache.generation_metadata_json,
+                    {parent} AS parent_image_id
                     FROM image_cache JOIN album_images USING (cache_key)
                     WHERE album_images.album_id = ?
                     ORDER BY image_cache.created_at DESC, image_cache.id DESC''',
