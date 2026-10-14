@@ -7,6 +7,27 @@ def style(visual_definition, signature_elements, avoid, compatible_styles):
     }
 
 
+# Match the category boundaries documented in ALBUM_ART_STYLES below. Keep
+# membership tied to stable IDs so inserting a style cannot shift other groups.
+ALBUM_ART_STYLE_GROUPS = {
+    name: tuple(f'{identifier:03d}' for identifier in range(first, last + 1))
+    for name, first, last in (
+        ('Minimalism & Abstract Design', 1, 10),
+        ('Surrealism, Fantasy & Psychedelia', 11, 20),
+        ('Retro, Vintage & Nostalgia', 21, 30),
+        ('Punk, Alternative & Underground', 31, 40),
+        ('Pop Art, Illustration & Graphic Art', 41, 50),
+        ('Fine Art & Historical Movements', 51, 60),
+        ('Photography & Portrait Aesthetics', 61, 70),
+        ('Digital, Futuristic & Experimental', 71, 80),
+        ('Dark, Atmospheric & Cinematic', 81, 90),
+        ('Experimental Graphic Design & Collage', 91, 100),
+        ('Organic, Natural & Spiritual', 101, 110),
+        ('Contemporary Cultural & Fashion Aesthetics', 111, 120),
+    )
+}
+
+
 ALBUM_ART_STYLES = {
     # ============================================================
     # 1. MINIMALISM & ABSTRACT DESIGN

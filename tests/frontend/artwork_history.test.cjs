@@ -330,6 +330,8 @@ test('advanced form settings retain values and expansion across artwork selectio
   assert.equal(await form.locator('[name=artist_description]').isVisible(), false);
   await form.locator('[name=description]').fill('album cue');
   await form.getByLabel('Style', {exact: true}).selectOption('001');
+  assert.equal(await form.locator('[name=style] optgroup').count(), 12);
+  assert.equal(await form.locator('[name=style] optgroup').first().getAttribute('label'), 'Minimalism & Abstract Design');
   await advanced.locator('summary').click();
   await form.locator('[name=artist_description]').fill('band cue');
   await form.locator('[name=format]').selectOption({index: 1});
@@ -349,6 +351,7 @@ test('advanced form settings retain values and expansion across artwork selectio
   assert.equal(await form.locator('[name=description]').inputValue(), 'album cue');
   assert.equal(await form.locator('[name=format]').inputValue(), format);
   assert.equal(await form.locator('[name=style]').inputValue(), '001');
+  assert.equal(await form.locator('[name=style] optgroup').count(), 12);
   await thumbnail(page, 43).click(); await selected(page, 43);
   assert.equal(await form.locator('[name=artist_description]').inputValue(), 'other band cue');
   assert.equal(await form.locator('[name=style]').inputValue(), '002');

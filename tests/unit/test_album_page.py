@@ -1074,6 +1074,16 @@ def test_style_dropdown_and_saved_image_state(page):
     before = cache.database.read_bytes()
     soup = BeautifulSoup(request()['body'], 'html.parser')
     dropdown = soup.select_one('select#album-style[name=style]')
+    groups = dropdown.select('optgroup')
+    assert [group['label'] for group in groups] == list(
+        pmxbot.styles.ALBUM_ART_STYLE_GROUPS
+    )
+    assert groups[0]['label'] == 'Minimalism & Abstract Design'
+    assert groups[-1]['label'] == 'Contemporary Cultural & Fashion Aesthetics'
+    assert all(len(group.select('option')) == 10 for group in groups)
+    assert [
+        option['value'] for group in groups for option in group.select('option')
+    ] == list(pmxbot.styles.ALBUM_ART_STYLES)
     assert soup.select_one('label[for=album-style]').get_text() == 'Style'
     assert {
         option['value']: option.get_text() for option in dropdown.select('option')

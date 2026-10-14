@@ -631,6 +631,7 @@ class AlbumPage:
             failures=failures,
             formats=sorted(pmxbot.albums.formats),
             artwork_styles=pmxbot.styles.ALBUM_ART_STYLES,
+            artwork_style_groups=pmxbot.styles.ALBUM_ART_STYLE_GROUPS,
             format_descriptions=sorted(pmxbot.albums.format_desc),
             genres=sorted(
                 set(pmxbot.albums.genres).union(*pmxbot.albums.genres.values())

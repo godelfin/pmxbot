@@ -221,7 +221,11 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 {% set properties = draft.album_properties() if draft else album %}
 <dt><label for="album-style">Style</label></dt><dd><select id="album-style" name="style">
 <option value=""{% if not properties.style %} selected{% endif %}>None</option>
-{% for id, style in artwork_styles.items() %}<option value="{{ id }}"{% if id == properties.style %} selected{% endif %}>{{ style.name }}</option>{% endfor %}
+{% for label, ids in artwork_style_groups.items() %}
+<optgroup label="{{ label }}">
+{% for id in ids %}<option value="{{ id }}"{% if id == properties.style %} selected{% endif %}>{{ artwork_styles[id].name }}</option>{% endfor %}
+</optgroup>
+{% endfor %}
 </select></dd>
 {% for name, label, options in [('genre', 'Album genre', genres)] %}
 <dt><label for="album-{{ name }}">{{ label }}</label></dt><dd><select id="album-{{ name }}" name="{{ name }}">
