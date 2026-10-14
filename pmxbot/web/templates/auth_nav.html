@@ -1,19 +1,29 @@
+<header class="site-header">
 {% include "site_logo.html" %}
-{% if current_user %}
 <style>
-.account-nav { max-width: 70rem; margin: 0 auto; padding: .75rem 1.25rem; display: flex; justify-content: flex-end; align-items: baseline; flex-wrap: wrap; gap: .5rem; }
+.site-header { display: flex; flex-wrap: wrap; align-items: center; max-width: 70rem; margin: auto; padding: .5rem .75rem; gap: .5rem 1rem; overflow-wrap: anywhere; }
+.site-header .site-brand { margin: 0; padding: 0; }
+.site-header .account-nav { margin: 0; padding: .25rem 0; gap: 1rem; }
+.account-nav { max-width: 70rem; margin: 0 auto; padding: .75rem 1.25rem; display: flex; justify-content: flex-start; align-items: baseline; flex-wrap: wrap; gap: .5rem; }
 .account-nav form { margin: 0; }
 .account-nav a, .account-nav button { padding: 0; border: 0; background: none; color: #135ba1; font: inherit; text-decoration: underline; cursor: pointer; }
-.account-nav a:focus-visible, .account-nav button:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
+.site-header a:focus-visible, .site-header button:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
 </style>
-<nav class="account-nav" aria-label="Account">
+<nav class="account-nav" aria-label="Site navigation">
+<a href="{{ base|e }}/">Browse albums</a>
+{% if current_user %}
 <span>Hi, {{ current_user.username|e }}.</span>
 <form action="{{ base|e }}/logout" method="post">
 <input type="hidden" name="csrf_token" value="{{ csrf_token|e }}" />
 <a href="{{ base|e }}/logout" hidden>Sign out</a>
 <button type="submit">Sign out</button>
 </form>
+{% else %}
+<a href="{{ base|e }}/login?return_to={{ (base ~ request.path_info ~ ('?' ~ request.query_string if request.query_string else ''))|urlencode }}">Sign in</a>
+{% endif %}
 </nav>
+</header>
+{% if current_user %}
 <script>
 (function () {
     const form = document.currentScript.previousElementSibling.querySelector('form');

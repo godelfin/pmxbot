@@ -106,7 +106,9 @@
         const signIn = document.getElementById('variation-sign-in');
         if (signIn) {
           const destination = new URL(signIn.href);
-          destination.searchParams.set('return_to', new URL(url).pathname + '?source_image_id=' + data.image_id);
+          const albumURL = new URL(url);
+          albumURL.searchParams.set('source_image_id', data.image_id);
+          destination.searchParams.set('return_to', albumURL.pathname + albumURL.search);
           signIn.href = destination.href;
         }
         const error = document.getElementById('generation-error');

@@ -91,6 +91,52 @@ def get_context():
     return d
 
 
+COLLECTION_SORTS = ('artist', 'album', 'chronology', 'variations', 'genre')
+GALLERY_SORTS = {
+    'band': ('artist', 'asc'),
+    'date_asc': ('chronology', 'asc'),
+    'date_desc': ('chronology', 'desc'),
+}
+
+
+def results_return_to(value):
+    """Allow only collection URLs, with valid query state and optional scroll."""
+    fallback = pmxbot.config.web_base + '/'
+    if not isinstance(value, str) or any(ord(c) < 32 for c in value) or '\\' in value:
+        return fallback
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        base = pmxbot.config.web_base
+        if (
+            parsed.scheme
+            or parsed.netloc
+            or parsed.path not in (base + '/', base + '/gallery')
+        ):
+            return fallback
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        if set(params) - {'q', 'artist', 'album_title', 'sort', 'order', 'page'} or any(
+            len(v) != 1 for v in params.values()
+        ):
+            return fallback
+        sort = params.get('sort', ['chronology'])[0]
+        allowed_sorts = COLLECTION_SORTS + (
+            tuple(GALLERY_SORTS) if parsed.path.endswith('/gallery') else ()
+        )
+        if sort not in allowed_sorts or params.get('order', ['asc'])[0] not in (
+            'asc',
+            'desc',
+        ):
+            return fallback
+        page = params.get('page', ['1'])[0]
+        if not re.fullmatch(r'[0-9]{1,9}', page) or int(page) < 1:
+            return fallback
+        if parsed.fragment and not re.fullmatch(r'scroll=[0-9]{1,8}', parsed.fragment):
+            return fallback
+        return value
+    except ValueError:
+        return fallback
+
+
 def make_anchor(line):
     time, nick = line
     return "{}.{}".format(str(time).replace(':', '.'), nick)
@@ -418,6 +464,13 @@ class AlbumPage:
                 or not re.fullmatch('[0-9a-f]{32}', submission_token)
             ):
                 raise cherrypy.HTTPError(400, 'Invalid submission token')
+        return_value = params.pop('return_to', '')
+        return_to = results_return_to(return_value)
+        return_query = (
+            ('&return_to=' + urllib.parse.quote(return_to, safe=''))
+            if return_value
+            else ''
+        )
         source_id = params.pop('source_image_id', None) or None
         if source_id is not None:
             if (
@@ -471,6 +524,8 @@ class AlbumPage:
         context.update(
             image=image,
             album=album,
+            return_to=return_to,
+            return_query=return_query,
             neighbors=neighbors,
             image_history=[
                 dict(item, image_url=safe_image_url(item['hosted_url']))
@@ -728,49 +783,24 @@ class PmxbotPages:
         auth.redirect(pmxbot.config.web_base + '/')
 
     @cherrypy.expose
-    def gallery(self, page='1', sort='date_desc'):
-        cherrypy.lib.cptools.allow(['GET', 'HEAD'])
-        sort_options = (
-            ('band', 'Alphabetical (Band)'),
-            ('album', 'Alphabetical (Album)'),
-            ('date_asc', 'Date Ascending'),
-            ('date_desc', 'Date Descending'),
-            ('genre', 'Genre'),
+    def gallery(
+        self,
+        page='1',
+        sort='date_desc',
+        q='',
+        artist='',
+        album_title='',
+        order=None,
+        **params,
+    ):
+        if isinstance(sort, str) and sort in GALLERY_SORTS:
+            sort, legacy_order = GALLERY_SORTS[sort]
+            order = legacy_order if order is None else order
+        elif order is None:
+            order = 'asc' if sort in ('album', 'genre') else 'desc'
+        return self.collection(
+            q, artist, album_title, sort, order, page, 'gallery', **params
         )
-        if not isinstance(sort, str) or sort not in dict(sort_options):
-            raise cherrypy.HTTPError(400, 'Invalid gallery sort')
-        if (
-            not isinstance(page, str)
-            or not page.isascii()
-            or not page.isdecimal()
-            or len(page) > 9
-            or int(page) < 1
-        ):
-            raise cherrypy.HTTPError(400, 'Invalid gallery page')
-        page_number = int(page)
-        page_size = 24
-        try:
-            albums, total = ImageCache(pmxbot.config).gallery_albums(
-                page_number, page_size, sort
-            )
-        except (sqlite3.Error, ImageError):
-            raise cherrypy.HTTPError(503, 'Album storage is unavailable') from None
-        page_count = max(1, (total + page_size - 1) // page_size)
-        if page_number > page_count:
-            raise cherrypy.HTTPError(404, 'Unknown gallery page')
-        for album in albums:
-            album['image_url'] = safe_image_url(album.pop('hosted_url'))
-            album['thumb_url'] = safe_image_url(album['thumb_url'])
-        template = jenv.overlay(autoescape=True).get_template('gallery.html')
-        return template.render(
-            albums=albums,
-            page_number=page_number,
-            page_count=page_count,
-            total=total,
-            sort=sort,
-            sort_options=sort_options,
-            **get_context(),
-        ).encode('utf-8')
 
     @cherrypy.expose
     def index(
@@ -783,6 +813,11 @@ class PmxbotPages:
         page='1',
         **params,
     ):
+        return self.collection(
+            q, artist, album_title, sort, order, page, 'list', **params
+        )
+
+    def collection(self, q, artist, album_title, sort, order, page, view, **params):
         cherrypy.lib.cptools.allow(['GET', 'HEAD'])
         if (
             params
@@ -790,7 +825,7 @@ class PmxbotPages:
                 not isinstance(value, str)
                 for value in (q, artist, album_title, sort, order, page)
             )
-            or sort not in ('artist', 'album', 'chronology', 'variations')
+            or sort not in COLLECTION_SORTS
             or order not in ('asc', 'desc')
             or not page.isascii()
             or not page.isdecimal()
@@ -806,7 +841,7 @@ class PmxbotPages:
             albums, total = cache.catalog_albums(
                 page_number, 24, q, artist, album_title, sort, order
             )
-            leaderboard = cache.generation_leaderboard()
+            leaderboard = cache.generation_leaderboard() if view == 'list' else []
         except (sqlite3.Error, ImageError):
             raise cherrypy.HTTPError(503, 'Album storage is unavailable') from None
         page_count = max(1, (total + 23) // 24)
@@ -814,30 +849,43 @@ class PmxbotPages:
             raise cherrypy.HTTPError(404, 'Unknown catalog page')
         for album in albums:
             album['image_url'] = safe_image_url(album.pop('hosted_url'))
+            album['thumb_url'] = safe_image_url(album['thumb_url'])
         filters = dict(
             q=q, artist=artist, album_title=album_title, sort=sort, order=order
         )
 
-        def page_url(number):
+        def collection_url(target=view, **changes):
+            values = dict(filters, page=page_number)
+            values.update(changes)
+            path = '/gallery' if target == 'gallery' else '/'
             return (
                 pmxbot.config.web_base
-                + '/?'
-                + urllib.parse.urlencode(dict(filters, page=number))
+                + path
+                + '?'
+                + urllib.parse.urlencode({k: v for k, v in values.items() if v != ''})
             )
+
+        def page_url(number):
+            return collection_url(page=number)
 
         def sort_url(column):
-            direction = 'asc' if column in ('artist', 'album') else 'desc'
+            direction = 'asc' if column in ('artist', 'album', 'genre') else 'desc'
             if sort == column:
                 direction = 'desc' if order == 'asc' else 'asc'
+            return collection_url(sort=column, order=direction, page=1)
+
+        def album_url(identifier):
             return (
                 pmxbot.config.web_base
-                + '/?'
-                + urllib.parse.urlencode(
-                    dict(filters, sort=column, order=direction, page=1)
-                )
+                + '/albums/'
+                + str(identifier)
+                + '?'
+                + urllib.parse.urlencode({'return_to': collection_url()})
             )
 
-        page = jenv.overlay(autoescape=True).get_template('album_index.html')
+        page = jenv.overlay(autoescape=True).get_template(
+            'gallery.html' if view == 'gallery' else 'album_index.html'
+        )
         return page.render(
             albums=albums,
             leaderboard=leaderboard,
@@ -846,6 +894,11 @@ class PmxbotPages:
             page_count=page_count,
             page_url=page_url,
             sort_url=sort_url,
+            collection_url=collection_url,
+            album_url=album_url,
+            view=view,
+            collection_path=pmxbot.config.web_base
+            + ('/gallery' if view == 'gallery' else '/'),
             **filters,
             **get_context(),
         ).encode('utf-8')

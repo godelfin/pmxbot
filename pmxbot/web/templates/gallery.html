@@ -5,13 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Album gallery — Page {{ page_number }}</title>
 <style>
-body { --brand-max-width: 72.5rem; --brand-gutter: 1.25rem; margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; color: #252b34; background: #f4f6f8; line-height: 1.6; }
+body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; color: #252b34; background: #f4f6f8; line-height: 1.6; }
 main { max-width: 70rem; margin: auto; padding: 1.25rem; }
 h1 { margin: .75rem 0 .25rem; font-size: 1.5rem; }
 a { color: #135ba1; }
 a:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
-.gallery-sort { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; margin: 1rem 0; }
-.gallery-sort select, .gallery-sort button { padding: .4rem .5rem; font: inherit; color: inherit; border: 1px solid #d4dbe2; border-radius: .25rem; background: #fff; }
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr)); gap: 1.25rem; padding: 0; list-style: none; }
 .gallery-card { display: block; height: 100%; overflow: hidden; border: 1px solid #d4dbe2; border-radius: .5rem; background: #fff; text-decoration: none; }
 .gallery-card:hover { border-color: #135ba1; }
@@ -29,21 +27,13 @@ a:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
 <body>
 {% include "auth_nav.html" %}
 <main>
-<a href="{{ base }}/">All albums</a>
-<h1>Album gallery</h1>
-<form class="gallery-sort" action="{{ base }}/gallery" method="get">
-<label for="gallery-sort">Sort by</label>
-<select id="gallery-sort" name="sort">
-{% for value, label in sort_options %}<option value="{{ value }}"{% if value == sort %} selected{% endif %}>{{ label }}</option>{% endfor %}
-</select>
-<noscript><button type="submit">Sort</button></noscript>
-</form>
+{% include "collection_controls.html" %}
 {% if albums %}
 <p>{{ total }} album{{ '' if total == 1 else 's' }}</p>
 <ul class="gallery">
 {% for album in albums %}
 <li>
-<a class="gallery-card" href="{{ base }}/albums/{{ album.id }}">
+<a class="gallery-card" data-album-link href="{{ album_url(album.id) }}">
 <span class="gallery-artwork"{% if sort == 'genre' %} title="Genre: {{ (album.genre or '')|trim or 'No genre' }}"{% endif %}>
 {% set artwork_url = album.thumb_url or album.image_url %}
 {% if artwork_url %}<img src="{{ artwork_url }}" alt="Artwork for {{ album.artist_name }} — {{ album.title }}" loading="lazy" decoding="async" referrerpolicy="no-referrer" />{% else %}<span>Artwork unavailable</span>{% endif %}
@@ -54,18 +44,14 @@ a:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
 {% endfor %}
 </ul>
 <nav class="pagination" aria-label="Gallery pagination">
-{% if page_number > 1 %}<a href="{{ base }}/gallery?page={{ page_number - 1 }}&amp;sort={{ sort }}" rel="prev">Previous</a>{% else %}<span class="disabled" aria-disabled="true">Previous</span>{% endif %}
+{% if page_number > 1 %}<a href="{{ page_url(page_number - 1) }}" rel="prev">Previous</a>{% else %}<span class="disabled" aria-disabled="true">Previous</span>{% endif %}
 <span>Page {{ page_number }} of {{ page_count }}</span>
-{% if page_number < page_count %}<a href="{{ base }}/gallery?page={{ page_number + 1 }}&amp;sort={{ sort }}" rel="next">Next</a>{% else %}<span class="disabled" aria-disabled="true">Next</span>{% endif %}
+{% if page_number < page_count %}<a href="{{ page_url(page_number + 1) }}" rel="next">Next</a>{% else %}<span class="disabled" aria-disabled="true">Next</span>{% endif %}
 </nav>
 {% else %}
-<p>No albums yet.</p>
+<p>{% if q or artist or album_title %}No albums match your search.{% else %}No albums yet.{% endif %}</p>
 {% endif %}
 </main>
-<script>
-document.getElementById('gallery-sort').addEventListener('change', (event) => {
-  event.target.form.requestSubmit();
-});
-</script>
+{% include "collection_scroll.html" %}
 </body>
 </html>

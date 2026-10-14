@@ -599,46 +599,14 @@ class ImageCache:
 
     def gallery_albums(self, page, page_size=24, sort='date_desc'):
         """Read one page of albums and their latest artwork without writes."""
-        order = {
-            'band': 'artists.normalized_name, albums.normalized_title, albums.id',
-            'album': 'albums.normalized_title, artists.normalized_name, albums.id',
-            'date_asc': 'albums.created_at, albums.id',
-            'date_desc': 'albums.created_at DESC, albums.id DESC',
-            'genre': "NULLIF(TRIM(albums.genre), '') IS NULL, "
-            'LOWER(TRIM(albums.genre)), artists.normalized_name, '
-            'albums.normalized_title, albums.id',
+        column, direction = {
+            'band': ('artist', 'asc'),
+            'album': ('album', 'asc'),
+            'date_asc': ('chronology', 'asc'),
+            'date_desc': ('chronology', 'desc'),
+            'genre': ('genre', 'asc'),
         }[sort]
-        if not self.database.is_file():
-            return [], 0
-        with closing(self.read_connection()) as db:
-            db.execute('BEGIN')
-            tables = {
-                row[0]
-                for row in db.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table'"
-                )
-            }
-            if not {'albums', 'artists'} <= tables:
-                return [], 0
-            total = db.execute('SELECT COUNT(*) FROM albums').fetchone()[0]
-            artwork = (
-                '''(SELECT image_cache.{column} FROM image_cache
-                JOIN album_images USING (cache_key)
-                WHERE album_images.album_id = albums.id
-                ORDER BY image_cache.created_at DESC, image_cache.id DESC LIMIT 1)'''
-                if {'album_images', 'image_cache'} <= tables
-                else 'NULL'
-            )
-            rows = db.execute(
-                f'''SELECT albums.id, albums.title, albums.genre,
-                artists.name AS artist_name,
-                {artwork.format(column='hosted_url')} AS hosted_url,
-                {artwork.format(column='thumb_url')} AS thumb_url
-                FROM albums JOIN artists ON artists.id = albums.artist_id
-                ORDER BY {order} LIMIT ? OFFSET ?''',
-                (page_size, (page - 1) * page_size),
-            )
-            return [dict(row) for row in rows], total
+        return self.catalog_albums(page, page_size, sort=column, order=direction)
 
     def catalog_albums(
         self,
@@ -658,7 +626,15 @@ class ImageCache:
             'variations': 'image_count',
         }
         direction = {'asc': 'ASC', 'desc': 'DESC'}[order]
-        ordering = f'{columns[sort]} {direction}, albums.id {direction}'
+        if sort == 'genre':
+            ordering = (
+                "NULLIF(TRIM(albums.genre), '') IS NULL, "
+                f"LOWER(TRIM(albums.genre)) {direction}, "
+                f"artists.normalized_name {direction}, "
+                f"albums.normalized_title {direction}, albums.id {direction}"
+            )
+        else:
+            ordering = f'{columns[sort]} {direction}, albums.id {direction}'
         if not self.database.is_file():
             return [], 0
         with closing(self.read_connection()) as db:
@@ -692,7 +668,7 @@ class ImageCache:
             where = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
             total = db.execute(f'SELECT COUNT(*) {source}{where}', values).fetchone()[0]
             artwork = (
-                """(SELECT image_cache.hosted_url FROM image_cache
+                """(SELECT image_cache.{column} FROM image_cache
                 JOIN album_images USING (cache_key)
                 WHERE album_images.album_id = albums.id
                 ORDER BY image_cache.created_at DESC, image_cache.id DESC LIMIT 1)"""
@@ -706,10 +682,19 @@ class ImageCache:
                 if {'album_images', 'image_cache'} <= tables
                 else '0'
             )
+            image_columns = {
+                row[1] for row in db.execute('PRAGMA table_info(image_cache)')
+            }
+            thumbnail = (
+                artwork.format(column='thumb_url')
+                if 'thumb_url' in image_columns
+                else 'NULL'
+            )
             rows = db.execute(
-                f'SELECT albums.id, albums.title, artists.name AS artist_name, '
+                f'SELECT albums.id, albums.title, albums.genre, artists.name AS artist_name, '
                 f'albums.created_at, {image_count} AS image_count, '
-                f'{artwork} AS hosted_url {source}{where} '
+                f"{artwork.format(column='hosted_url')} AS hosted_url, "
+                f"{thumbnail} AS thumb_url {source}{where} "
                 f'ORDER BY {ordering} LIMIT ? OFFSET ?',
                 values + [page_size, (page - 1) * page_size],
             )

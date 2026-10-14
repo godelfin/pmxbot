@@ -251,15 +251,16 @@ def test_cookie_defaults_anonymous_browsing_and_expiry(web):
         response = web.request(path)
         assert response['status'] == 200
         soup = BeautifulSoup(response['body'], 'html.parser')
-        assert not soup.select('nav[aria-label=Account]')
-        if path == '/':
-            form = soup.select_one('.signin-card form')
-            assert form['action'] == web.base + '/login'
-            assert form['method'] == 'post'
-            assert form.select_one('input[name=return_to]')['value'] == web.base + '/'
-            assert form.select_one('input[name=csrf_token]')['value']
-        else:
-            assert not soup.select('.signin-card')
+        assert not soup.select('.account-nav form[action$="/logout"]')
+        assert not soup.select('.signin-card')
+        sign_in = soup.select_one(
+            'nav[aria-label="Site navigation"] a[href*="/login?"]'
+        )
+        from urllib.parse import parse_qs, urlsplit
+
+        assert parse_qs(urlsplit(sign_in['href']).query)['return_to'] == [
+            web.base + path
+        ]
         assert response['headers']['Cache-Control'] == 'no-store'
     cookie = SimpleCookie(response['headers']['Set-Cookie'])[auth.COOKIE_NAME]
     assert cookie['secure'] and cookie['httponly']
@@ -439,7 +440,12 @@ def test_registration_csrf_methods_and_username_validation(web):
         assert len(store.list_users()) == 3
     for path in ('/', '/login'):
         soup = BeautifulSoup(web.request(path)['body'], 'html.parser')
-        assert soup.select_one('a[href$="/register"]')['href'] == web.base + '/register'
+        assert (
+            BeautifulSoup(web.request('/login')['body'], 'html.parser').select_one(
+                'a[href$="/register"]'
+            )['href']
+            == web.base + '/register'
+        )
 
 
 @pytest.mark.parametrize('length', [12, 1024])

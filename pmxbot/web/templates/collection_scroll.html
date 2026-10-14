@@ -1,0 +1,20 @@
+<script>
+(() => {
+  // The URL travels with a link opened in another tab; no shared storage required.
+  const capture = event => {
+    const link = event.target.closest('a[data-album-link]');
+    if (!link) return;
+    const url = new URL(link.href);
+    const results = new URL(url.searchParams.get('return_to'), location.origin);
+    results.hash = 'scroll=' + Math.max(0, Math.min(99999999, Math.round(window.scrollY)));
+    url.searchParams.set('return_to', results.pathname + results.search + results.hash);
+    link.href = url.pathname + url.search;
+  };
+  ['pointerdown', 'click', 'auxclick', 'contextmenu'].forEach(type => document.addEventListener(type, capture));
+  const restore = () => {
+    const match = /^#scroll=([0-9]{1,8})$/.exec(location.hash);
+    if (match) requestAnimationFrame(() => window.scrollTo(0, Number(match[1])));
+  };
+  window.addEventListener('pageshow', restore);
+})();
+</script>

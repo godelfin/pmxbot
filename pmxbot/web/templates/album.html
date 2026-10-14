@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Album #{{ album.id }}</title>
 <style>
+.results-navigation { margin: .75rem 0; }
+#back-to-results { display: inline-block; padding: .5rem .75rem; background: white; border: 1px solid #135ba1; border-radius: .25rem; font-weight: bold; }
 body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; color: #252b34; background: #f4f6f8; line-height: 1.6; }
 .album-page { max-width: 70rem; margin: auto; }
 .album-page h1 { margin: 0 0 1.25rem; font-size: 1.5rem; line-height: 1.3; }
@@ -82,11 +84,10 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 </style>
 </head>
 <body>
-{% set login_url = base ~ "/login?return_to=" ~ ((base ~ "/albums/" ~ album.id)|urlencode) %}
 {% include "auth_nav.html" %}
 {% block body %}
 <main class="album-page">
-<p><a href="{{ base }}/gallery">Artwork gallery</a></p>
+<nav class="results-navigation" aria-label="Results"><a id="back-to-results" href="{{ return_to }}">← Back to results</a> · <a href="{{ base }}/">All albums</a></nav>
 <h1><a href="{{ base }}/?{{ {'artist': album.artist_name}|urlencode }}">{{ album.artist_name }}</a> — <a href="{{ base }}/?{{ {'album_title': album.title}|urlencode }}">{{ album.title }}</a></h1>
 <div class="image-layout">
 <div class="image-content image-main">
@@ -119,7 +120,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 {% endfor %}
 {% for historical_image in image_history %}
 <li>
-<a data-image-id="{{ historical_image.id }}" href="{{ base }}/albums/{{ album.id }}?source_image_id={{ historical_image.id }}"{% if image and image.id == historical_image.id %} class="current-image" aria-current="page"{% endif %}>
+<a data-image-id="{{ historical_image.id }}" href="{{ base }}/albums/{{ album.id }}?source_image_id={{ historical_image.id }}{{ return_query }}"{% if image and image.id == historical_image.id %} class="current-image" aria-current="page"{% endif %}>
 {% if historical_image.image_url %}<img src="{{ historical_image.image_url }}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" />{% else %}<span class="history-unavailable" aria-hidden="true"></span>{% endif %}
 {% if historical_image.operation %}<small class="sr-only">{{ 'Create New' if historical_image.operation == 'create_new' else 'Edit' }}</small>{% endif %}
 <span class="sr-only">{% if image and image.id == historical_image.id %}Currently viewing{% else %}View{% endif %} image #{{ historical_image.id }}</span>
@@ -155,6 +156,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 {% if variation_error %}<p id="variation-error" role="alert">{{ variation_error }}</p>{% endif %}
 <p id="generation-error" role="alert" hidden></p>
 <form id="variation-form" method="POST" action="{{ base }}/albums/{{ album.id }}">
+{% if return_query %}<input type="hidden" name="return_to" value="{{ return_to }}" />{% endif %}
 <input type="hidden" name="submission_token" value="{{ submission_token }}" />
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
 <input type="hidden" name="source_image_id" value="{{ draft.source_image_id or '' }}" />
@@ -181,7 +183,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 <button type="submit"{% if not variation_available or not current_user %} disabled{% endif %} name="operation" value="edit">Edit</button>
 <p id="edit-capability">{{ variation_message }}</p>
 {% if not current_user %}
-<a id="variation-sign-in" href="{{ base }}/login?return_to={{ (base ~ '/albums/' ~ album.id ~ ('?source_image_id=' ~ draft.source_image_id if draft.source_image_id else ''))|urlencode }}">Sign in</a>
+<a id="variation-sign-in" href="{{ base }}/login?return_to={{ (base ~ '/albums/' ~ album.id ~ ('?source_image_id=' ~ draft.source_image_id ~ return_query if draft.source_image_id else ('?' ~ return_query[1:] if return_query else '')))|urlencode }}">Sign in</a>
 {% endif %}
 </form>
 {% endif %}
@@ -194,7 +196,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 {% for direction, label in [('previous', 'Prev'), ('next', 'Next')] %}
 {% set shortcut = 'Shift+ArrowLeft' if direction == 'previous' else 'Shift+ArrowRight' %}
 {% set shortcut_label = 'Shift+←' if direction == 'previous' else 'Shift+→' %}
-{% if neighbors[direction] %}<a href="{{ base }}/albums/{{ neighbors[direction] }}" rel="{{ 'prev' if direction == 'previous' else 'next' }}" aria-keyshortcuts="{{ shortcut }}" aria-label="{{ 'Previous' if direction == 'previous' else 'Next' }} album"><span>{{ label }}</span><kbd aria-hidden="true">{{ shortcut_label }}</kbd></a>{% else %}<button type="button" disabled aria-keyshortcuts="{{ shortcut }}" aria-label="{{ 'Previous' if direction == 'previous' else 'Next' }} album"><span>{{ label }}</span><kbd aria-hidden="true">{{ shortcut_label }}</kbd></button>{% endif %}
+{% if neighbors[direction] %}<a href="{{ base }}/albums/{{ neighbors[direction] }}{{ ('?' ~ return_query[1:]) if return_query else '' }}" rel="{{ 'prev' if direction == 'previous' else 'next' }}" aria-keyshortcuts="{{ shortcut }}" aria-label="{{ 'Previous' if direction == 'previous' else 'Next' }} album"><span>{{ label }}</span><kbd aria-hidden="true">{{ shortcut_label }}</kbd></a>{% else %}<button type="button" disabled aria-keyshortcuts="{{ shortcut }}" aria-label="{{ 'Previous' if direction == 'previous' else 'Next' }} album"><span>{{ label }}</span><kbd aria-hidden="true">{{ shortcut_label }}</kbd></button>{% endif %}
 {% endfor %}
 </nav>
 <div id="selected-metadata">{% block selected_metadata %}
@@ -334,7 +336,9 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
       }
       const job = await response.json();
       if (job.status === 'succeeded' && job.result_url) {
-        window.location.assign(job.result_url);
+        const destination = new URL(job.result_url, location.origin);
+        destination.searchParams.set('return_to', document.getElementById('back-to-results').getAttribute('href'));
+        window.location.assign(destination.href);
         return;
       }
       if (job.status === 'failed') {
