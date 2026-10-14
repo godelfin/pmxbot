@@ -143,7 +143,8 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 {% for historical_image in image_history %}
 <li>
 <a data-image-id="{{ historical_image.id }}" data-history-label="{{ historical_image.history_label }}" data-history-parent="{{ historical_image.parent_label or '' }}" aria-label="{{ historical_image.history_label }}{% if historical_image.parent_label %}, based on {{ historical_image.parent_label }}{% endif %}, image #{{ historical_image.id }}{% if image and image.id == historical_image.id %}, Selected{% endif %}" href="{{ base }}/albums/{{ album.id }}?source_image_id={{ historical_image.id }}{{ return_query }}"{% if image and image.id == historical_image.id %} class="current-image" aria-current="page"{% endif %}>
-{% if historical_image.image_url %}<img src="{{ historical_image.image_url }}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" />{% else %}<span class="history-unavailable" aria-hidden="true"></span>{% endif %}
+{% set history_artwork_url = historical_image.thumb_url or historical_image.image_url %}
+{% if history_artwork_url %}<img src="{{ history_artwork_url }}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" />{% else %}<span class="history-unavailable" aria-hidden="true"></span>{% endif %}
 <span class="history-label">{{ historical_image.history_label }}</span>
 <span class="selection-indicator"{% if not image or image.id != historical_image.id %} hidden{% endif %}>Selected</span>
 </a>

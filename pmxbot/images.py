@@ -589,6 +589,7 @@ class ImageCache:
                 if 'parent_image_id' in columns
                 else 'NULL'
             )
+            thumbnail = 'image_cache.thumb_url' if 'thumb_url' in columns else 'NULL'
             return [
                 dict(row, operation=generation_metadata(dict(row)).get('operation'))
                 for row in db.execute(
@@ -596,7 +597,7 @@ class ImageCache:
                     image_cache.prompt, image_cache.requested_by,
                     image_cache.channel, image_cache.created_at,
                     image_cache.generation_metadata_json,
-                    {parent} AS parent_image_id
+                    {parent} AS parent_image_id, {thumbnail} AS thumb_url
                     FROM image_cache JOIN album_images USING (cache_key)
                     WHERE album_images.album_id = ?
                     ORDER BY image_cache.created_at DESC, image_cache.id DESC''',

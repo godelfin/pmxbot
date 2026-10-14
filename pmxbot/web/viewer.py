@@ -223,6 +223,7 @@ def describe_artwork_history(history):
                 else None
             ),
             image_url=safe_image_url(item['hosted_url']),
+            thumb_url=safe_image_url(item.get('thumb_url')),
         )
         for item in history
     ]

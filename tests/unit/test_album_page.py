@@ -2397,6 +2397,39 @@ def test_history_labels_do_not_invent_legacy_or_broken_relationships():
     assert viewer.describe_artwork_history([]) == []
 
 
+@pytest.mark.parametrize(
+    'thumbnail', [None, 'javascript:alert(1)', 'https://albums.example/art_thumb.jpg']
+)
+def test_history_uses_gallery_thumbnail_with_safe_full_size_fallback(page, thumbnail):
+    cache, request = page
+    original = 'https://albums.example/art.png'
+    insert(cache, url=original)
+    with sqlite3.connect(cache.database) as db:
+        db.execute('UPDATE image_cache SET thumb_url = ?', (thumbnail,))
+    before = cache.database.read_bytes()
+    soup = BeautifulSoup(request()['body'], 'html.parser')
+    assert soup.select_one('.image-history img')['src'] == (
+        viewer.safe_image_url(thumbnail) or original
+    )
+    assert soup.select_one('.artwork-preview')['href'] == original
+    assert soup.select_one('.artwork-preview img')['src'] == original
+    assert cache.database.read_bytes() == before
+
+
+def test_history_without_thumbnail_column_uses_original(page):
+    cache, request = page
+    insert(cache)
+    with sqlite3.connect(cache.database) as db:
+        db.execute('ALTER TABLE image_cache DROP COLUMN thumb_url')
+    before = cache.database.read_bytes()
+    soup = BeautifulSoup(request()['body'], 'html.parser')
+    assert (
+        soup.select_one('.image-history img')['src']
+        == cache.album_image_history(42)[0]['hosted_url']
+    )
+    assert cache.database.read_bytes() == before
+
+
 def test_history_without_parent_column_is_neutral_and_read_only(page):
     cache, request = page
     insert(cache)
