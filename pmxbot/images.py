@@ -1172,10 +1172,10 @@ class ImageCache:
             with Image.open(filename) as original:
                 image = ImageOps.exif_transpose(original).convert('RGBA')
                 image = ImageOps.contain(
-                    image, (128, 128), method=Image.Resampling.LANCZOS
+                    image, (512, 512), method=Image.Resampling.LANCZOS
                 )
-                canvas = Image.new('RGB', (128, 128), 'white')
-                offset = ((128 - image.width) // 2, (128 - image.height) // 2)
+                canvas = Image.new('RGB', (512, 512), 'white')
+                offset = ((512 - image.width) // 2, (512 - image.height) // 2)
                 canvas.paste(image, offset, image)
                 with BytesIO() as output:
                     canvas.save(output, format='JPEG', quality=85)

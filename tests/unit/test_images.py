@@ -601,7 +601,7 @@ def test_upload_failure_retries_only_upload(config, post, r2):
 
 @pytest.mark.parametrize(
     ('size', 'padding_point'),
-    [((256, 128), (64, 8)), ((128, 256), (8, 64)), ((256, 256), None)],
+    [((1024, 512), (256, 32)), ((512, 1024), (32, 256)), ((1024, 1024), None)],
 )
 def test_thumbnail_dimensions_and_aspect_ratio(config, tmp_path, size, padding_point):
     cache = images.ImageCache(config)
@@ -617,8 +617,8 @@ def test_thumbnail_dimensions_and_aspect_ratio(config, tmp_path, size, padding_p
     with Image.open(thumbnail) as image:
         assert image.format == 'JPEG'
         assert image.mode == 'RGB'
-        assert image.size == (128, 128)
-        red, green, blue = image.getpixel((64, 64))
+        assert image.size == (512, 512)
+        red, green, blue = image.getpixel((256, 256))
         assert red > 240 and green < 10 and blue < 10
         if padding_point:
             assert all(channel > 240 for channel in image.getpixel(padding_point))
