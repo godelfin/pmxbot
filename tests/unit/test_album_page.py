@@ -2420,7 +2420,18 @@ def test_history_without_thumbnail_column_uses_original(page):
     cache, request = page
     insert(cache)
     with sqlite3.connect(cache.database) as db:
-        db.execute('ALTER TABLE image_cache DROP COLUMN thumb_url')
+        columns = [
+            row[1]
+            for row in db.execute('PRAGMA table_info(image_cache)')
+            if row[1] != 'thumb_url'
+        ]
+        db.execute(
+            'CREATE TABLE legacy_images AS SELECT '
+            + ', '.join(columns)
+            + ' FROM image_cache'
+        )
+        db.execute('DROP TABLE image_cache')
+        db.execute('ALTER TABLE legacy_images RENAME TO image_cache')
     before = cache.database.read_bytes()
     soup = BeautifulSoup(request()['body'], 'html.parser')
     assert (
