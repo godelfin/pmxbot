@@ -1450,6 +1450,7 @@ def test_generate_variation_prg_and_provenance(variation, api):
     assert child_id != 42
     child = cache.get_image(child_id)
     sent = post.call_args.kwargs['json' if api == 'responses' else 'data']
+    assert (sent['tools'][0] if api == 'responses' else sent)['moderation'] == 'low'
     assert child['prompt'] == sent['input' if api == 'responses' else 'prompt']
     assert values['description'] in child['prompt']
     assert 'Band cue' in child['prompt']

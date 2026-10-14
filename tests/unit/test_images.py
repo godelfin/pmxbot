@@ -2147,8 +2147,10 @@ def test_initial_album_generation_metadata(
     request = responses_post.call_args.kwargs['json']
     assert metadata['generation_request'] == request
     if backend == 'images':
+        assert request['moderation'] == 'low'
         assert request == dict(cache.settings, prompt=saved['prompt'], n=1)
     else:
+        assert request['tools'][0]['moderation'] == 'low'
         assert request['input'] == saved['prompt']
         assert request['tools'] == [dict(cache.settings, type='image_generation')]
         assert request['model'] == cache.responses_model
