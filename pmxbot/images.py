@@ -254,6 +254,7 @@ class ImageCache:
             'model': config.get('images_model', 'gpt-image-1'),
             'size': config.get('images_size', '1024x1024'),
             'quality': config.get('images_quality', 'low'),
+            'moderation': 'low',
             'output_format': 'png',
         }
         self.image_api = config.get('image_api', 'images')
