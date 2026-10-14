@@ -304,6 +304,11 @@ def album_title_context(album):
     ]
     if not instructions:
         return ''
+    # The first three contexts concern sexual anatomy, acts, or violence.
+    if any(instruction in instructions for _, instruction in _TITLE_CONTEXTS[:3]):
+        instructions.insert(
+            0, 'The album and band names are only metaphors or figures of speech.'
+        )
     return (
         ' The quoted band and album names are text labels for a music release. '
         + ' '.join(instructions)
