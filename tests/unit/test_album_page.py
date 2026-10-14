@@ -341,7 +341,8 @@ def test_unavailable_artwork_retains_metadata(page, url):
     assert 'alt="Generated image' not in response['body']
     assert 'Original prompt' in response['body']
     soup = BeautifulSoup(response['body'], 'html.parser')
-    assert not soup.select('.artwork-preview, img')
+    assert not soup.select('.album-page .artwork-preview, .album-page img')
+    assert soup.select_one('.site-brand img')['alt'] == 'bapudi album image generator'
     assert soup.select_one('#details-heading')
     assert soup.select_one('#metadata-heading-2')
     assert soup.select_one('#album-heading')
@@ -489,8 +490,9 @@ def test_optional_details_and_attribute_escaping(page):
     response = request()
     soup = BeautifulSoup(response['body'], 'html.parser')
     assert soup.select_one('.artwork-preview')['href'] == url
-    assert soup.img['src'] == url
-    assert set(soup.img.attrs) == {'src', 'alt', 'referrerpolicy'}
+    artwork_image = soup.select_one('.artwork-preview img')
+    assert artwork_image['src'] == url
+    assert set(artwork_image.attrs) == {'src', 'alt', 'referrerpolicy'}
     assert [dt.get_text() for dt in soup.select('#details-heading ~ dl dt')] == [
         'Image ID',
         'Created',
@@ -543,7 +545,8 @@ def test_album_without_artwork(page):
     soup = BeautifulSoup(response['body'], 'html.parser')
     assert soup.select_one('h1').get_text() == 'Band — Unillustrated'
     assert soup.select_one('#album-heading')
-    assert not soup.select('img, #details-heading, .image-cache-key')
+    assert not soup.select('.album-page img, #details-heading, .image-cache-key')
+    assert soup.select_one('.site-brand img')['alt'] == 'bapudi album image generator'
     assert cache.database.read_bytes() == before
 
 
