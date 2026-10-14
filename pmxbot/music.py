@@ -280,7 +280,8 @@ _TITLE_CONTEXTS = (
     ),
     (
         r"anal|sex|sexual|sexy|fuck|fucking|blowjobs?|handjobs?|gangbangs?|orgy|"
-        r"orgies|porn|cum|semen|ejaculation|masturbation|incest|bestiality|goon",
+        r"orgies|porn|cum|semen|ejaculation|masturbation|incest|bestiality|goon(?:ers?)?|"
+        r"dick[-\s]+sucking|pussy[-\s]+licking|jizz",
         "Do not depict sexual acts or explicit sexual content.",
     ),
     (
@@ -288,7 +289,7 @@ _TITLE_CONTEXTS = (
         "Do not depict sexual violence or abuse.",
     ),
     (
-        r"fag|fags|fagged|faggot|faggots|holocaust|nazi|nazis",
+        r"fag|fags|fagged|homos|faggot|faggots|holocaust|nazi|nazis",
         "Do not depict hateful imagery, extremist symbols, or atrocities.",
     ),
 )
