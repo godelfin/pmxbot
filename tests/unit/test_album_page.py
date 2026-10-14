@@ -3,7 +3,7 @@ import json
 import sqlite3
 from contextlib import closing
 from unittest.mock import Mock
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, parse_qs
 
 import cherrypy
 import pytest
@@ -691,7 +691,7 @@ def test_homepage_lists_all_albums(page):
         '<Album>',
         'Last',
     ]
-    assert [link['href'] for link in links] == [
+    assert [urlsplit(link['href']).path for link in links] == [
         f'/bot/albums/{album["id"]}' for album in (second, first, last)
     ]
     assert not soup.select('band, album')
@@ -756,7 +756,7 @@ def test_generation_leaderboard(page):
         for row in section.select('tbody tr')
     ] == [['alice', '2'], ['<alice>', '1'], ['Bob', '1'], ['bob', '1']]
     assert '&lt;alice&gt;' in response['body']
-    assert soup.select_one('a[href="/bot/albums/42"]') is not None
+    assert soup.select_one('a[data-album-link][href^="/bot/albums/42?"]') is not None
     assert cache.database.read_bytes() == before
 
 
@@ -827,7 +827,7 @@ def test_gallery_pagination_and_album_links(page):
     soup = BeautifulSoup(response['body'], 'html.parser')
     cards = soup.select('.gallery-card')
     assert len(cards) == 24
-    assert [card['href'] for card in cards] == [
+    assert [urlsplit(card['href']).path for card in cards] == [
         f'/bot/albums/{album["id"]}' for album in reversed(albums[1:])
     ]
     assert len(soup.select('.gallery img')) == 24
@@ -836,14 +836,19 @@ def test_gallery_pagination_and_album_links(page):
     assert '<Band>' in cards[0].get_text()
     assert not soup.select('band')
     assert (
-        soup.select_one('a[rel=next]')['href'] == '/bot/gallery?page=2&sort=date_desc'
+        soup.select_one('a[rel=next]')['href']
+        == '/bot/gallery?sort=chronology&order=desc&page=2'
     )
     assert not soup.select_one('a[rel=prev]')
     last = BeautifulSoup(request('/gallery?page=2')['body'], 'html.parser')
     assert len(last.select('.gallery-card')) == 1
-    assert last.select_one('.gallery-card')['href'] == f'/bot/albums/{albums[0]["id"]}'
     assert (
-        last.select_one('a[rel=prev]')['href'] == '/bot/gallery?page=1&sort=date_desc'
+        urlsplit(last.select_one('.gallery-card')['href']).path
+        == f'/bot/albums/{albums[0]["id"]}'
+    )
+    assert (
+        last.select_one('a[rel=prev]')['href']
+        == '/bot/gallery?sort=chronology&order=desc&page=1'
     )
     assert not last.select_one('a[rel=next]')
     assert request('/gallery?page=3')['status'] == 404
@@ -873,14 +878,16 @@ def test_gallery_artwork_safety_and_latest_image(page, url, thumb_url):
     missing = library.create_album('Band', 'No artwork')
     before = cache.database.read_bytes()
     soup = BeautifulSoup(request('/gallery')['body'], 'html.parser')
-    card = soup.select_one('a[href="/bot/albums/42"]')
+    card = soup.select_one('a[data-album-link][href^="/bot/albums/42?"]')
     expected = viewer.safe_image_url(thumb_url) or viewer.safe_image_url(url)
     assert bool(card.img) == bool(expected)
     if card.img:
         assert card.img['src'] == expected
     else:
         assert 'Artwork unavailable' in card.get_text()
-    assert not soup.select_one(f'a[href="/bot/albums/{missing["id"]}"]').img
+    assert not soup.select_one(
+        f'a[data-album-link][href^="/bot/albums/{missing["id"]}?"]'
+    ).img
     assert cache.database.read_bytes() == before
 
 
@@ -927,7 +934,7 @@ def test_gallery_without_image_schema_and_storage_error(page):
 @pytest.mark.parametrize(
     ('sort', 'expected'),
     [
-        ('band', [3, 2, 1, 4]),
+        ('band', [2, 3, 1, 4]),
         ('album', [1, 3, 4, 2]),
         ('date_asc', [4, 1, 2, 3]),
         ('date_desc', [3, 2, 1, 4]),
@@ -955,19 +962,22 @@ def test_gallery_sorting(page, sort, expected):
     response = request(f'/gallery?sort={sort}')
     assert response['status'] == 200
     soup = BeautifulSoup(response['body'], 'html.parser')
-    assert [card['href'] for card in soup.select('.gallery-card')] == [
+    assert [urlsplit(card['href']).path for card in soup.select('.gallery-card')] == [
         f'/bot/albums/{album_id}' for album_id in expected
     ]
     select = soup.select_one('select[name=sort]')
-    assert select.select_one('option[selected]')['value'] == sort
+    assert (
+        select.select_one('option[selected]')['value']
+        == viewer.GALLERY_SORTS.get(sort, (sort, 'asc'))[0]
+    )
     assert [option.get_text() for option in select.select('option')] == [
-        'Alphabetical (Band)',
-        'Alphabetical (Album)',
-        'Date Ascending',
-        'Date Descending',
+        'Band',
+        'Album',
+        'Created',
+        'Image variations',
         'Genre',
     ]
-    form = soup.select_one('form.gallery-sort')
+    form = soup.select_one('form.catalog-controls')
     assert form['method'] == 'get'
     assert form['action'] == '/bot/gallery'
     assert not form.select('input[name=page]')
@@ -991,11 +1001,14 @@ def test_gallery_sort_preserved_between_pages(page):
         library.create_album(f'Band {i:02}', 'Album')
     first = BeautifulSoup(request('/gallery?sort=band')['body'], 'html.parser')
     next_url = first.select_one('a[rel=next]')['href']
-    assert next_url == '/bot/gallery?page=2&sort=band'
+    assert next_url == '/bot/gallery?sort=artist&order=asc&page=2'
     second = BeautifulSoup(request(next_url[len('/bot') :])['body'], 'html.parser')
-    assert second.select_one('option[selected]')['value'] == 'band'
-    assert second.select_one('.gallery-card')['href'] == '/bot/albums/25'
-    assert second.select_one('a[rel=prev]')['href'] == '/bot/gallery?page=1&sort=band'
+    assert second.select_one('option[selected]')['value'] == 'artist'
+    assert urlsplit(second.select_one('.gallery-card')['href']).path == '/bot/albums/25'
+    assert (
+        second.select_one('a[rel=prev]')['href']
+        == '/bot/gallery?sort=artist&order=asc&page=1'
+    )
 
 
 @pytest.mark.parametrize(
@@ -1167,9 +1180,9 @@ def test_catalog_sort(page, sort, order, expected):
     with sqlite3.connect(cache.database) as db:
         db.execute("UPDATE albums SET created_at = '2026-01-01'")
     soup = BeautifulSoup(request(f'/?sort={sort}&order={order}')['body'], 'html.parser')
-    assert [link['href'] for link in soup.select('.catalog-album a')] == [
-        f'/bot/albums/{value}' for value in expected
-    ]
+    assert [
+        urlsplit(link['href']).path for link in soup.select('.catalog-album a')
+    ] == [f'/bot/albums/{value}' for value in expected]
 
 
 @pytest.mark.parametrize(
@@ -1191,9 +1204,9 @@ def test_catalog_filters(page, query, expected):
     for artist, title in [('Zulu', 'Apple'), ('alpha', 'Zoo'), ('alpha', 'Apple')]:
         library.create_album(artist, title)
     soup = BeautifulSoup(request('/?' + query)['body'], 'html.parser')
-    assert [link['href'] for link in soup.select('.catalog-album a')] == [
-        f'/bot/albums/{value}' for value in expected
-    ]
+    assert [
+        urlsplit(link['href']).path for link in soup.select('.catalog-album a')
+    ] == [f'/bot/albums/{value}' for value in expected]
     if not expected:
         assert 'No albums match' in soup.get_text()
 
@@ -1218,7 +1231,6 @@ def test_catalog_exact_links_and_pagination(page):
     assert len(first.select('.catalog-album')) == 24
     next_url = first.select_one('[rel=next]')['href']
     assert next_url.startswith('/bot/?')
-    from urllib.parse import parse_qs, urlsplit
 
     assert parse_qs(urlsplit(next_url).query) == dict(
         q=['<A'], artist=[artist], sort=['album'], order=['asc'], page=['2']
@@ -1308,7 +1320,7 @@ def test_catalog_tied_pagination_and_query_count(page, monkeypatch, order):
         )
         rows = soup.select('.catalog-album a')
         assert len(rows) == (24 if number < 3 else 1)
-        ids.extend(int(row['href'].rsplit('/', 1)[1]) for row in rows)
+        ids.extend(int(urlsplit(row['href']).path.rsplit('/', 1)[1]) for row in rows)
     expected = [album['id'] for album in albums]
     assert ids == (expected if order == 'asc' else expected[::-1])
     # Schema, count, result and leaderboard schema queries: constant per page.
@@ -1325,7 +1337,7 @@ def test_catalog_creation_dates_precede_ids(page):
             "UPDATE albums SET created_at = CASE id WHEN 1 THEN '2026-02-01' ELSE '2026-01-01' END"
         )
     soup = BeautifulSoup(request('/')['body'], 'html.parser')
-    assert [row['href'] for row in soup.select('.catalog-album a')] == [
+    assert [urlsplit(row['href']).path for row in soup.select('.catalog-album a')] == [
         '/bot/albums/1',
         '/bot/albums/2',
     ]
@@ -1710,3 +1722,187 @@ def test_artwork_selection_preserves_image_id(page, identifier):
     )
     assert response['status'] == 200
     assert json.loads(response['body'])['image_id'] == str(identifier)
+
+
+@pytest.mark.parametrize('sort', viewer.COLLECTION_SORTS)
+@pytest.mark.parametrize('order', ['asc', 'desc'])
+def test_collection_round_trip(page, sort, order):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    for number in range(30):
+        library.create_album('Mazel Vatos', f'Release {number:02}', genre='Jazz')
+    library.create_album('Other', 'Release 99')
+    query = urlencode(
+        dict(q='Release', artist='Mazel Vatos', sort=sort, order=order, page=2)
+    )
+    catalog = BeautifulSoup(request('/?' + query)['body'], 'html.parser')
+    gallery_url = catalog.select_one('.view-switch a[href*="/gallery"]')['href']
+    gallery = BeautifulSoup(request(gallery_url[4:])['body'], 'html.parser')
+    assert len(gallery.select('.gallery-card')) == 6
+    assert [urlsplit(a['href']).path for a in catalog.select('.catalog-album a')] == [
+        urlsplit(a['href']).path for a in gallery.select('.gallery-card')
+    ]
+    assert gallery.select_one('.view-switch [aria-current]').get_text() == 'Gallery'
+    list_url = gallery.select_one('.view-switch a:not([aria-current])')['href']
+    assert parse_qs(urlsplit(list_url).query) == parse_qs(query)
+    assert parse_qs(
+        urlsplit(gallery.select_one('.pagination [rel=prev]')['href']).query
+    )['artist'] == ['Mazel Vatos']
+    assert not gallery.select('form input[name=page]')
+    assert parse_qs(urlsplit(catalog.select_one('.catalog th a')['href']).query)[
+        'page'
+    ] == ['1']
+
+
+@pytest.mark.parametrize('view', ['/', '/gallery'])
+def test_collection_chips_and_header(page, view):
+    cache, request = page
+    insert(cache)
+    query = urlencode(
+        dict(q='Band', artist='Band', album_title='Album', sort='album', order='asc')
+    )
+    soup = BeautifulSoup(request(view + '?' + query)['body'], 'html.parser')
+    chips = soup.select('.filter-chips a')
+    assert len(chips) == 4
+    for field, chip in zip(('q', 'artist', 'album_title'), chips):
+        values = parse_qs(urlsplit(chip['href']).query)
+        assert field not in values
+        assert values['page'] == ['1']
+        assert values['sort'] == ['album']
+        assert values['order'] == ['asc']
+    assert not set(parse_qs(urlsplit(chips[-1]['href']).query)) & {
+        'q',
+        'artist',
+        'album_title',
+    }
+    assert not soup.select('.signin-card, input[name=password]')
+    header = soup.select_one('.site-header')
+    assert header.select_one('.site-brand a')['href'] == '/bot/'
+    sign_in = header.select_one('a[href*="/login?"]')['href']
+    assert parse_qs(urlsplit(sign_in).query)['return_to'] == [
+        '/bot' + view + '?' + query
+    ]
+    if view == '/':
+        assert soup.select_one('.catalog').find_next('section', class_='leaderboard')
+
+
+@pytest.mark.parametrize('page', ['', '/bot'], indirect=True)
+def test_album_return_context_and_fallback(page):
+    cache, request = page
+    insert(cache)
+    base = pmxbot.config.web_base
+    target = (
+        base
+        + '/gallery?'
+        + urlencode(
+            dict(
+                q='Mazel Vatos ü',
+                artist='Mazel Vatos',
+                album_title='Album',
+                sort='album',
+                order='desc',
+                page=2,
+            )
+        )
+        + '#scroll=850'
+    )
+    response = request('/albums/42?' + urlencode({'return_to': target}))
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    assert soup.select_one('#back-to-results')['href'] == target
+    assert soup.select_one('.results-navigation a:last-child')['href'] == base + '/'
+    assert parse_qs(
+        urlsplit(soup.select_one('.image-history a[data-image-id]')['href']).query
+    )['return_to'] == [target]
+    sign_in = soup.select_one('.site-header a[href*="/login?"]')['href']
+    login = BeautifulSoup(request(sign_in[len(base) :])['body'], 'html.parser')
+    assert login.select_one('input[name=return_to]')[
+        'value'
+    ] == base + '/albums/42?' + urlencode({'return_to': target})
+    direct = BeautifulSoup(request('/albums/42')['body'], 'html.parser')
+    assert direct.select_one('#back-to-results')['href'] == base + '/'
+
+
+@pytest.mark.parametrize(
+    'target',
+    [
+        'https://evil.example/',
+        '//evil.example/',
+        '/bot/../gallery',
+        '/bot/%2fgallery',
+        '/bot/gallery/extra',
+        '/bot/login',
+        '/bot/gallery?unknown=1',
+        '/bot/gallery?page=0',
+        '/bot/gallery?sort=bad',
+        '/bot/gallery?q=x&q=y',
+        '/bot/gallery#scroll=evil',
+        '/bot/gallery\r\n',
+        '/bot/gallery?order=bad',
+        '/bot/gallery?page=1&page=2',
+        '/bot/gallery?sort=band&order=asc#scroll=123456789',
+        '/bot/\\evil',
+    ],
+)
+def test_album_unsafe_results_return(page, target):
+    cache, request = page
+    insert(cache)
+    soup = BeautifulSoup(
+        request('/albums/42?' + urlencode({'return_to': target}))['body'], 'html.parser'
+    )
+    assert soup.select_one('#back-to-results')['href'] == '/bot/'
+
+
+@pytest.mark.parametrize('path', ['/', '/gallery', '/albums/42'])
+def test_shared_signed_in_header(page, monkeypatch, path):
+    cache, request = page
+    insert(cache)
+    monkeypatch.setattr(
+        auth,
+        'current_user',
+        Mock(return_value=User(1, 'Alice', 'alice', None, '2026', True, False)),
+    )
+    soup = BeautifulSoup(request(path)['body'], 'html.parser')
+    header = soup.select_one('.site-header')
+    assert 'Hi, Alice.' in header.get_text()
+    assert header.select_one('a[href="/bot/"]').get_text().strip()
+    assert header.select_one('form[action="/bot/logout"] input[name=csrf_token]')
+    assert not header.select('a[href*="/login?"]')
+
+
+def test_collection_without_thumbnail_column(page):
+    cache, request = page
+    insert(cache)
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            'CREATE TABLE legacy_images AS SELECT id, cache_key, hosted_url, created_at, requested_by FROM image_cache'
+        )
+        db.execute('DROP TABLE image_cache')
+        db.execute('ALTER TABLE legacy_images RENAME TO image_cache')
+    before = cache.database.read_bytes()
+    assert request('/')['status'] == 200
+    soup = BeautifulSoup(request('/gallery')['body'], 'html.parser')
+    assert soup.select_one('.gallery-card img')['src'].startswith(
+        'https://albums.example/'
+    )
+    assert cache.database.read_bytes() == before
+
+
+def test_collection_all_filters_propagate(page):
+    cache, request = page
+    insert(cache)
+    query = urlencode(
+        dict(
+            q='band',
+            artist='<Band>',
+            album_title='<Album>',
+            sort='variations',
+            order='desc',
+        )
+    )
+    catalog = BeautifulSoup(request('/?' + query)['body'], 'html.parser')
+    gallery_url = catalog.select_one('.view-switch a:not([aria-current])')['href']
+    gallery = BeautifulSoup(request(gallery_url[4:])['body'], 'html.parser')
+    assert len(gallery.select('.gallery-card')) == 1
+    assert parse_qs(
+        urlsplit(gallery.select_one('.view-switch a:not([aria-current])')['href']).query
+    ) == dict(parse_qs(query), page=['1'])

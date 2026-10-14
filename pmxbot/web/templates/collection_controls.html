@@ -1,0 +1,38 @@
+<style>
+.collection-controls { margin: .75rem 0; }
+.view-switch, .filter-chips { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0; }
+.view-switch a, .filter-chips a { padding: .35rem .65rem; border: 1px solid #b8c2ce; border-radius: .25rem; background: white; }
+.filter-chips a { box-sizing: border-box; max-width: 100%; overflow-wrap: anywhere; }
+.view-switch [aria-current] { color: white; background: #135ba1; font-weight: bold; }
+.catalog-controls { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; }
+.catalog-controls label { display: flex; flex: 1 1 8rem; min-width: 0; flex-direction: column; }
+.catalog-controls input, .catalog-controls select, .catalog-controls button { box-sizing: border-box; min-width: 0; width: 100%; padding: .45rem; font: inherit; border: 1px solid #b8c2ce; border-radius: .25rem; background: white; color: inherit; }
+.catalog-controls button { width: auto; cursor: pointer; }
+@media (max-width: 36rem) { .catalog-controls label:first-child { flex-basis: 100%; } }
+:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
+</style>
+<section class="collection-controls" aria-label="Browse albums">
+<nav class="view-switch" aria-label="Collection view">
+{% for target, label in [('list', 'List'), ('gallery', 'Gallery')] %}
+<a href="{{ collection_url(target) }}"{% if view == target %} aria-current="page"{% endif %}>{{ label }}</a>
+{% endfor %}
+</nav>
+<form class="catalog-controls" action="{{ collection_path }}" method="get">
+<label>Search albums and artists<input name="q" value="{{ q }}" type="search" /></label>
+<label>Artist<input name="artist" value="{{ artist }}" /></label>
+<label>Album title<input name="album_title" value="{{ album_title }}" /></label>
+<label>Sort by<select name="sort">
+{% for value, label in [('artist', 'Band'), ('album', 'Album'), ('chronology', 'Created'), ('variations', 'Image variations'), ('genre', 'Genre')] %}
+<option value="{{ value }}"{% if value == sort %} selected{% endif %}>{{ label }}</option>
+{% endfor %}
+</select></label>
+<label>Order<select name="order"><option value="asc"{% if order == 'asc' %} selected{% endif %}>Ascending</option><option value="desc"{% if order == 'desc' %} selected{% endif %}>Descending</option></select></label>
+<button type="submit">Apply</button>
+</form>
+<div class="filter-chips" aria-label="Active filters">
+{% for field, label, value in [('q', 'Search', q), ('artist', 'Artist', artist), ('album_title', 'Album title', album_title)] %}
+{% if value %}<a href="{{ collection_url(**{field: '', 'page': 1}) }}" aria-label="Remove {{ label }} filter: {{ value }}">{{ label }}: {{ value }} ×</a>{% endif %}
+{% endfor %}
+<a href="{{ collection_url(q='', artist='', album_title='', page=1) }}">Clear filters</a>
+</div>
+</section>

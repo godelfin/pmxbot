@@ -149,8 +149,19 @@ def safe_return_to(value):
     fallback = (pmxbot.config.web_base or '') + '/'
     if not isinstance(value, str) or not value.isascii() or not value.startswith('/'):
         return fallback
+    # Validate the path separately so encoded query state can round-trip.
     # Reject encoding ambiguity, dot traversal, controls, and browser backslashes.
-    decoded = unquote(value)
+    if value.startswith('//') or any(
+        c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value
+    ):
+        return fallback
+    try:
+        raw = urlsplit(value)
+    except ValueError:
+        return fallback
+    if raw.scheme or raw.netloc:
+        return fallback
+    decoded = unquote(raw.path)
     if '%' in decoded or any(
         c.isspace() or ord(c) < 32 or ord(c) == 127 for c in decoded
     ):
