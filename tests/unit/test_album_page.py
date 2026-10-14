@@ -1873,7 +1873,11 @@ def test_collection_without_thumbnail_column(page):
     cache, request = page
     insert(cache)
     with sqlite3.connect(cache.database) as db:
-        db.execute('ALTER TABLE image_cache DROP COLUMN thumb_url')
+        db.execute(
+            'CREATE TABLE legacy_images AS SELECT id, cache_key, hosted_url, created_at, requested_by FROM image_cache'
+        )
+        db.execute('DROP TABLE image_cache')
+        db.execute('ALTER TABLE legacy_images RENAME TO image_cache')
     before = cache.database.read_bytes()
     assert request('/')['status'] == 200
     soup = BeautifulSoup(request('/gallery')['body'], 'html.parser')
