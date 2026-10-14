@@ -622,7 +622,7 @@ class ImageCache:
                 return [], 0
             total = db.execute('SELECT COUNT(*) FROM albums').fetchone()[0]
             artwork = (
-                '''(SELECT image_cache.hosted_url FROM image_cache
+                '''(SELECT image_cache.{column} FROM image_cache
                 JOIN album_images USING (cache_key)
                 WHERE album_images.album_id = albums.id
                 ORDER BY image_cache.created_at DESC, image_cache.id DESC LIMIT 1)'''
@@ -632,7 +632,8 @@ class ImageCache:
             rows = db.execute(
                 f'''SELECT albums.id, albums.title, albums.genre,
                 artists.name AS artist_name,
-                {artwork} AS hosted_url
+                {artwork.format(column='hosted_url')} AS hosted_url,
+                {artwork.format(column='thumb_url')} AS thumb_url
                 FROM albums JOIN artists ON artists.id = albums.artist_id
                 ORDER BY {order} LIMIT ? OFFSET ?''',
                 (page_size, (page - 1) * page_size),

@@ -760,6 +760,7 @@ class PmxbotPages:
             raise cherrypy.HTTPError(404, 'Unknown gallery page')
         for album in albums:
             album['image_url'] = safe_image_url(album.pop('hosted_url'))
+            album['thumb_url'] = safe_image_url(album['thumb_url'])
         template = jenv.overlay(autoescape=True).get_template('gallery.html')
         return template.render(
             albums=albums,

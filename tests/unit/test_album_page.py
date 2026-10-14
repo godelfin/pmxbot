@@ -854,16 +854,19 @@ def test_gallery_pagination_and_album_links(page):
 @pytest.mark.parametrize(
     'url', [None, 'javascript:alert(1)', 'https://example.com/art.png']
 )
-def test_gallery_artwork_safety_and_latest_image(page, url):
+@pytest.mark.parametrize(
+    'thumb_url', [None, 'javascript:alert(1)', 'https://example.com/thumb.jpg']
+)
+def test_gallery_artwork_safety_and_latest_image(page, url, thumb_url):
     cache, request = page
     insert(cache)
     with closing(cache.connect()) as db:
         db.execute(
             '''INSERT INTO image_cache
             (cache_key, prompt, normalized_prompt, settings_json, local_filename,
-             hosted_url, generation_metadata_json, created_at)
-            VALUES ('latest', 'prompt', 'prompt', '{}', 'private.png', ?, '{}', '2099-01-01')''',
-            (url,),
+             hosted_url, thumb_url, generation_metadata_json, created_at)
+            VALUES ('latest', 'prompt', 'prompt', '{}', 'private.png', ?, ?, '{}', '2099-01-01')''',
+            (url, thumb_url),
         )
     library = MusicLibrary(cache.database)
     library.record_image(42, 'latest')
@@ -871,9 +874,10 @@ def test_gallery_artwork_safety_and_latest_image(page, url):
     before = cache.database.read_bytes()
     soup = BeautifulSoup(request('/gallery')['body'], 'html.parser')
     card = soup.select_one('a[href="/bot/albums/42"]')
-    assert bool(card.img) == bool(url and url.startswith('https://'))
+    expected = viewer.safe_image_url(thumb_url) or viewer.safe_image_url(url)
+    assert bool(card.img) == bool(expected)
     if card.img:
-        assert card.img['src'] == url
+        assert card.img['src'] == expected
     else:
         assert 'Artwork unavailable' in card.get_text()
     assert not soup.select_one(f'a[href="/bot/albums/{missing["id"]}"]').img
