@@ -260,12 +260,28 @@ as their name, have ``image/png`` content type, and no requested expiration.
 Public URLs do not use expiring signatures. Keep the database private because
 it contains prompts and requester information.
 
-Each saved original also produces a 128x128 JPEG thumbnail, preserving its aspect
+Each saved original also produces a 512x512 JPEG thumbnail, preserving its aspect
 ratio with white padding and flattening transparency onto white. Thumbnails are
 saved and uploaded separately as ``<cache_key>_thumb.jpg`` with ``image/jpeg``
 content type. Their public URL is stored in ``image_cache.thumb_url``; existing
 databases gain this nullable column automatically. Existing hosted images gain
 thumbnails on their next request if the saved original is available.
+
+To backfill all rows with a non-empty ``local_filename`` and NULL ``thumb_url``,
+run from the bot's working directory using its R2 configuration::
+
+    python -m pmxbot.backfill_thumbnails --config config.yaml --database pmxbot.sqlite --dry-run
+    python -m pmxbot.backfill_thumbnails --config config.yaml --database pmxbot.sqlite
+
+Alternatively, omit ``--config`` and use the ``R2_*`` environment variables above.
+Use ``--source-root /path/to/bot`` if relative local filenames refer to another
+working directory. The script uploads ``<cache_key>_thumb.jpg`` to the configured
+album image bucket and updates only ``image_cache.thumb_url`` after each
+successful upload. Missing files and upload failures are reported, leave the row
+pending, and produce a nonzero exit status while other rows continue. Rerunning
+skips rows whose thumbnails are already recorded. Originals are never generated
+or uploaded by this script. The dry run only checks selection and file presence;
+it does not validate image contents or R2 credentials.
 
 Existing ImgBB cache entries are moved to R2 when next requested, by uploading
 the saved local image and updating the same SQLite row after a successful
