@@ -275,7 +275,7 @@ class MusicLibrary:
 # "classic". These are contextual hints, not an API moderation blocklist.
 _TITLE_CONTEXTS = (
     (
-        r"ass|tits?|penis|cock|dick|pussy|cunt|boobs?|breasts?|vagina|genitals?",
+        r"ass|tits?|penis|cock|dick|pussy|cunt|boobs?|breasts?|strippers?|vagina|genitals?",
         "Keep the artwork non-explicit, with no nudity or sexual anatomy.",
     ),
     (
