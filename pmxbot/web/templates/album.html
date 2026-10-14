@@ -31,6 +31,16 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 #selected-metadata .image-section { margin-top: 3px; margin-bottom: 3px; }
 .artwork-preview { display: block; width: 36rem; max-width: 100%; }
 .artwork-preview img { display: block; width: 100%; height: auto; object-fit: contain; }
+.artwork-frame { position: relative; width: 36rem; max-width: 100%; }
+.artwork-share { position: absolute; top: .75rem; right: .75rem; display: grid; place-items: center; width: 44px; height: 44px; padding: .5rem; border: 1px solid #d4dbe2; border-radius: .5rem; background: #fff; color: #135ba1; box-shadow: 0 2px 8px #0003; cursor: pointer; }
+.artwork-share[hidden], .artwork-share-fallback[hidden], .artwork-share-status[hidden] { display: none; }
+.artwork-share svg { width: 24px; height: 24px; }
+@media (hover: hover) and (pointer: fine) {
+  .artwork-share { opacity: 0; pointer-events: none; }
+  .artwork-frame:hover .artwork-share, .artwork-frame:focus-within .artwork-share { opacity: 1; pointer-events: auto; }
+}
+.artwork-share-status { margin: .5rem 0 0; }
+.artwork-share-fallback input { box-sizing: border-box; width: 100%; padding: .5rem; font: inherit; }
 .album-page a { color: #135ba1; }
 .album-page a:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
 .artwork-dialog { box-sizing: border-box; width: 96vw; height: 96vh; max-width: 96vw; max-height: 96vh; padding: 2.5rem 0 0; border: 0; background: transparent; }
@@ -115,7 +125,14 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 <div class="image-content image-main">
 <section class="image-section" aria-label="Artwork" id="selected-artwork">{% block selected_artwork %}
 {% if image_url %}
+<div class="artwork-frame">
 <a class="artwork-preview" href="{{ image_url }}" rel="noreferrer" aria-label="View full-size artwork for image #{{ image.id }}"><img src="{{ image_url }}" alt="Generated image #{{ image.id }}" referrerpolicy="no-referrer" /></a>
+<button type="button" class="artwork-share" hidden data-share-url="{{ base }}/albums/{{ album.id }}?source_image_id={{ image.id }}" aria-label="Copy link to selected image" title="Copy link to selected image">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 16V3m-5 5 5-5 5 5M5 13v7h14v-7" /></svg>
+</button>
+</div>
+<p class="artwork-share-status" role="status" hidden></p>
+<div class="artwork-share-fallback" hidden><label for="artwork-share-link">Copy this link:</label><input id="artwork-share-link" type="text" readonly /></div>
 <p class="artwork-caption">Select the preview to view full-size artwork here.</p>
 <dialog class="artwork-dialog" id="artwork-dialog" aria-label="Full-size artwork for image #{{ image.id }}">
 <button class="artwork-dialog-close" type="button" aria-label="Close full-size artwork">X</button>
@@ -265,6 +282,35 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 </main>
 <script>
 (() => {
+  function enableShare() {
+    document.querySelectorAll('.artwork-share').forEach(button => button.hidden = false);
+  }
+  enableShare();
+  document.addEventListener('artwork-selected', enableShare);
+  document.addEventListener('click', async event => {
+    const button = event.target.closest('.artwork-share');
+    if (!button || button.disabled) return;
+    const artwork = button.closest('#selected-artwork');
+    const status = artwork.querySelector('.artwork-share-status');
+    const fallback = artwork.querySelector('.artwork-share-fallback');
+    const url = new URL(button.dataset.shareUrl, location.href).href;
+    button.disabled = true;
+    status.hidden = true;
+    fallback.hidden = true;
+    try {
+      await navigator.clipboard.writeText(url);
+      status.textContent = 'Image link copied.';
+      status.hidden = false;
+    } catch {
+      fallback.hidden = false;
+      const input = fallback.querySelector('input');
+      input.value = url;
+      input.focus();
+      input.select();
+    } finally {
+      button.disabled = false;
+    }
+  });
   document.addEventListener('click', (event) => {
     const preview = event.target.closest('.artwork-preview');
     const dialog = document.getElementById('artwork-dialog');

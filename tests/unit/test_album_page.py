@@ -150,6 +150,10 @@ def test_render_and_read_only(page):
     assert preview['rel'] == ['noreferrer']
     assert preview.img['referrerpolicy'] == 'no-referrer'
     assert 'full-size artwork' in preview['aria-label']
+    share = artwork.select_one('button.artwork-share')
+    assert share['data-share-url'] == '/bot/albums/42?source_image_id=42'
+    assert share['aria-label'] == 'Copy link to selected image'
+    assert not share.find_parent('a')
     dialog = soup.select_one('#artwork-dialog')
     assert dialog is not None
     assert dialog['aria-label'] == 'Full-size artwork for image #42'
@@ -1061,6 +1065,33 @@ def test_preparation_is_immutable_and_has_no_generation(page, monkeypatch):
         )
     assert request(method='POST')['status'] == 400
     assert cache.database.read_bytes() == before
+
+
+@pytest.mark.parametrize('page', ['/bot', ''], indirect=True)
+def test_artwork_share_link_uses_selected_image_without_browsing_state(page):
+    cache, request = page
+    insert(cache)
+    destination = '/gallery?artist=Band&page=2&sort=album'
+    response = request(
+        '/albums/42?'
+        + urlencode(
+            {
+                'source_image_id': '42',
+                'return_to': destination,
+            }
+        )
+    )
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    share = soup.select_one('.artwork-share')
+    assert (
+        share['data-share-url']
+        == pmxbot.config.web_base + '/albums/42?source_image_id=42'
+    )
+    assert 'return_to' not in share['data-share-url']
+    with sqlite3.connect(cache.database) as db:
+        db.execute('UPDATE image_cache SET hosted_url = NULL')
+    soup = BeautifulSoup(request()['body'], 'html.parser')
+    assert not soup.select('.artwork-share')
 
 
 def test_style_dropdown_and_saved_image_state(page):

@@ -16,7 +16,7 @@ after(async () => {
   fs.rmSync(fixtures, {recursive: true, force: true});
 });
 async function setup(options = {}) {
-  const page = await browser.newPage({viewport: {width: options.width || 900, height: 700}, reducedMotion: 'reduce', javaScriptEnabled: options.javascript !== false});
+  const page = await browser.newPage({viewport: {width: options.width || 900, height: 700}, hasTouch: options.touch || false, reducedMotion: 'reduce', javaScriptEnabled: options.javascript !== false});
   await page.route('https://art.example/**', route => route.fulfill({contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="blue"/></svg>'}));
   await page.route('https://albums.example/**', route => route.abort());
   await page.route('http://album.test/**', async route => {
@@ -46,6 +46,51 @@ async function setup(options = {}) {
   return page;
 }
 const thumbnail = (page, id) => page.locator(`[data-image-id="${id}"]`);
+test('share icon copies a clean selected-image permalink and survives artwork changes', async () => {
+  const page = await setup({width: 1400});
+  await page.goto('http://album.test/bot/albums/42?source_image_id=42&return_to=%2Fbot%2Fgallery%3Fpage%3D2#scroll=500');
+  await page.evaluate(() => {
+    window.copiedLinks = [];
+    Object.defineProperty(navigator, 'clipboard', {value: {writeText: async text => window.copiedLinks.push(text)}, configurable: true});
+  });
+  const button = page.getByRole('button', {name: 'Copy link to selected image'});
+  await page.mouse.move(0, 0);
+  assert.equal(await button.evaluate(el => getComputedStyle(el).opacity), '0');
+  await page.locator('.artwork-frame').hover();
+  assert.equal(await button.evaluate(el => getComputedStyle(el).opacity), '1');
+  await button.click();
+  assert.equal(await page.locator('.artwork-share-status').innerText(), 'Image link copied.');
+  assert.equal(await page.locator('dialog').evaluate(el => el.open), false);
+  await thumbnail(page, 43).click(); await selected(page, 43);
+  await button.focus();
+  assert.equal(await button.evaluate(el => getComputedStyle(el).opacity), '1');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.copiedLinks.length === 2);
+  assert.deepEqual(await page.evaluate(() => window.copiedLinks), [
+    'http://album.test/bot/albums/42?source_image_id=42',
+    'http://album.test/bot/albums/42?source_image_id=43',
+  ]);
+  await thumbnail(page, 44).click(); await selected(page, 44);
+  assert.equal(await button.count(), 0);
+  await page.close();
+});
+test('share is visible on touch screens and clipboard failure offers a selectable link', async () => {
+  const page = await setup({width: 320, touch: true});
+  await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', {value: {writeText: async () => {throw new Error('denied');}}, configurable: true}));
+  const button = page.getByRole('button', {name: 'Copy link to selected image'});
+  assert.equal(await button.evaluate(el => getComputedStyle(el).opacity), '1');
+  await button.click();
+  const input = page.getByLabel('Copy this link:');
+  assert.equal(await input.inputValue(), 'http://album.test/bot/albums/42?source_image_id=42');
+  assert.equal(await input.evaluate(el => document.activeElement === el && el.selectionEnd === el.value.length && el.selectionStart === 0), true);
+  assert.equal(await button.isEnabled(), true);
+  assert.equal(await page.locator('dialog').evaluate(el => el.open), false);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.close();
+  const noJS = await setup({javascript: false});
+  assert.equal(await noJS.locator('.artwork-share').isVisible(), false);
+  await noJS.close();
+});
 async function selected(page, id) {
   await page.waitForFunction(id => document.querySelector('[name=source_image_id]').value === String(id) && document.querySelector('#image-history').getAttribute('aria-busy') === 'false', id);
   assert.equal(await page.locator('#image-history [aria-current]').getAttribute('data-image-id'), String(id));
