@@ -406,7 +406,11 @@ def test_album_navigation_and_columns(page):
     with sqlite3.connect(cache.database) as db:
         db.execute('DELETE FROM albums WHERE id = ?', (removed['id'],))
     before = cache.database.read_bytes()
-    soup = BeautifulSoup(request(f'/albums/{first["id"]}')['body'], 'html.parser')
+    # Direct links use newest-first collection order, including deterministic ties.
+    with sqlite3.connect(cache.database) as db:
+        db.execute("UPDATE albums SET created_at = '2026-01-01'")
+    before = cache.database.read_bytes()
+    soup = BeautifulSoup(request(f'/albums/{last["id"]}')['body'], 'html.parser')
     main = soup.select_one('.image-main')
     assert main.select_one('section[aria-label="Artwork"]') is not None
     assert [h.get_text() for h in main.select('h2')] == [
@@ -414,8 +418,10 @@ def test_album_navigation_and_columns(page):
         'Original prompt',
         'Generate album artwork',
     ]
-    navigation = soup.select_one('.image-sidebar nav')
-    assert navigation.select_one('button[disabled] span').get_text() == 'Prev'
+    navigation = soup.select_one('main > .album-navigation')
+    assert (
+        navigation.select_one('button[disabled] span').get_text() == '← Previous album'
+    )
     assert (
         navigation.select_one('button[disabled]')['aria-keyshortcuts']
         == 'Shift+ArrowLeft'
@@ -424,11 +430,13 @@ def test_album_navigation_and_columns(page):
         navigation.select_one('a[rel=next]')['aria-keyshortcuts'] == 'Shift+ArrowRight'
     )
     assert navigation.select_one('a[rel=next] kbd').get_text() == 'Shift+→'
-    assert navigation.select_one('a[rel=next]')['href'] == f'/bot/albums/{last["id"]}'
-    soup = BeautifulSoup(request(f'/albums/{last["id"]}')['body'], 'html.parser')
-    assert soup.select_one('a[rel=prev]')['href'] == f'/bot/albums/{first["id"]}'
+    assert navigation.select_one('a[rel=next]')['href'] == f'/bot/albums/{first["id"]}'
+    assert soup.select_one('main > h1').find_next('nav') == navigation
+    soup = BeautifulSoup(request(f'/albums/{first["id"]}')['body'], 'html.parser')
+    assert soup.select_one('a[rel=prev]')['href'] == f'/bot/albums/{last["id"]}'
     assert (
-        soup.select_one('.album-navigation button[disabled] span').get_text() == 'Next'
+        soup.select_one('.album-navigation button[disabled] span').get_text()
+        == 'Next album →'
     )
     assert cache.database.read_bytes() == before
 
@@ -966,16 +974,11 @@ def test_gallery_sorting(page, sort, expected):
         f'/bot/albums/{album_id}' for album_id in expected
     ]
     select = soup.select_one('select[name=sort]')
-    assert (
-        select.select_one('option[selected]')['value']
-        == viewer.GALLERY_SORTS.get(sort, (sort, 'asc'))[0]
+    assert select.select_one('option[selected]')['value'] == ':'.join(
+        viewer.GALLERY_SORTS.get(sort, (sort, 'asc'))
     )
     assert [option.get_text() for option in select.select('option')] == [
-        'Band',
-        'Album',
-        'Created',
-        'Image variations',
-        'Genre',
+        label for _, label in viewer.SORT_OPTIONS
     ]
     form = soup.select_one('form.catalog-controls')
     assert form['method'] == 'get'
@@ -1003,7 +1006,7 @@ def test_gallery_sort_preserved_between_pages(page):
     next_url = first.select_one('a[rel=next]')['href']
     assert next_url == '/bot/gallery?sort=artist&order=asc&page=2'
     second = BeautifulSoup(request(next_url[len('/bot') :])['body'], 'html.parser')
-    assert second.select_one('option[selected]')['value'] == 'artist'
+    assert second.select_one('option[selected]')['value'] == 'artist:asc'
     assert urlsplit(second.select_one('.gallery-card')['href']).path == '/bot/albums/25'
     assert (
         second.select_one('a[rel=prev]')['href']
@@ -1746,7 +1749,7 @@ def test_collection_round_trip(page, sort, order):
     assert parse_qs(
         urlsplit(gallery.select_one('.pagination [rel=prev]')['href']).query
     )['artist'] == ['vAt']
-    assert not gallery.select('form input[name=page]')
+    assert not gallery.select('form.catalog-controls input[name=page]')
     assert parse_qs(urlsplit(catalog.select_one('.catalog th a')['href']).query)[
         'page'
     ] == ['1']
@@ -1947,3 +1950,227 @@ def test_collection_partial_artist_and_title_search(
     ]
     for field, value in filters.items():
         assert soup.select_one(f'[name={field}]')['value'] == value.strip()
+
+
+@pytest.mark.parametrize('view', ['/', '/gallery'])
+@pytest.mark.parametrize('sort', viewer.COLLECTION_SORTS)
+@pytest.mark.parametrize('order', ['asc', 'desc'])
+def test_album_navigation_follows_filtered_collection(page, view, sort, order):
+    cache, request = page
+    insert(cache)
+    library = MusicLibrary(cache.database)
+    for number in range(30):
+        album = library.create_album(
+            f'Mazel Vatos {number % 2}',
+            f'Release {29-number:02}',
+            genre='Jazz' if number % 2 else 'Rock',
+        )
+        with sqlite3.connect(cache.database) as db:
+            db.execute(
+                'UPDATE albums SET created_at = ? WHERE id = ?',
+                (f'2026-01-{number % 9 + 1:02}', album['id']),
+            )
+        if number % 3:
+            key = f'navigation-{number}'
+            with sqlite3.connect(cache.database) as db:
+                db.execute(
+                    "INSERT INTO image_cache (cache_key, prompt, normalized_prompt, settings_json, local_filename, generation_metadata_json) VALUES (?, '', '', '{}', '', '{}')",
+                    (key,),
+                )
+            library.record_image(album['id'], key)
+    library.create_album('Other', 'Release excluded')
+    values = dict(
+        q='Release', artist='vAtOs', album_title='lease', sort=sort, order=order
+    )
+    selector = '.catalog-album a' if view == '/' else '.gallery-card'
+    first = BeautifulSoup(
+        request(view + '?' + urlencode(values))['body'], 'html.parser'
+    )
+    second = BeautifulSoup(
+        request(view + '?' + urlencode(dict(values, page=2)))['body'], 'html.parser'
+    )
+    links = first.select(selector) + second.select(selector)
+    assert len(links) == 30
+    before = cache.database.read_bytes()
+    for index in (0, 12, 23, 24, 29):
+        link = links[index]['href']
+        soup = BeautifulSoup(request(link[4:])['body'], 'html.parser')
+        navigation = soup.select_one('main > .album-navigation')
+        assert navigation
+        assert (
+            soup.select_one('.album-order').get_text()
+            == 'Filtered results · ' + dict(viewer.SORT_OPTIONS)[f'{sort}:{order}']
+        )
+        return_to = parse_qs(urlsplit(link).query)['return_to'][0]
+        assert soup.select_one('#back-to-results')['href'] == return_to
+        for relation, adjacent in [('prev', index - 1), ('next', index + 1)]:
+            neighbor = navigation.select_one(f'a[rel={relation}]')
+            if 0 <= adjacent < len(links):
+                assert (
+                    urlsplit(neighbor['href']).path
+                    == urlsplit(links[adjacent]['href']).path
+                )
+                assert parse_qs(urlsplit(neighbor['href']).query)['return_to'] == [
+                    return_to
+                ]
+            else:
+                assert not neighbor
+                assert navigation.select_one(
+                    f'button[disabled][aria-label="{"Previous" if relation == "prev" else "Next"} album"]'
+                )
+    assert cache.database.read_bytes() == before
+
+
+@pytest.mark.parametrize('view', ['/', '/gallery'])
+@pytest.mark.parametrize('total', [0, 1, 24, 25, 48, 49])
+def test_collection_pagination_ranges_and_state(page, view, total):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    for number in range(total):
+        library.create_album('Mazel Vatos', f'Night Release {number:02}')
+    library.create_album('Other', 'Excluded')
+    values = dict(
+        q='Night', artist='Mazel', album_title='Release', sort='album', order='asc'
+    )
+    count = max(
+        1, (total + viewer.COLLECTION_PAGE_SIZE - 1) // viewer.COLLECTION_PAGE_SIZE
+    )
+    response = request(view + '?' + urlencode(dict(values, page=count)))
+    assert response['status'] == 200
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    start = (count - 1) * viewer.COLLECTION_PAGE_SIZE + 1 if total else 0
+    assert (
+        soup.select_one('.result-range').get_text()
+        == f'Showing {start}–{total} of {total}'
+    )
+    controls = soup.select('nav.pagination')
+    assert len(controls) == (2 if count > 1 else 0)
+    for position, navigation in zip(('top', 'bottom'), controls):
+        assert navigation['aria-label'] == f'Album pages ({position})'
+        assert (
+            navigation.select_one('.page-count').get_text()
+            == f'Page {count} of {count}'
+        )
+        assert not navigation.select_one('a[rel=next]')
+        assert navigation.select_one('[aria-disabled=true]').get_text() == 'Next →'
+        previous = navigation.select_one('a[rel=prev]')['href']
+        assert parse_qs(urlsplit(previous).query) == {
+            key: [str(value)] for key, value in dict(values, page=count - 1).items()
+        }
+        form = navigation.select_one('form')
+        assert form['action'] == '/bot' + view
+        assert {
+            field['name']: field['value'] for field in form.select('input[type=hidden]')
+        } == values
+        number = form.select_one('input[name=page]')
+        assert (number['min'], number['max'], number['value']) == (
+            '1',
+            str(count),
+            str(count),
+        )
+        jump = request(view + '?' + urlencode(dict(values, page=1)))
+        first = BeautifulSoup(jump['body'], 'html.parser')
+        assert len(first.select('nav.pagination')) == 2
+        assert not first.select_one('.pagination a[rel=prev]')
+        assert (
+            first.select_one('.pagination [aria-disabled=true]').get_text()
+            == '← Previous'
+        )
+        assert parse_qs(
+            urlsplit(first.select_one('.pagination a[rel=next]')['href']).query
+        )['page'] == ['2']
+    if count > 1:
+        results = soup.select_one('.catalog' if view == '/' else '.gallery')
+        assert controls[0].find_next('table' if view == '/' else 'ul') == results
+        assert results.find_next('nav', class_='pagination') == controls[1]
+    assert not soup.select_one('form.catalog-controls [name=page]')
+    assert (
+        request(view + '?' + urlencode(dict(values, page=count + 1)))['status'] == 404
+    )
+
+
+@pytest.mark.parametrize('view', ['/', '/gallery'])
+@pytest.mark.parametrize('selection,label', viewer.SORT_OPTIONS)
+def test_plain_sort_labels_and_reset_page(page, view, selection, label):
+    cache, request = page
+    MusicLibrary(cache.database).create_album('Band', 'Album')
+    soup = BeautifulSoup(
+        request(view + '?' + urlencode({'sort': selection}))['body'], 'html.parser'
+    )
+    form = soup.select_one('form.catalog-controls')
+    assert form.select_one('select[name=sort] option[selected]').get_text() == label
+    assert form.select_one('select[name=sort] option[selected]')['value'] == selection
+    assert not form.select('[name=page], [name=order]')
+    switched = soup.select_one('.view-switch a:not([aria-current])')['href']
+    other = BeautifulSoup(request(switched[4:])['body'], 'html.parser')
+    assert other.select_one('select[name=sort] option[selected]').get_text() == label
+
+
+@pytest.mark.parametrize(
+    'target',
+    ['/bot/gallery?artist=absent', '/bot/?q=absent', '/bot/gallery?album_title=absent'],
+)
+def test_album_outside_filtered_results_has_no_neighbors(page, target):
+    cache, request = page
+    insert(cache)
+    soup = BeautifulSoup(
+        request('/albums/42?' + urlencode({'return_to': target + '#scroll=200'}))[
+            'body'
+        ],
+        'html.parser',
+    )
+    assert not soup.select('.album-navigation a')
+    assert len(soup.select('.album-navigation button[disabled]')) == 2
+    assert soup.select_one('#back-to-results')['href'] == target + '#scroll=200'
+
+
+def test_default_album_navigation_uses_dates_before_ids(page):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    for title in ('Middle', 'Newest', 'Oldest'):
+        library.create_album('Band', title)
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            "UPDATE albums SET created_at = CASE id WHEN 1 THEN '2026-02-01' WHEN 2 THEN '2026-03-01' ELSE '2026-01-01' END"
+        )
+    soup = BeautifulSoup(request('/albums/1')['body'], 'html.parser')
+    assert soup.select_one('.album-navigation [rel=prev]')['href'] == '/bot/albums/2'
+    assert soup.select_one('.album-navigation [rel=next]')['href'] == '/bot/albums/3'
+    assert soup.select_one('.album-order').get_text() == 'All albums · Newest first'
+
+
+@pytest.mark.parametrize('view', ['/', '/gallery'])
+def test_result_ranges_use_configured_page_size(page, monkeypatch, view):
+    cache, request = page
+    monkeypatch.setattr(viewer, 'COLLECTION_PAGE_SIZE', 3)
+    library = MusicLibrary(cache.database)
+    for number in range(8):
+        library.create_album('Band', f'Album {number}')
+    for number, expected in [(2, 'Showing 4–6 of 8'), (3, 'Showing 7–8 of 8')]:
+        soup = BeautifulSoup(request(view + f'?page={number}')['body'], 'html.parser')
+        assert soup.select_one('.result-range').get_text() == expected
+        assert soup.select_one('.page-count').get_text() == f'Page {number} of 3'
+
+
+def test_album_neighbors_keep_original_page_and_scroll(page):
+    cache, request = page
+    library = MusicLibrary(cache.database)
+    for number in range(50):
+        library.create_album(
+            'Mazel Vatos' if number < 49 else 'Other', f'Release {number}'
+        )
+    with sqlite3.connect(cache.database) as db:
+        db.execute("UPDATE albums SET created_at = '2026-01-01'")
+    target = '/bot/gallery?q=Release&artist=vat&sort=chronology:desc&page=2#scroll=600'
+    soup = BeautifulSoup(
+        request('/albums/25?' + urlencode({'return_to': target}))['body'], 'html.parser'
+    )
+    previous = soup.select_one('.album-navigation [rel=prev]')['href']
+    assert urlsplit(previous).path == '/bot/albums/26'
+    assert parse_qs(urlsplit(previous).query)['return_to'] == [target]
+    neighbor = BeautifulSoup(request(previous[4:])['body'], 'html.parser')
+    assert neighbor.select_one('#back-to-results')['href'] == target
+    assert (
+        urlsplit(neighbor.select_one('.album-navigation [rel=next]')['href']).path
+        == '/bot/albums/25'
+    )

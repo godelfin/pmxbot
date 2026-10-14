@@ -98,6 +98,49 @@ GALLERY_SORTS = {
     'date_desc': ('chronology', 'desc'),
 }
 
+COLLECTION_PAGE_SIZE = 24
+SORT_OPTIONS = (
+    ('chronology:desc', 'Newest first'),
+    ('chronology:asc', 'Oldest first'),
+    ('artist:asc', 'Band A–Z'),
+    ('artist:desc', 'Band Z–A'),
+    ('album:asc', 'Album A–Z'),
+    ('album:desc', 'Album Z–A'),
+    ('variations:desc', 'Most image variations'),
+    ('variations:asc', 'Fewest image variations'),
+    ('genre:asc', 'Genre A–Z'),
+    ('genre:desc', 'Genre Z–A'),
+)
+
+
+def collection_sort(sort, order, view):
+    if isinstance(sort, str) and sort in dict(SORT_OPTIONS):
+        sort, direction = sort.split(':')
+        return sort, direction
+    if isinstance(sort, str) and sort in GALLERY_SORTS:
+        sort, direction = GALLERY_SORTS[sort]
+        return sort, order if order is not None else direction
+    if order is None:
+        order = 'asc' if view == 'gallery' and sort in ('album', 'genre') else 'desc'
+    return sort, order
+
+
+def collection_filters(url):
+    """Decode a validated results URL with the same defaults as its collection view."""
+    parsed = urllib.parse.urlsplit(url)
+    params = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+    view = 'gallery' if parsed.path.endswith('/gallery') else 'list'
+    sort, order = collection_sort(
+        params.get('sort', 'chronology'), params.get('order'), view
+    )
+    return dict(
+        q=params.get('q', '').strip(),
+        artist=params.get('artist', '').strip(),
+        album_title=params.get('album_title', '').strip(),
+        sort=sort,
+        order=order,
+    )
+
 
 def results_return_to(value):
     """Allow only collection URLs, with valid query state and optional scroll."""
@@ -119,8 +162,10 @@ def results_return_to(value):
         ):
             return fallback
         sort = params.get('sort', ['chronology'])[0]
-        allowed_sorts = COLLECTION_SORTS + (
-            tuple(GALLERY_SORTS) if parsed.path.endswith('/gallery') else ()
+        allowed_sorts = (
+            COLLECTION_SORTS
+            + tuple(dict(SORT_OPTIONS))
+            + (tuple(GALLERY_SORTS) if parsed.path.endswith('/gallery') else ())
         )
         if sort not in allowed_sorts or params.get('order', ['asc'])[0] not in (
             'asc',
@@ -466,6 +511,7 @@ class AlbumPage:
                 raise cherrypy.HTTPError(400, 'Invalid submission token')
         return_value = params.pop('return_to', '')
         return_to = results_return_to(return_value)
+        browsing_filters = collection_filters(return_to)
         return_query = (
             ('&return_to=' + urllib.parse.quote(return_to, safe=''))
             if return_value
@@ -495,7 +541,7 @@ class AlbumPage:
         try:
             cache = ImageCache(pmxbot.config)
             album, image = cache.get_album_page(int(value), source_id)
-            neighbors = cache.album_neighbors(int(value))
+            neighbors = cache.album_neighbors(int(value), **browsing_filters)
             image_history = cache.album_image_history(int(value))
             failures = cache.album_image_failures(int(value))
         except LookupError:
@@ -527,6 +573,12 @@ class AlbumPage:
             return_to=return_to,
             return_query=return_query,
             neighbors=neighbors,
+            browsing_filtered=any(
+                browsing_filters[field] for field in ('q', 'artist', 'album_title')
+            ),
+            navigation_sort_label=dict(SORT_OPTIONS)[
+                f"{browsing_filters['sort']}:{browsing_filters['order']}"
+            ],
             image_history=[
                 dict(item, image_url=safe_image_url(item['hosted_url']))
                 for item in image_history
@@ -793,11 +845,6 @@ class PmxbotPages:
         order=None,
         **params,
     ):
-        if isinstance(sort, str) and sort in GALLERY_SORTS:
-            sort, legacy_order = GALLERY_SORTS[sort]
-            order = legacy_order if order is None else order
-        elif order is None:
-            order = 'asc' if sort in ('album', 'genre') else 'desc'
         return self.collection(
             q, artist, album_title, sort, order, page, 'gallery', **params
         )
@@ -819,6 +866,9 @@ class PmxbotPages:
 
     def collection(self, q, artist, album_title, sort, order, page, view, **params):
         cherrypy.lib.cptools.allow(['GET', 'HEAD'])
+        if order is not None and order not in ('asc', 'desc'):
+            raise cherrypy.HTTPError(400, 'Invalid collection order')
+        sort, order = collection_sort(sort, order, view)
         if (
             params
             or any(
@@ -841,12 +891,12 @@ class PmxbotPages:
         try:
             cache = ImageCache(pmxbot.config)
             albums, total = cache.catalog_albums(
-                page_number, 24, q, artist, album_title, sort, order
+                page_number, COLLECTION_PAGE_SIZE, q, artist, album_title, sort, order
             )
             leaderboard = cache.generation_leaderboard() if view == 'list' else []
         except (sqlite3.Error, ImageError):
             raise cherrypy.HTTPError(503, 'Album storage is unavailable') from None
-        page_count = max(1, (total + 23) // 24)
+        page_count = max(1, (total + COLLECTION_PAGE_SIZE - 1) // COLLECTION_PAGE_SIZE)
         if page_number > page_count:
             raise cherrypy.HTTPError(404, 'Unknown catalog page')
         for album in albums:
@@ -894,6 +944,12 @@ class PmxbotPages:
             total=total,
             page_number=page_number,
             page_count=page_count,
+            result_start=(page_number - 1) * COLLECTION_PAGE_SIZE + 1 if albums else 0,
+            result_end=(
+                (page_number - 1) * COLLECTION_PAGE_SIZE + len(albums) if albums else 0
+            ),
+            sort_options=SORT_OPTIONS,
+            selected_sort=f'{sort}:{order}',
             page_url=page_url,
             sort_url=sort_url,
             collection_url=collection_url,

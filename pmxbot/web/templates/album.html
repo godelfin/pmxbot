@@ -12,8 +12,9 @@ body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; c
 .album-page h1 { margin: 0 0 1.25rem; font-size: 1.5rem; line-height: 1.3; }
 .album-page h2 { margin: 0 0 .75rem; font-size: 1rem; }
 .image-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 1.25rem; align-items: start; }
-.album-navigation { display: flex; gap: .75rem; }
-.album-navigation a, .album-navigation button { flex: 1; padding: .5rem .75rem; border: 1px solid #d4dbe2; border-radius: .25rem; background: #fff; font: inherit; text-align: center; text-decoration: none; }
+.album-navigation { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 1rem; }
+.album-order { margin: 0 0 .5rem; color: #596574; }
+.album-navigation a, .album-navigation button { box-sizing: border-box; flex: 1 1 9rem; min-height: 44px; padding: .5rem .75rem; border: 1px solid #d4dbe2; border-radius: .25rem; background: #fff; font: inherit; text-align: center; text-decoration: none; }
 .album-navigation button:disabled { color: #6b7280; background: #edf0f3; }
 .album-navigation kbd { display: block; font: inherit; font-size: .6875rem; }
 .sr-only, .image-history .generation-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
@@ -89,6 +90,14 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 <main class="album-page">
 <nav class="results-navigation" aria-label="Results"><a id="back-to-results" href="{{ return_to }}">← Back to results</a> · <a href="{{ base }}/">All albums</a></nav>
 <h1><a href="{{ base }}/?{{ {'artist': album.artist_name}|urlencode }}">{{ album.artist_name }}</a> — <a href="{{ base }}/?{{ {'album_title': album.title}|urlencode }}">{{ album.title }}</a></h1>
+<p class="album-order">{{ 'Filtered results' if browsing_filtered else 'All albums' }} · {{ navigation_sort_label }}</p>
+<nav class="album-navigation" aria-label="Album navigation">
+{% for direction, label in [('previous', '← Previous album'), ('next', 'Next album →')] %}
+{% set shortcut = 'Shift+ArrowLeft' if direction == 'previous' else 'Shift+ArrowRight' %}
+{% set shortcut_label = 'Shift+←' if direction == 'previous' else 'Shift+→' %}
+{% if neighbors[direction] %}<a href="{{ base }}/albums/{{ neighbors[direction] }}{{ ('?' ~ return_query[1:]) if return_query else '' }}" rel="{{ 'prev' if direction == 'previous' else 'next' }}" aria-keyshortcuts="{{ shortcut }}" aria-label="{{ 'Previous' if direction == 'previous' else 'Next' }} album"><span>{{ label }}</span><kbd aria-hidden="true">{{ shortcut_label }}</kbd></a>{% else %}<button type="button" disabled aria-keyshortcuts="{{ shortcut }}" aria-label="{{ 'Previous' if direction == 'previous' else 'Next' }} album"><span>{{ label }}</span><kbd aria-hidden="true">{{ shortcut_label }}</kbd></button>{% endif %}
+{% endfor %}
+</nav>
 <div class="image-layout">
 <div class="image-content image-main">
 <section class="image-section" aria-label="Artwork" id="selected-artwork">{% block selected_artwork %}
@@ -191,14 +200,8 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 </section>
 {% endif %}
 </div>
-<aside class="image-content image-sidebar" aria-label="Album navigation and image metadata">
-<nav class="album-navigation" aria-label="Album navigation">
-{% for direction, label in [('previous', 'Prev'), ('next', 'Next')] %}
-{% set shortcut = 'Shift+ArrowLeft' if direction == 'previous' else 'Shift+ArrowRight' %}
-{% set shortcut_label = 'Shift+←' if direction == 'previous' else 'Shift+→' %}
-{% if neighbors[direction] %}<a href="{{ base }}/albums/{{ neighbors[direction] }}{{ ('?' ~ return_query[1:]) if return_query else '' }}" rel="{{ 'prev' if direction == 'previous' else 'next' }}" aria-keyshortcuts="{{ shortcut }}" aria-label="{{ 'Previous' if direction == 'previous' else 'Next' }} album"><span>{{ label }}</span><kbd aria-hidden="true">{{ shortcut_label }}</kbd></a>{% else %}<button type="button" disabled aria-keyshortcuts="{{ shortcut }}" aria-label="{{ 'Previous' if direction == 'previous' else 'Next' }} album"><span>{{ label }}</span><kbd aria-hidden="true">{{ shortcut_label }}</kbd></button>{% endif %}
-{% endfor %}
-</nav>
+<aside class="image-content image-sidebar" aria-label="Image metadata">
+
 <div id="selected-metadata">{% block selected_metadata %}
 {% if image %}
 <section class="image-section" aria-labelledby="details-heading">

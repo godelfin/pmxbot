@@ -608,6 +608,73 @@ class ImageCache:
         }[sort]
         return self.catalog_albums(page, page_size, sort=column, order=direction)
 
+    @staticmethod
+    def _collection_query(db, q, artist, album_title, sort, order):
+        """Share filtering, sort keys, and deterministic ties with album navigation."""
+        columns = {
+            'artist': 'artist_sort',
+            'album': 'title_sort',
+            'chronology': 'created_at',
+            'variations': 'image_count',
+        }
+        direction = {'asc': 'ASC', 'desc': 'DESC'}[order]
+        if sort == 'genre':
+            ordering = (
+                "NULLIF(TRIM(genre), '') IS NULL, "
+                f"LOWER(TRIM(genre)) {direction}, "
+                f"artist_sort {direction}, title_sort {direction}, id {direction}"
+            )
+        else:
+            ordering = f'{columns[sort]} {direction}, id {direction}'
+        tables = {
+            row[0]
+            for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        if not {'albums', 'artists'} <= tables:
+            return None
+        db.create_function('casefold', 1, lambda value: value.casefold())
+        conditions, values = [], []
+        if q:
+            conditions.append(
+                '(instr(casefold(albums.title), ?) > 0 OR instr(casefold(artists.name), ?) > 0)'
+            )
+            values.extend([q.casefold(), q.casefold()])
+        for column, value in (('artists.name', artist), ('albums.title', album_title)):
+            if value:
+                conditions.append(f'instr(casefold({column}), ?) > 0')
+                values.append(value.casefold())
+        source = 'FROM albums JOIN artists ON artists.id = albums.artist_id'
+        where = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
+        artwork = (
+            """(SELECT image_cache.{column} FROM image_cache
+            JOIN album_images USING (cache_key)
+            WHERE album_images.album_id = albums.id
+            ORDER BY image_cache.created_at DESC, image_cache.id DESC LIMIT 1)"""
+            if {'album_images', 'image_cache'} <= tables
+            else 'NULL'
+        )
+        image_count = (
+            """(SELECT COUNT(DISTINCT image_cache.id) FROM image_cache
+            JOIN album_images USING (cache_key)
+            WHERE album_images.album_id = albums.id)"""
+            if {'album_images', 'image_cache'} <= tables
+            else '0'
+        )
+        image_columns = {row[1] for row in db.execute('PRAGMA table_info(image_cache)')}
+        thumbnail = (
+            artwork.format(column='thumb_url')
+            if 'thumb_url' in image_columns
+            else 'NULL'
+        )
+        selection = (
+            f'SELECT albums.id, albums.title, albums.genre, artists.name AS artist_name, '
+            f'artists.normalized_name AS artist_sort, albums.normalized_title AS title_sort, '
+            f'albums.created_at, {image_count} AS image_count, '
+            f"{artwork.format(column='hosted_url')} AS hosted_url, {thumbnail} AS thumb_url "
+            f'{source}{where}'
+        )
+        return selection, ordering, source + where, values
+
     def catalog_albums(
         self,
         page,
@@ -619,97 +686,40 @@ class ImageCache:
         order='desc',
     ):
         """Read a filtered album page and count in one consistent read snapshot."""
-        columns = {
-            'artist': 'artists.normalized_name',
-            'album': 'albums.normalized_title',
-            'chronology': 'albums.created_at',
-            'variations': 'image_count',
-        }
-        direction = {'asc': 'ASC', 'desc': 'DESC'}[order]
-        if sort == 'genre':
-            ordering = (
-                "NULLIF(TRIM(albums.genre), '') IS NULL, "
-                f"LOWER(TRIM(albums.genre)) {direction}, "
-                f"artists.normalized_name {direction}, "
-                f"albums.normalized_title {direction}, albums.id {direction}"
-            )
-        else:
-            ordering = f'{columns[sort]} {direction}, albums.id {direction}'
         if not self.database.is_file():
             return [], 0
         with closing(self.read_connection()) as db:
             db.execute('BEGIN')
-            tables = {
-                row[0]
-                for row in db.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table'"
-                )
-            }
-            if not {'albums', 'artists'} <= tables:
+            query = self._collection_query(db, q, artist, album_title, sort, order)
+            if query is None:
                 return [], 0
-            # Python casefold supports Unicode case-insensitive search, and
-            # instr treats SQL wildcard characters as ordinary keyword text.
-            db.create_function('casefold', 1, lambda value: value.casefold())
-            conditions, values = [], []
-            if q:
-                conditions.append(
-                    '(instr(casefold(albums.title), ?) > 0 OR '
-                    'instr(casefold(artists.name), ?) > 0)'
-                )
-                values.extend([q.casefold(), q.casefold()])
-            for column, value in (
-                ('artists.name', artist),
-                ('albums.title', album_title),
-            ):
-                if value:
-                    conditions.append(f'instr(casefold({column}), ?) > 0')
-                    values.append(value.casefold())
-            source = 'FROM albums JOIN artists ON artists.id = albums.artist_id'
-            where = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
-            total = db.execute(f'SELECT COUNT(*) {source}{where}', values).fetchone()[0]
-            artwork = (
-                """(SELECT image_cache.{column} FROM image_cache
-                JOIN album_images USING (cache_key)
-                WHERE album_images.album_id = albums.id
-                ORDER BY image_cache.created_at DESC, image_cache.id DESC LIMIT 1)"""
-                if {'album_images', 'image_cache'} <= tables
-                else 'NULL'
-            )
-            image_count = (
-                """(SELECT COUNT(DISTINCT image_cache.id) FROM image_cache
-                JOIN album_images USING (cache_key)
-                WHERE album_images.album_id = albums.id)"""
-                if {'album_images', 'image_cache'} <= tables
-                else '0'
-            )
-            image_columns = {
-                row[1] for row in db.execute('PRAGMA table_info(image_cache)')
-            }
-            thumbnail = (
-                artwork.format(column='thumb_url')
-                if 'thumb_url' in image_columns
-                else 'NULL'
-            )
+            selection, ordering, source, values = query
+            total = db.execute(f'SELECT COUNT(*) {source}', values).fetchone()[0]
             rows = db.execute(
-                f'SELECT albums.id, albums.title, albums.genre, artists.name AS artist_name, '
-                f'albums.created_at, {image_count} AS image_count, '
-                f"{artwork.format(column='hosted_url')} AS hosted_url, "
-                f"{thumbnail} AS thumb_url {source}{where} "
-                f'ORDER BY {ordering} LIMIT ? OFFSET ?',
+                f'SELECT * FROM ({selection}) ORDER BY {ordering} LIMIT ? OFFSET ?',
                 values + [page_size, (page - 1) * page_size],
             )
             return [dict(row) for row in rows], total
 
-    def album_neighbors(self, album_id):
-        """Return adjacent stored album IDs, skipping gaps in the sequence."""
+    def album_neighbors(
+        self, album_id, q='', artist='', album_title='', sort='chronology', order='desc'
+    ):
+        """Find neighbors across the entire filtered collection, ignoring page limits."""
+        empty = dict(previous=None, next=None)
         with closing(self.read_connection()) as db:
+            db.execute('BEGIN')
+            query = self._collection_query(db, q, artist, album_title, sort, order)
+            if query is None:
+                return empty
+            selection, ordering, _, values = query
             row = db.execute(
-                '''SELECT
-                (SELECT MAX(id) FROM albums WHERE id < ?) AS previous,
-                (SELECT MIN(id) FROM albums WHERE id > ?) AS next''',
-                (album_id, album_id),
+                f"""WITH collection AS ({selection}), ranked AS (
+                SELECT id, LAG(id) OVER (ORDER BY {ordering}) AS previous,
+                LEAD(id) OVER (ORDER BY {ordering}) AS next FROM collection)
+                SELECT previous, next FROM ranked WHERE id = ?""",
+                values + [album_id],
             ).fetchone()
-            return dict(row)
+            return dict(row) if row else empty
 
     def latest_album_image(self, album_id):
         """Return the newest hosted cache entry linked to an existing album."""

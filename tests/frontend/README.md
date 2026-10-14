@@ -17,7 +17,10 @@ The history strip supports native horizontal scrolling and arrow buttons.
 Left/Right selects adjacent artwork, except while typing in a form field or
 viewing the full-size dialog. In history, Home/End moves focus to either end,
 without selecting artwork. Shift+Left/Right opens the previous/next album,
-except in form fields and the full-size dialog. Artwork history is visually
+except in form fields and the full-size dialog. Album Previous/Next follows the
+originating collection filters and sort across page boundaries; direct album
+URLs use newest-first order. These controls appear below the album title.
+Artwork history is visually
 thumbnail-and-icon only, with accessible labels. Settings and generation
 metadata start collapsed and retain an expanded state across selections.
 Variation edits are remembered separately for each image until the page is

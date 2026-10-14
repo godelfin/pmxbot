@@ -1,12 +1,21 @@
 <style>
+.pagination { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; margin: .75rem 0; }
+.pagination a, .pagination .disabled, .pagination button { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: .4rem .65rem; border: 1px solid #b8c2ce; border-radius: .25rem; background: white; font: inherit; }
+.pagination .disabled { color: #6b7280; background: #edf0f3; }
+.pagination .page-count { white-space: nowrap; }
+.page-selector { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin: 0; }
+.page-selector label { display: inline-flex; align-items: center; gap: .4rem; }
+.page-selector input { box-sizing: border-box; width: 4.5rem; min-height: 44px; padding: .4rem; border: 1px solid #b8c2ce; border-radius: .25rem; font: inherit; }
+.result-range { margin: .75rem 0; }
+
 .collection-controls { margin: .75rem 0; }
 .view-switch, .filter-chips { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0; }
-.view-switch a, .filter-chips a { padding: .35rem .65rem; border: 1px solid #b8c2ce; border-radius: .25rem; background: white; }
+.view-switch a, .filter-chips a { box-sizing: border-box; min-height: 44px; padding: .5rem .65rem; border: 1px solid #b8c2ce; border-radius: .25rem; background: white; }
 .filter-chips a { box-sizing: border-box; max-width: 100%; overflow-wrap: anywhere; }
 .view-switch [aria-current] { color: white; background: #135ba1; font-weight: bold; }
 .catalog-controls { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; }
 .catalog-controls label { display: flex; flex: 1 1 8rem; min-width: 0; flex-direction: column; }
-.catalog-controls input, .catalog-controls select, .catalog-controls button { box-sizing: border-box; min-width: 0; width: 100%; padding: .45rem; font: inherit; border: 1px solid #b8c2ce; border-radius: .25rem; background: white; color: inherit; }
+.catalog-controls input, .catalog-controls select, .catalog-controls button { box-sizing: border-box; min-width: 0; width: 100%; min-height: 44px; padding: .45rem; font: inherit; border: 1px solid #b8c2ce; border-radius: .25rem; background: white; color: inherit; }
 .catalog-controls button { width: auto; cursor: pointer; }
 @media (max-width: 36rem) { .catalog-controls label:first-child { flex-basis: 100%; } }
 :focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
@@ -22,11 +31,10 @@
 <label>Artist<input name="artist" value="{{ artist }}" placeholder="Part of artist name" /></label>
 <label>Album title<input name="album_title" value="{{ album_title }}" placeholder="Part of album title" /></label>
 <label>Sort by<select name="sort">
-{% for value, label in [('artist', 'Band'), ('album', 'Album'), ('chronology', 'Created'), ('variations', 'Image variations'), ('genre', 'Genre')] %}
-<option value="{{ value }}"{% if value == sort %} selected{% endif %}>{{ label }}</option>
+{% for value, label in sort_options %}
+<option value="{{ value }}"{% if value == selected_sort %} selected{% endif %}>{{ label }}</option>
 {% endfor %}
 </select></label>
-<label>Order<select name="order"><option value="asc"{% if order == 'asc' %} selected{% endif %}>Ascending</option><option value="desc"{% if order == 'desc' %} selected{% endif %}>Descending</option></select></label>
 <button type="submit">Apply</button>
 </form>
 <div class="filter-chips" aria-label="Active filters">

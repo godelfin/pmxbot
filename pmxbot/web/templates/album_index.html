@@ -29,14 +29,14 @@ th:last-child, td:last-child { text-align: right; }
 .catalog td:last-child { font-variant-numeric: tabular-nums; }
 @media (max-width: 36rem) { .catalog th, .catalog td { padding: .5rem .3rem; } }
 @media (max-width: 48rem) { main { padding: 0 .75rem; } }
-.pagination { display: flex; gap: 1rem; }
 </style>
 </head>
 <body>
 {% include "auth_nav.html" %}
 <main>
 {% include "collection_controls.html" %}
-<p>{{ total }} albums</p>
+<p class="result-range">Showing {{ result_start }}–{{ result_end }} of {{ total }}</p>
+{% with pagination_position='top' %}{% include "collection_pagination.html" %}{% endwith %}
 <table class="catalog" aria-label="Album catalog">
 <thead><tr>
 {% for column, label in [('artist', 'Band'), ('album', 'Album'), ('chronology', 'Created'), ('variations', 'Image variations')] %}
@@ -56,11 +56,7 @@ th:last-child, td:last-child { text-align: right; }
 {% endfor %}
 </tbody>
 </table>
-<nav class="pagination" aria-label="Catalog pages">
-{% if page_number > 1 %}<a rel="prev" href="{{ page_url(page_number - 1) }}">Previous</a>{% endif %}
-<span>Page {{ page_number }} of {{ page_count }}</span>
-{% if page_number < page_count %}<a rel="next" href="{{ page_url(page_number + 1) }}">Next</a>{% endif %}
-</nav>
+{% with pagination_position='bottom' %}{% include "collection_pagination.html" %}{% endwith %}
 {% if leaderboard %}
 <section class="leaderboard" aria-labelledby="leaderboard-heading">
 <h2 id="leaderboard-heading">Top album image generators</h2>

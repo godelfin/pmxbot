@@ -1,0 +1,14 @@
+{% if page_count > 1 %}
+<nav class="pagination" aria-label="Album pages ({{ pagination_position }})">
+{% if page_number > 1 %}<a rel="prev" href="{{ page_url(page_number - 1) }}">← Previous</a>{% else %}<span class="disabled" aria-disabled="true">← Previous</span>{% endif %}
+<span class="page-count">Page {{ page_number }} of {{ page_count }}</span>
+{% if page_number < page_count %}<a rel="next" href="{{ page_url(page_number + 1) }}">Next →</a>{% else %}<span class="disabled" aria-disabled="true">Next →</span>{% endif %}
+<form action="{{ collection_path }}" method="get" class="page-selector">
+{% for field, value in [('q', q), ('artist', artist), ('album_title', album_title), ('sort', sort), ('order', order)] %}
+{% if value %}<input type="hidden" name="{{ field }}" value="{{ value }}" />{% endif %}
+{% endfor %}
+<label>Go to page <input name="page" type="number" inputmode="numeric" min="1" max="{{ page_count }}" value="{{ page_number }}" required /></label>
+<button type="submit">Go</button>
+</form>
+</nav>
+{% endif %}

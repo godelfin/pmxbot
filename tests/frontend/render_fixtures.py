@@ -34,6 +34,8 @@ def main():
         earlier = library.create_album('Earlier', 'Previous album')
         with sqlite3.connect(cache.database) as db:
             db.execute('UPDATE albums SET id = 41 WHERE id = ?', (earlier['id'],))
+        with sqlite3.connect(cache.database) as db:
+            db.execute("UPDATE albums SET created_at = '2026-01-01'")
         for identifier in (41, 43):
             output.joinpath('album' + str(identifier) + '.html').write_text(
                 request('/albums/' + str(identifier))['body'], encoding='utf-8'
