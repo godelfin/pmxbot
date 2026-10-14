@@ -1,8 +1,14 @@
-<div class="site-brand" style="box-sizing: border-box; max-width: 70rem; margin: 0 auto; padding: .75rem 0 0 0; position:relative; left:-10px">
-<a href="{{ base|e }}/" style="display: inline-block; max-width: 100%;">
-<img src="{{ base|e }}/pmxbot.png?v=2" alt="bapudi album image generator" style="display: block; width: 9rem; max-width: 100%; height: auto;" />
-<div style="position: relative; left:10px;">
-    <a href="{{ base|e }}/" style="color:#626161; font-size: .75rem; text-decoration:none">bapudi album image generator</a>
-</div>
+<style>
+.site-brand { box-sizing: border-box; max-width: var(--brand-max-width, 70rem); margin: 0 auto; padding: .75rem var(--brand-gutter, 0) 0; }
+.site-brand a { display: inline-block; max-width: 100%; color: #626161; font-size: .75rem; text-decoration: none; }
+/* Compensate for the logo's internal whitespace without moving the byline. */
+.site-brand img { display: block; width: 9rem; max-width: 100%; height: auto; transform: translateX(-10px); }
+.site-brand span { display: block; overflow-wrap: anywhere; }
+@media (max-width: 48rem) { .site-brand { padding-right: .75rem; padding-left: .75rem; } }
+</style>
+<div class="site-brand">
+<a href="{{ base|e }}/">
+<img src="{{ base|e }}/pmxbot.png?v=2" alt="bapudi album image generator" />
+<span>bapudi album image generator</span>
 </a>
 </div>
