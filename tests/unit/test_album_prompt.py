@@ -54,6 +54,24 @@ def test_disclaimer_is_specific_to_matched_context():
     assert 'hateful imagery' not in value
 
 
+@pytest.mark.parametrize(
+    'band,title',
+    [
+        ('The BREAST-of-Chicken', 'Sunday Dinner'),
+        ('Band', 'Sexy Rhythm'),
+        ('Band', 'Assault on Silence'),
+        ('Sex', 'Breasts and Assault'),
+    ],
+)
+def test_sexual_names_are_figures_of_speech(band, title):
+    clarification = 'The album and band names are only metaphors or figures of speech.'
+    assert prompt(band, title).count(clarification) == 1
+
+
+def test_nonsexual_context_has_no_metaphor_clarification():
+    assert 'metaphors or figures of speech' not in prompt('Band', 'History of Nazis')
+
+
 def test_embedded_quotes_are_escaped():
     band, title = 'The "Band"', 'An "Album"'
     assert prompt(band, title) == (
