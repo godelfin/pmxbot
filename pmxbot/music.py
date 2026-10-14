@@ -9,6 +9,8 @@ from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .styles import ALBUM_ART_STYLES
+
 
 def normalize(value):
     return ' '.join(unicodedata.normalize('NFKC', value).split()).casefold()
@@ -33,6 +35,7 @@ class GenerationInputs:
     artist_genre: str
     description: str
     artist_description: str
+    style: str = ''
 
     creative_fields = (
         'format',
@@ -41,6 +44,7 @@ class GenerationInputs:
         'artist_genre',
         'description',
         'artist_description',
+        'style',
     )
 
     @classmethod
@@ -61,6 +65,8 @@ class GenerationInputs:
             properties = {
                 field: album.get(field) or '' for field in cls.creative_fields
             }
+        if properties['style'] not in ALBUM_ART_STYLES:
+            properties['style'] = ''
         return cls(
             album_id=album['id'],
             artist_id=album['artist_id'],
@@ -72,8 +78,14 @@ class GenerationInputs:
 
     def prepare(self, values, choices):
         """Validate a complete draft, allowing configured or canonical choices."""
+        values = dict(values)
+        values.setdefault('style', '')
         if set(values) != set(self.creative_fields):
-            raise ValueError('Submit all six creative fields only.')
+            raise ValueError('Submit all creative fields only.')
+        if not isinstance(values['style'], str) or (
+            values['style'] != '' and values['style'] not in ALBUM_ART_STYLES
+        ):
+            raise ValueError('Invalid choice for style.')
         for field, value in values.items():
             if not isinstance(value, str) or len(value) > 10000 or '\x00' in value:
                 raise ValueError(
@@ -441,6 +453,14 @@ def artwork_prompt(inputs):
                 f' {label}: {json.dumps(getattr(inputs, field), ensure_ascii=False)}.'
             )
             prompt += artwork_detail_context(field)
+    if inputs.style:
+        style = ALBUM_ART_STYLES[inputs.style]
+        prompt += (
+            f" Artwork style: {style['name']}. {style['visual_definition']}"
+            f" Signature elements: {', '.join(style['signature_elements'])}."
+            f" Avoid: {', '.join(style['avoid'])}."
+            ' Use this style as visual guidance; do not add its name as text.'
+        )
     return prompt
 
 

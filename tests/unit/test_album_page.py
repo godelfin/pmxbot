@@ -383,6 +383,7 @@ def test_album_and_band_properties(page):
         details[term.get_text()] = control['value'] if control else value.get_text()
     assert details == {
         'Title': '<Album>',
+        'Style': '',
         'Format': 'Vinyl',
         'Format description': 'Limited <edition>',
         'Album genre': 'Album genre',
@@ -1062,6 +1063,41 @@ def test_preparation_is_immutable_and_has_no_generation(page, monkeypatch):
     assert cache.database.read_bytes() == before
 
 
+def test_style_dropdown_and_saved_image_state(page):
+    cache, request = page
+    insert(cache)
+    with sqlite3.connect(cache.database) as db:
+        db.execute(
+            'UPDATE image_cache SET generation_metadata_json = ?',
+            (json.dumps({'generation_inputs': {'style': '002'}}),),
+        )
+    before = cache.database.read_bytes()
+    soup = BeautifulSoup(request()['body'], 'html.parser')
+    dropdown = soup.select_one('select#album-style[name=style]')
+    assert soup.select_one('label[for=album-style]').get_text() == 'Style'
+    assert {
+        option['value']: option.get_text() for option in dropdown.select('option')
+    } == {
+        '': 'None',
+        **{
+            identifier: style['name']
+            for identifier, style in pmxbot.styles.ALBUM_ART_STYLES.items()
+        },
+    }
+    assert dropdown.select_one('option[selected]')['value'] == '002'
+    assert not dropdown.find_parent('details')
+    data = json.loads(request(accept='application/json')['body'])
+    assert data['properties']['style'] == '002'
+    album, image = cache.get_album_page(42)
+    source = viewer.GenerationInputs.from_source(album, image)
+    values = {field: getattr(source, field) for field in source.creative_fields}
+    for invalid in ('not-a-style', '1', ['001']):
+        with pytest.raises(ValueError, match='style'):
+            source.prepare(dict(values, style=invalid), {})
+    assert source.prepare(dict(values, style=''), {}).style == ''
+    assert cache.database.read_bytes() == before
+
+
 def test_shared_generation_inputs(page):
     from pmxbot.music import GenerationInputs
 
@@ -1391,6 +1427,7 @@ def variation(page, monkeypatch, tmp_path):
         artist_genre='',
         description='new <art>\nexact cue',
         artist_description='Band cue',
+        style='001',
     )
     return cache, request, post, client, values, source
 

@@ -2143,6 +2143,7 @@ def test_initial_album_generation_metadata(
         description='Exact\nvisual cue' if include_metadata else '',
         artist_genre='',
         artist_description='',
+        style='',
     )
     request = responses_post.call_args.kwargs['json']
     assert metadata['generation_request'] == request

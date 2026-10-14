@@ -55,6 +55,7 @@ def test_repeated_create_new_is_fresh_and_retry_is_idempotent(variation, api):
         assert record['parent_image_id'] is None
         assert 'Continue the source' not in record['prompt']
         assert values['artist_description'] in record['prompt']
+        assert 'Artwork style: Minimalism.' in record['prompt']
         assert (
             'Do not literally add the album description as text to the image.'
             in record['prompt']

@@ -22,6 +22,7 @@ import importlib_resources as resources
 
 import pmxbot.core
 import pmxbot.albums
+import pmxbot.styles
 import pmxbot.logging
 import pmxbot.util
 from pmxbot.images import ImageCache, ImageError
@@ -629,6 +630,7 @@ class AlbumPage:
             image_history=describe_artwork_history(image_history),
             failures=failures,
             formats=sorted(pmxbot.albums.formats),
+            artwork_styles=pmxbot.styles.ALBUM_ART_STYLES,
             format_descriptions=sorted(pmxbot.albums.format_desc),
             genres=sorted(
                 set(pmxbot.albums.genres).union(*pmxbot.albums.genres.values())

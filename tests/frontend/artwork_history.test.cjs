@@ -329,6 +329,7 @@ test('advanced form settings retain values and expansion across artwork selectio
   assert.equal(await form.locator('[name=genre]').isVisible(), true);
   assert.equal(await form.locator('[name=artist_description]').isVisible(), false);
   await form.locator('[name=description]').fill('album cue');
+  await form.getByLabel('Style', {exact: true}).selectOption('001');
   await advanced.locator('summary').click();
   await form.locator('[name=artist_description]').fill('band cue');
   await form.locator('[name=format]').selectOption({index: 1});
@@ -340,13 +341,17 @@ test('advanced form settings retain values and expansion across artwork selectio
   await thumbnail(page, 43).click(); await selected(page, 43);
   assert.equal(await advanced.evaluate(el => el.open), true);
   await form.locator('[name=artist_description]').fill('other band cue');
+  assert.equal(await form.locator('[name=style]').inputValue(), '');
+  await form.locator('[name=style]').selectOption('002');
   await thumbnail(page, 42).click(); await selected(page, 42);
   assert.equal(await advanced.evaluate(el => el.open), true);
   assert.equal(await form.locator('[name=artist_description]').inputValue(), 'band cue');
   assert.equal(await form.locator('[name=description]').inputValue(), 'album cue');
   assert.equal(await form.locator('[name=format]').inputValue(), format);
+  assert.equal(await form.locator('[name=style]').inputValue(), '001');
   await thumbnail(page, 43).click(); await selected(page, 43);
   assert.equal(await form.locator('[name=artist_description]').inputValue(), 'other band cue');
+  assert.equal(await form.locator('[name=style]').inputValue(), '002');
   await page.close();
 });
 

@@ -134,7 +134,7 @@ def test_medve_and_torta_clarifications_combine():
     assert "Medve isn't a bear" in value
 
 
-@pytest.mark.parametrize('field', GenerationInputs.creative_fields)
+@pytest.mark.parametrize('field', GenerationInputs.creative_fields[:-1])
 def test_artwork_details_are_visual_guidance(field):
     values = dict.fromkeys(GenerationInputs.creative_fields, '')
     values[field] = 'Creative cue'
@@ -169,7 +169,7 @@ def test_combined_artwork_details_have_field_specific_instructions():
         source_image_id=0,
         artist_name='Band',
         title='Album',
-        **dict.fromkeys(GenerationInputs.creative_fields, 'Creative cue'),
+        **dict.fromkeys(GenerationInputs.creative_fields[:-1], 'Creative cue'),
     )
     value = artwork_prompt(inputs)
     assert value.count('Do not literally add the ') == 6
