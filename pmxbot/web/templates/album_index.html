@@ -6,8 +6,8 @@
 <title>Albums</title>
 <style>
 body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; color: #252b34; background: #f4f6f8; line-height: 1.6; }
-main { max-width: 70rem; margin: auto; padding: 1.25rem; }
-h1 { margin: 0 0 1.25rem; font-size: 1.5rem; }
+main { max-width: 70rem; margin: auto; padding: 0; }
+h1 { margin: 0 0 1.25rem; font-size: .75rem; font-weight:normal; color:#626161}
 ul { padding: 1.25rem 1.25rem 1.25rem 2.5rem; background: white; border: 1px solid #d4dbe2; border-radius: .5rem; overflow-wrap: anywhere; }
 li + li { margin-top: .5rem; }
 a { color: #135ba1; }
@@ -45,7 +45,6 @@ th:last-child, td:last-child { text-align: right; }
 <body>
 {% include "auth_nav.html" %}
 <main>
-<h1>Albums</h1>
 <p><a href="{{ base }}/gallery">View artwork gallery</a></p>
 <div class="homepage-panels">
 {% if leaderboard %}
