@@ -12,6 +12,7 @@
   const metadataExpansion = new Map();
   let selected = strip.querySelector('[aria-current]')?.dataset.imageId || null;
   let committedURL = location.href;
+  if (selected) window.history.replaceState({...window.history.state, artworkImage: selected}, '', location.href);
   let sequence = 0;
   let controller;
   let failedSelection;
@@ -127,7 +128,7 @@
         link.querySelector('.selection-indicator').hidden = !active;
         link.setAttribute('aria-label', `${link.dataset.historyLabel}${link.dataset.historyParent ? ', based on ' + link.dataset.historyParent : ''}, image #${link.dataset.imageId}${active ? ', Selected' : ''}`);
       }
-      if (!navigation) window.history.pushState(null, '', url);
+      if (!navigation) window.history.pushState({artworkImage: selected}, '', url);
       committedURL = location.href;
       window.scrollTo({...pagePosition, behavior: 'instant'});
       reveal(links.find(link => link.dataset.imageId === selected));
@@ -155,6 +156,10 @@
   retry.addEventListener('click', () => {
     if (failedSelection) select(failedSelection.url);
   });
-  window.addEventListener('popstate', () => select(location.href, true));
+  window.addEventListener('popstate', event => {
+    const url = new URL(location.href);
+    if (event.state?.artworkImage) url.searchParams.set('source_image_id', event.state.artworkImage);
+    select(url.href, true);
+  });
 })();
 </script>

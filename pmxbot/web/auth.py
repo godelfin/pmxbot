@@ -72,7 +72,14 @@ def redact_auth_query():
     # Never put query credentials in CherryPy's access log, even on a bad GET.
     request = cherrypy.request
     if request.path_info.rstrip('/').endswith(
-        ('/login', '/logout', '/register', '/change_password', '/admin/users')
+        (
+            '/login',
+            '/logout',
+            '/register',
+            '/change_password',
+            '/admin/users',
+            '/favorites',
+        )
     ):
         request.request_line = '{} {} {}'.format(
             request.method,

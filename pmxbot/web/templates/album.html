@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Album #{{ album.id }}</title>
 <style>
+#favorite-toggle { min-height: 44px; padding: .25rem .75rem; font: inherit; cursor: pointer; border: 1px solid #d4dbe2; border-radius: .25rem; background: white; }
+#favorite-toggle span { font-size: 1.5rem; vertical-align: middle; }
+#favorite-toggle[aria-pressed="true"] span { color: #8a5700; }
 .results-navigation { margin: .75rem 0; }
 #back-to-results { display: inline-block; padding: .5rem .75rem; background: white; border: 1px solid #135ba1; border-radius: .25rem; font-weight: bold; }
 body { margin: 0; font-family: Verdana, Arial, sans-serif; font-size: .875rem; color: #252b34; background: #f4f6f8; line-height: 1.6; }
@@ -141,6 +144,10 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 {% else %}
 <p class="artwork-unavailable">Hosted artwork is unavailable. Album details are shown below.</p>
 <p class="artwork-caption">Full-size artwork is unavailable for this image.</p>
+{% endif %}
+{% if current_user and image and image_history|length > 1 %}
+<button type="button" id="favorite-toggle" hidden data-favorite-image="{{ image.id }}" data-favorite-id="{{ album.favorite_image_id or '' }}" data-album-id="{{ album.id }}" data-endpoint="{{ base }}/favorites" data-csrf-token="{{ csrf_token }}" aria-pressed="{{ 'true' if image.id == album.favorite_image_id else 'false' }}" aria-label="{{ 'Remove favorite artwork' if image.id == album.favorite_image_id else 'Use this artwork as my favorite' }}"><span aria-hidden="true">{{ '★' if image.id == album.favorite_image_id else '☆' }}</span> Favorite</button>
+<p id="favorite-status" role="status" aria-live="polite"></p>
 {% endif %}
 {% endblock %}</section>
 {% if image_history or draft or pending_jobs %}
@@ -345,6 +352,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 })();
 </script>
 {% include "artwork_history.html" %}
+{% include "artwork_favorite.html" %}
 {% include "album_navigation.html" %}
 {% if draft or pending_jobs %}
 <script id="variation-script">

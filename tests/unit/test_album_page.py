@@ -1410,8 +1410,8 @@ def test_catalog_tied_pagination_and_query_count(page, monkeypatch, order):
         ids.extend(int(urlsplit(row['href']).path.rsplit('/', 1)[1]) for row in rows)
     expected = [album['id'] for album in albums]
     assert ids == (expected if order == 'asc' else expected[::-1])
-    # Schema, count, result and leaderboard schema queries: constant per page.
-    assert len([sql for sql in statements if sql.startswith('SELECT')]) == 12
+    # Schema, count, result, cover schema and leaderboard: constant per page.
+    assert len([sql for sql in statements if sql.startswith('SELECT')]) == 15
 
 
 def test_catalog_creation_dates_precede_ids(page):

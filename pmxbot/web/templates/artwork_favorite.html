@@ -1,0 +1,61 @@
+<script>
+(() => {
+  const initial = document.getElementById('favorite-toggle');
+  if (!initial) return;
+  let favorite = initial.dataset.favoriteId;
+  let pending = false;
+  let unknown = false;
+  let message = '';
+  function render() {
+    const button = document.getElementById('favorite-toggle');
+    if (!button) return;
+    button.hidden = false;
+    button.disabled = pending || unknown;
+    const active = favorite === button.dataset.favoriteImage;
+    button.setAttribute('aria-pressed', unknown ? 'mixed' : String(active));
+    button.setAttribute('aria-label', unknown ? 'Favorite status unavailable; reload to check' : active ? 'Remove favorite artwork' : 'Use this artwork as my favorite');
+    button.querySelector('span').textContent = unknown ? '?' : active ? '★' : '☆';
+    document.getElementById('favorite-status').textContent = message;
+  }
+  function accept(data) {
+    if (data.favorite_image_id !== null && (typeof data.favorite_image_id !== 'string' || !/^[0-9]+$/.test(data.favorite_image_id))) throw new Error('Invalid favorite response');
+    favorite = data.favorite_image_id || '';
+  }
+  render();
+  document.addEventListener('artwork-selected', render);
+  document.addEventListener('click', async event => {
+    const button = event.target.closest('#favorite-toggle');
+    if (!button || pending || unknown) return;
+    pending = true;
+    message = 'Saving favorite…';
+    render();
+    const endpoint = button.dataset.endpoint;
+    const album = button.dataset.albumId;
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST', credentials: 'same-origin', cache: 'no-store',
+        headers: {Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded'},
+        body: new URLSearchParams({album_id: album, image_id: button.dataset.favoriteImage, csrf_token: button.dataset.csrfToken}),
+      });
+      if (!response.ok || response.redirected) throw new Error('Favorite failed');
+      accept(await response.json());
+      message = favorite ? 'Favorite saved.' : 'Favorite removed.';
+    } catch (failure) {
+      // A lost response may follow a committed write. Reconcile without touching
+      // the selected artwork, browser history or unsaved generation settings.
+      try {
+        const response = await fetch(endpoint + '?' + new URLSearchParams({album_id: album}), {headers: {Accept: 'application/json'}, credentials: 'same-origin', cache: 'no-store'});
+        if (!response.ok || response.redirected) throw new Error('Favorite status failed');
+        accept(await response.json());
+        message = 'Could not confirm the change. Your saved favorite is shown; try again if needed.';
+      } catch (unavailable) {
+        unknown = true;
+        message = 'Favorite status is unavailable. Reload to check before trying again. Your artwork and edits are unchanged.';
+      }
+    } finally {
+      pending = false;
+      render();
+    }
+  });
+})();
+</script>
