@@ -76,7 +76,16 @@ def main():
                 patch.setattr(
                     auth,
                     'current_user',
-                    lambda: User(1, 'Alice', 'alice', None, '2026', True, False),
+                    lambda: User(
+                        1,
+                        'Alice',
+                        'alice',
+                        None,
+                        '2026',
+                        True,
+                        False,
+                        can_generate_images=True,
+                    ),
                 )
                 patch.setattr(
                     type(cache), 'variation_capability', lambda self, image: (True, '')

@@ -129,7 +129,10 @@ def test_login_rotation_identity_navigation_and_logout(web):
     assert response['headers']['Location'] == web.base + '/gallery?sort=band'
     assert web.cookie != anonymous_cookie
     signed_cookie = web.cookie
-    assert RamSession.cache[session_id(signed_cookie)][0] == {'user_id': web.user_id}
+    assert RamSession.cache[session_id(signed_cookie)][0] == {
+        'user_id': web.user_id,
+        'session_version': 0,
+    }
     assert session_id(anonymous_cookie) not in RamSession.cache
     for path in ('/', '/gallery', f'/albums/{web.album_id}', '/login'):
         response = web.request(path)
@@ -366,6 +369,7 @@ def test_registration_creates_disabled_salted_credentials(web):
     with closing(UserStore(pmxbot.config.database)) as store:
         user = store.get_by_username('newuser')
         assert user.username == 'NewUser' and not user.enabled and not user.can_pair_irc
+        assert not user.can_generate_images
         assert store.db.execute(
             'SELECT enabled FROM users WHERE id = ?', (user.id,)
         ).fetchone() == (0,)
@@ -379,7 +383,9 @@ def test_registration_creates_disabled_salted_credentials(web):
         with pytest.raises(InvalidCredentials):
             store.authenticate('newuser', 'ValidPassword123')
         store.update(user.id, enabled=True)
-        assert store.authenticate('newuser', 'ValidPassword123').id == user.id
+        approved = store.authenticate('newuser', 'ValidPassword123')
+        assert approved.id == user.id
+        assert not approved.has_permission('generate_images')
     assert web.request('/protected')['status'] == 401
 
 

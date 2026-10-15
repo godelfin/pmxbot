@@ -216,19 +216,28 @@ configuration file, or source code::
 
 Use the same ``database`` URI in the bot, viewer, and provisioning session.
 See :doc:`users` for account naming, password storage, and disabling accounts.
-The web registration form creates disabled accounts; there is no password reset
-UI. Administrators should assign strong, unique passwords and communicate them
-through a trusted private channel.
+Bootstrap the first administrator from a trusted server shell::
+
+    python -m pmxbot.users_cli --database sqlite:/home/ircbot/data/pmxbot.sqlite Alice
+
+The account must be enabled and have a password. Bootstrap refuses to run if an
+active administrator already exists. Sign in again, then use
+**Administration → Users** to approve accounts, assign roles, independently
+allow or deny image generation, and reset passwords. Reset passwords are
+random temporary secrets shown once, and users must replace them after signing
+in. Communicate them through a trusted private channel. See :doc:`users` for
+migration, authorization and audit details.
 
 The viewer enables CherryPy RAM sessions in its single server process. Only
-``users.id`` is stored as authentication data; the browser receives an opaque
-session identifier. Successful login deletes the previous session and rotates
+``users.id`` and a security version are stored as authentication data; the browser
+receives an opaque session identifier. Successful login deletes the previous session and rotates
 its identifier. Logout is a CSRF-protected POST that clears the session, rotates
 its identifier, and expires the cookie. Sessions expire after 30 minutes of
 inactivity, and server restarts log everyone out. Each identity lookup re-reads
 the account; disabled or deleted users lose authorization on the next lookup.
-Password replacement alone does not revoke existing sessions; disable the account
-and restart the viewer if all existing sessions must be revoked immediately.
+Password, role, permission and account-status changes revoke existing sessions
+on their next request using a persistent version. Re-enabling an account does
+not restore old sessions.
 
 Cookies are host-only, ``HttpOnly``, ``SameSite=Lax``, scoped to ``web_base``
 (or ``/``), and ``Secure`` by default. Keep ``web_session_secure: true`` in
@@ -300,8 +309,9 @@ but never the submitted properties, credentials, attribution or provider errors.
 Bookmark anonymous URLs before leaving; their session list disappears on a
 viewer restart. These bearer links remain compatible with legacy anonymous jobs.
 Album browsing remains public, but new web variations require an enabled,
-signed-in account. The server rejects signed-out POST requests before input
-preparation or enqueueing; a CSRF token alone does not authorize generation.
+signed-in account with the independent image-generation permission. Admin status
+does not grant image generation. The server rejects signed-out POST requests
+before input preparation or enqueueing; a CSRF token alone does not authorize generation.
 Signed-out visitors see a disabled generation button and a sign-in link that
 returns to the selected album/image. Expired or revoked accounts must sign in
 again. IRC nickname/channel attribution and worker routing are unaffected.

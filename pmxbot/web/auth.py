@@ -71,7 +71,9 @@ def session_headers():
 def redact_auth_query():
     # Never put query credentials in CherryPy's access log, even on a bad GET.
     request = cherrypy.request
-    if request.path_info.rstrip('/').endswith(('/login', '/logout', '/register')):
+    if request.path_info.rstrip('/').endswith(
+        ('/login', '/logout', '/register', '/change_password', '/admin/users')
+    ):
         request.request_line = '{} {} {}'.format(
             request.method,
             request.script_name + request.path_info,
@@ -106,9 +108,32 @@ def current_user():
         user = None
     except (sqlite3.Error, UserError):
         raise cherrypy.HTTPError(503, 'User storage is unavailable') from None
-    if user is None or not user.enabled:
+    if (
+        user is None
+        or not user.enabled
+        or cherrypy.session.get('session_version') != user.session_version
+    ):
         invalidate_session()
         return None
+    if user.must_change_password and cherrypy.request.path_info.rstrip('/') not in (
+        '/change_password',
+        '/logout',
+    ):
+        redirect(pmxbot.config.web_base + '/change_password')
+    return user
+
+
+def require_admin():
+    user = require_authenticated_user()
+    if not user.is_admin:
+        raise cherrypy.HTTPError(403, 'Administrator access required.')
+    return user
+
+
+def require_permission(permission):
+    user = require_authenticated_user()
+    if not user.has_permission(permission):
+        raise cherrypy.HTTPError(403, 'Permission required.')
     return user
 
 

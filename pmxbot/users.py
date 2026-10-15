@@ -2,10 +2,12 @@
 
 import hashlib
 import hmac
+import json
 import re
 import secrets
 import sqlite3
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from .storage import SQLiteStorage
@@ -33,7 +35,8 @@ class InvalidCredentials(UserError):
 
 _PASSWORD_ITERATIONS = 600_000
 _USER_COLUMNS = (
-    'id, username, normalized_username, display_name, created_at, enabled, can_pair_irc'
+    'id, username, normalized_username, display_name, created_at, enabled, can_pair_irc, '
+    'role, can_generate_images, must_change_password, session_version'
 )
 
 
@@ -99,17 +102,35 @@ class User:
     enabled: bool
     can_pair_irc: bool
 
+    role: str = 'user'
+    can_generate_images: bool = False
+    must_change_password: bool = False
+    session_version: int = field(default=0, compare=False, repr=False)
+
+    def has_permission(self, permission):
+        """Explicit capabilities remain independent of administrative roles."""
+        return (
+            self.enabled
+            and not self.must_change_password
+            and permission in ('generate_images', 'pair_irc')
+            and getattr(self, 'can_' + permission)
+        )
+
+    @property
+    def is_admin(self):
+        return self.enabled and self.role == 'admin' and not self.must_change_password
+
     @property
     def may_pair_irc(self):
         """Pairing requires an enabled account and an explicit grant."""
-        return self.enabled and self.can_pair_irc
+        return self.has_permission('pair_irc')
 
 
 class UserStore(SQLiteStorage):
     """Open the main SQLite database using the existing storage lifecycle.
 
     Construct with the configured database URI; call close() when finished.
-    Opening the store adds only the users table, including on older databases.
+    Opening the store additively migrates user, credential and audit tables.
     """
 
     def __init__(self, uri):
@@ -149,6 +170,38 @@ class UserStore(SQLiteStorage):
                 password_hash TEXT NOT NULL
             )'''
             )
+            # Additive migrations preserve identity, credentials and existing grants.
+            columns = {row[1] for row in self.db.execute('PRAGMA table_info(users)')}
+            for name, definition in (
+                (
+                    'role',
+                    "TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin'))",
+                ),
+                (
+                    'can_generate_images',
+                    'INTEGER NOT NULL DEFAULT 0 CHECK (can_generate_images IN (0, 1))',
+                ),
+                (
+                    'must_change_password',
+                    'INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))',
+                ),
+                ('session_version', 'INTEGER NOT NULL DEFAULT 0'),
+            ):
+                if name not in columns:
+                    self.db.execute(f'ALTER TABLE users ADD COLUMN {name} {definition}')
+                    if name == 'can_generate_images':
+                        # Preserve access only for accounts predating this migration.
+                        self.db.execute('UPDATE users SET can_generate_images = 1')
+            self.db.execute(
+                '''CREATE TABLE IF NOT EXISTS user_admin_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_id INTEGER REFERENCES users(id),
+                target_id INTEGER NOT NULL REFERENCES users(id),
+                action TEXT NOT NULL,
+                timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                changes TEXT NOT NULL
+            )'''
+            )
             self.db.commit()
         except Exception:
             self.db.rollback()
@@ -159,7 +212,15 @@ class UserStore(SQLiteStorage):
     def _user(row):
         if row is None:
             raise UserNotFound('Unknown user.')
-        return User(*row[:5], bool(row[5]), bool(row[6]))
+        return User(
+            *row[:5],
+            bool(row[5]),
+            bool(row[6]),
+            row[7],
+            bool(row[8]),
+            bool(row[9]),
+            row[10],
+        )
 
     def get_by_id(self, user_id):
         return self._user(
@@ -206,8 +267,9 @@ class UserStore(SQLiteStorage):
             self.db.execute('BEGIN IMMEDIATE')
             cursor = self.db.execute(
                 '''INSERT INTO users
-                (username, normalized_username, display_name, enabled, can_pair_irc)
-                VALUES (?, ?, ?, ?, ?)''',
+                (username, normalized_username, display_name, enabled, can_pair_irc,
+                 can_generate_images)
+                VALUES (?, ?, ?, ?, ?, 0)''',
                 (
                     username.strip(),
                     normalized,
@@ -236,11 +298,19 @@ class UserStore(SQLiteStorage):
     def set_password(self, user_id, password):
         """Set or replace a salted hash; the plaintext is never persisted."""
         password_hash = _hash_password(password)
-        self.get_by_id(user_id)
+        with self._transaction():
+            self.get_by_id(user_id)
+            self._write_password(user_id, password_hash, False)
+
+    def _write_password(self, user_id, password_hash, temporary):
         self.db.execute(
             '''INSERT INTO user_passwords (user_id, password_hash) VALUES (?, ?)
             ON CONFLICT(user_id) DO UPDATE SET password_hash = excluded.password_hash''',
             (user_id, password_hash),
+        )
+        self.db.execute(
+            'UPDATE users SET must_change_password = ?, session_version = session_version + 1 WHERE id = ?',
+            (temporary, user_id),
         )
 
     def authenticate(self, username, password):
@@ -261,19 +331,158 @@ class UserStore(SQLiteStorage):
             raise InvalidCredentials('Invalid username or password.')
         return user
 
-    def update(self, user_id, *, display_name=None, enabled=None, can_pair_irc=None):
-        """Update supplied fields without changing identity or creation time."""
+    @contextmanager
+    def _transaction(self):
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            yield
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
+    def _audit(self, actor_id, target_id, action, changes):
+        self.db.execute(
+            'INSERT INTO user_admin_audit (actor_id, target_id, action, changes) VALUES (?, ?, ?, ?)',
+            (actor_id, target_id, action, json.dumps(changes, sort_keys=True)),
+        )
+
+    def _require_admin(self, actor_id, version):
+        actor = self.get_by_id(actor_id)
+        if not actor.is_admin or actor.session_version != version:
+            raise UserError('Administrator access is required. Sign in again.')
+
+    def bootstrap_admin(self, username):
+        """Explicit local-only bootstrap; cannot replace an existing active admin."""
+        with self._transaction():
+            if self.db.execute(
+                "SELECT 1 FROM users WHERE role = 'admin' AND enabled = 1"
+            ).fetchone():
+                raise UserError('An active administrator already exists.')
+            user = self.get_by_username(username)
+            if (
+                not user.enabled
+                or user.must_change_password
+                or not self.db.execute(
+                    'SELECT 1 FROM user_passwords WHERE user_id = ?', (user.id,)
+                ).fetchone()
+            ):
+                raise UserError(
+                    'Bootstrap requires an enabled account with a password.'
+                )
+            self.db.execute(
+                "UPDATE users SET role = 'admin', session_version = session_version + 1 WHERE id = ?",
+                (user.id,),
+            )
+            self._audit(None, user.id, 'bootstrap_admin', {'role': 'admin'})
+        return self.get_by_id(user.id)
+
+    def update(
+        self,
+        user_id,
+        *,
+        display_name=None,
+        enabled=None,
+        can_pair_irc=None,
+        role=None,
+        can_generate_images=None,
+    ):
+        """Trusted local API; web callers must use admin_update instead."""
         self._validate_fields(
             display_name,
             True if enabled is None else enabled,
             False if can_pair_irc is None else can_pair_irc,
         )
-        cursor = self.db.execute(
-            '''UPDATE users SET display_name = COALESCE(?, display_name),
-            enabled = COALESCE(?, enabled), can_pair_irc = COALESCE(?, can_pair_irc)
-            WHERE id = ?''',
-            (display_name, enabled, can_pair_irc, user_id),
-        )
-        if not cursor.rowcount:
-            raise UserNotFound('Unknown user.')
+        if role is not None and role not in ('user', 'admin'):
+            raise UserError('Invalid role.')
+        if can_generate_images is not None and type(can_generate_images) is not bool:
+            raise UserError('Image-generation permission must be a boolean.')
+        with self._transaction():
+            self._update(
+                user_id,
+                {
+                    'display_name': display_name,
+                    'enabled': enabled,
+                    'can_pair_irc': can_pair_irc,
+                    'role': role,
+                    'can_generate_images': can_generate_images,
+                },
+            )
         return self.get_by_id(user_id)
+
+    def _update(self, user_id, fields):
+        user = self.get_by_id(user_id)
+        changes = {
+            key: value
+            for key, value in fields.items()
+            if value is not None and value != getattr(user, key)
+        }
+        if (
+            user.enabled
+            and user.role == 'admin'
+            and (changes.get('enabled') is False or changes.get('role') == 'user')
+            and self.db.execute(
+                "SELECT count(*) FROM users WHERE role = 'admin' AND enabled = 1"
+            ).fetchone()[0]
+            <= 1
+        ):
+            raise UserError('Cannot remove or disable the last active administrator.')
+        if changes:
+            assignments = ', '.join(f'{key} = ?' for key in changes)
+            security = any(key != 'display_name' for key in changes)
+            self.db.execute(
+                f'UPDATE users SET {assignments}, session_version = session_version + ? WHERE id = ?',
+                (*changes.values(), int(security), user_id),
+            )
+        return {
+            key: {'before': getattr(user, key), 'after': value}
+            for key, value in changes.items()
+        }
+
+    def admin_update(self, actor, target_id, *, role, enabled, can_generate_images):
+        if (
+            role not in ('user', 'admin')
+            or type(enabled) is not bool
+            or type(can_generate_images) is not bool
+        ):
+            raise UserError('Invalid account settings.')
+        with self._transaction():
+            self._require_admin(actor.id, actor.session_version)
+            changes = self._update(
+                target_id,
+                {
+                    'role': role,
+                    'enabled': enabled,
+                    'can_generate_images': can_generate_images,
+                },
+            )
+            self._audit(actor.id, target_id, 'update_user', changes)
+
+    def admin_reset_password(self, actor, target_id):
+        # Random, policy-compliant secret is returned once, never persisted in clear.
+        password = 'Aa1-' + secrets.token_urlsafe(24)
+        password_hash = _hash_password(password)
+        with self._transaction():
+            self._require_admin(actor.id, actor.session_version)
+            self.get_by_id(target_id)
+            self._write_password(target_id, password_hash, True)
+            self._audit(
+                actor.id, target_id, 'reset_password', {'must_change_password': True}
+            )
+        return password
+
+    def change_password(self, user, current_password, password):
+        password_hash = _hash_password(password)
+        with self._transaction():
+            fresh = self.authenticate(user.username, current_password)
+            if fresh.session_version != user.session_version:
+                raise InvalidCredentials('Sign in again.')
+            if _verify_password(
+                password,
+                self.db.execute(
+                    'SELECT password_hash FROM user_passwords WHERE user_id = ?',
+                    (user.id,),
+                ).fetchone()[0],
+            ):
+                raise UserError('Choose a different password.')
+            self._write_password(user.id, password_hash, False)

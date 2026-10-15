@@ -12,6 +12,8 @@
 <nav class="account-nav" aria-label="Site navigation">
 <a href="{{ base|e }}/">Browse albums</a>
 {% if current_user %}
+{% if current_user.is_admin %}<a href="{{ base|e }}/admin/users">Administration → Users</a>{% endif %}
+<a href="{{ base|e }}/change_password">Change password</a>
 <span>Hi, {{ current_user.username|e }}.</span>
 <form action="{{ base|e }}/logout" method="post">
 <input type="hidden" name="csrf_token" value="{{ csrf_token|e }}" />
