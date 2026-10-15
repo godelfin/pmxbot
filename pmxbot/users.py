@@ -103,7 +103,7 @@ class User:
     can_pair_irc: bool
 
     role: str = 'user'
-    can_generate_images: bool = True
+    can_generate_images: bool = False
     must_change_password: bool = False
     session_version: int = field(default=0, compare=False, repr=False)
 
@@ -179,7 +179,7 @@ class UserStore(SQLiteStorage):
                 ),
                 (
                     'can_generate_images',
-                    'INTEGER NOT NULL DEFAULT 1 CHECK (can_generate_images IN (0, 1))',
+                    'INTEGER NOT NULL DEFAULT 0 CHECK (can_generate_images IN (0, 1))',
                 ),
                 (
                     'must_change_password',
@@ -189,6 +189,9 @@ class UserStore(SQLiteStorage):
             ):
                 if name not in columns:
                     self.db.execute(f'ALTER TABLE users ADD COLUMN {name} {definition}')
+                    if name == 'can_generate_images':
+                        # Preserve access only for accounts predating this migration.
+                        self.db.execute('UPDATE users SET can_generate_images = 1')
             self.db.execute(
                 '''CREATE TABLE IF NOT EXISTS user_admin_audit (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -264,8 +267,9 @@ class UserStore(SQLiteStorage):
             self.db.execute('BEGIN IMMEDIATE')
             cursor = self.db.execute(
                 '''INSERT INTO users
-                (username, normalized_username, display_name, enabled, can_pair_irc)
-                VALUES (?, ?, ?, ?, ?)''',
+                (username, normalized_username, display_name, enabled, can_pair_irc,
+                 can_generate_images)
+                VALUES (?, ?, ?, ?, ?, 0)''',
                 (
                     username.strip(),
                     normalized,

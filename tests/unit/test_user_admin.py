@@ -48,6 +48,23 @@ def test_additive_migration(tmp_path, existing_permission):
             assert store.db.execute(
                 'SELECT password_hash FROM user_passwords'
             ).fetchone() == (password_hash,)
+            assert not store.create('new-user-' + str(_)).can_generate_images
+
+
+def test_new_users_require_explicit_image_approval(tmp_path):
+    database = str(tmp_path / 'bot.sqlite')
+    with closing(UserStore(database)) as store:
+        user = store.create('new-user', password='password')
+        assert not user.can_generate_images
+        assert not user.has_permission('generate_images')
+        admin = store.bootstrap_admin(user.username)
+        assert admin.is_admin and not admin.has_permission('generate_images')
+        store.admin_update(
+            admin, user.id, role='admin', enabled=True, can_generate_images=True
+        )
+    with closing(UserStore(database)) as store:
+        assert store.get_by_id(user.id).has_permission('generate_images')
+        assert not store.create('another-user').can_generate_images
 
 
 def test_bootstrap_cli_and_persistent_audit(tmp_path, capsys):
@@ -153,7 +170,7 @@ def test_security_changes_revoke_all_old_sessions(web, change):
                     'enabled': 'enabled',
                 }[change]
             ] = (
-                'user' if change == 'role' else False
+                'user' if change == 'role' else change == 'permission'
             )
             store.admin_update(store.get_by_id(other.id), actor.id, **kwargs)
     assert web.request('/protected', cookie=old_cookie)['status'] == 401

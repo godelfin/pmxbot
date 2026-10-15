@@ -157,7 +157,9 @@ def test_ownership_visibility_and_capability(variation, monkeypatch):
     from pmxbot.web import auth
 
     cache, request, post, client, values, source = variation
-    alice = User(1, 'Alice', 'alice', None, '2026', True, False)
+    alice = User(
+        1, 'Alice', 'alice', None, '2026', True, False, can_generate_images=True
+    )
     bob = replace(alice, id=2, username='Bob')
     monkeypatch.setattr(auth, 'current_user', Mock(return_value=alice))
     submitted = request(method='POST', data=values)

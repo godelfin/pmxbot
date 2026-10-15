@@ -17,9 +17,11 @@ from tests.unit.test_album_page import page, variation  # noqa: F401
 CURRENT_USER = auth.current_user
 
 
-def login(cache, request):
+def login(cache, request, *, approved=True):
     with closing(UserStore(pmxbot.config.database)) as store:
         user = store.create('Alice', password='correct password')
+        if approved:
+            user = store.update(user.id, can_generate_images=True)
     response = request(
         '/login',
         method='POST',
@@ -112,9 +114,8 @@ def test_image_permission_denies_regular_users_and_administrators(
 ):
     cache, request, provider, hosting, values, source = variation
     monkeypatch.setattr(auth, 'current_user', CURRENT_USER)
-    user, _ = login(cache, request)
+    user, _ = login(cache, request, approved=False)
     with closing(UserStore(pmxbot.config.database)) as store:
-        store.update(user.id, can_generate_images=False)
         if role == 'admin':
             store.bootstrap_admin(user.username)
     # Establish a fresh session after the permission change.

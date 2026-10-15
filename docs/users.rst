@@ -94,8 +94,10 @@ mandatory-password-change flag, session version, and ``user_admin_audit`` table
 transactionally. Existing IDs, usernames, password hashes, pairing grants,
 enabled flags and any existing image-generation grants are preserved. Before
 this migration, all enabled authenticated users could generate images, so a
-missing image-generation column defaults to allowed, including on new accounts.
-Administrators can revoke this permission independently of account activation.
+missing image-generation column is backfilled as allowed for existing accounts
+only. New accounts default to denied and require an explicit administrator grant,
+independently of account activation. Existing grants and denials remain unchanged
+when the store is reopened.
 
 Bootstrap the first administrator from a trusted local shell, using the same
 SQLite database as the viewer and an existing enabled account with a password::

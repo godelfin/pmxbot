@@ -369,6 +369,7 @@ def test_registration_creates_disabled_salted_credentials(web):
     with closing(UserStore(pmxbot.config.database)) as store:
         user = store.get_by_username('newuser')
         assert user.username == 'NewUser' and not user.enabled and not user.can_pair_irc
+        assert not user.can_generate_images
         assert store.db.execute(
             'SELECT enabled FROM users WHERE id = ?', (user.id,)
         ).fetchone() == (0,)
@@ -382,7 +383,9 @@ def test_registration_creates_disabled_salted_credentials(web):
         with pytest.raises(InvalidCredentials):
             store.authenticate('newuser', 'ValidPassword123')
         store.update(user.id, enabled=True)
-        assert store.authenticate('newuser', 'ValidPassword123').id == user.id
+        approved = store.authenticate('newuser', 'ValidPassword123')
+        assert approved.id == user.id
+        assert not approved.has_permission('generate_images')
     assert web.request('/protected')['status'] == 401
 
 

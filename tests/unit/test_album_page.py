@@ -1032,7 +1032,11 @@ def test_preparation_is_immutable_and_has_no_generation(page, monkeypatch):
     monkeypatch.setattr(
         auth,
         'current_user',
-        Mock(return_value=User(1, 'Alice', 'alice', None, '2026', True, False)),
+        Mock(
+            return_value=User(
+                1, 'Alice', 'alice', None, '2026', True, False, can_generate_images=True
+            )
+        ),
     )
     cache, request = page
     insert(cache)
@@ -1161,7 +1165,11 @@ def test_legacy_values_prepare_and_selected_source_stays_fixed(page, monkeypatch
     monkeypatch.setattr(
         auth,
         'current_user',
-        Mock(return_value=User(1, 'Alice', 'alice', None, '2026', True, False)),
+        Mock(
+            return_value=User(
+                1, 'Alice', 'alice', None, '2026', True, False, can_generate_images=True
+            )
+        ),
     )
     cache, request = page
     insert(cache)
@@ -1427,7 +1435,11 @@ def variation(page, monkeypatch, tmp_path):
     monkeypatch.setattr(
         auth,
         'current_user',
-        Mock(return_value=User(1, 'Alice', 'alice', None, '2026', True, False)),
+        Mock(
+            return_value=User(
+                1, 'Alice', 'alice', None, '2026', True, False, can_generate_images=True
+            )
+        ),
     )
     import base64
     from pmxbot import images
@@ -1937,7 +1949,11 @@ def test_shared_signed_in_header(page, monkeypatch, path):
     monkeypatch.setattr(
         auth,
         'current_user',
-        Mock(return_value=User(1, 'Alice', 'alice', None, '2026', True, False)),
+        Mock(
+            return_value=User(
+                1, 'Alice', 'alice', None, '2026', True, False, can_generate_images=True
+            )
+        ),
     )
     soup = BeautifulSoup(request(path)['body'], 'html.parser')
     header = soup.select_one('.site-header')
