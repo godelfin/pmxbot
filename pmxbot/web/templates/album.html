@@ -267,11 +267,13 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 </dl>
 </details>
 {% if draft %}
-<button type="submit" name="operation" value="create_new"{% if not create_available or not current_user %} disabled{% endif %}>Create New</button>
-<button type="submit"{% if not variation_available or not current_user %} disabled{% endif %} name="operation" value="edit">Edit</button>
+<button type="submit" name="operation" value="create_new"{% if not create_available or not current_user or not current_user.can_generate_images %} disabled{% endif %}>Create New</button>
+<button type="submit"{% if not variation_available or not current_user or not current_user.can_generate_images %} disabled{% endif %} name="operation" value="edit">Edit</button>
 <p id="edit-capability">{{ variation_message }}</p>
 {% if not current_user %}
 <a id="variation-sign-in" href="{{ base }}/login?return_to={{ (base ~ '/albums/' ~ album.id ~ ('?source_image_id=' ~ draft.source_image_id ~ return_query if draft.source_image_id else ('?' ~ return_query[1:] if return_query else '')))|urlencode }}">Sign in</a>
+{% elif not current_user.can_generate_images %}
+<p>Image generation is disabled for your account.</p>
 {% endif %}
 </form>
 {% endif %}

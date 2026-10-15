@@ -3,8 +3,9 @@ Application users
 
 ``pmxbot.users.UserStore`` provides canonical application identity in the main
 SQLite database. It uses the existing ``SQLiteStorage`` lifecycle and accepts
-the same SQLite URI (or a filename). Opening the store creates the ``users``
-and ``user_passwords`` tables if absent; opening it repeatedly preserves all
+the same SQLite URI (or a filename). Opening the store creates the ``users``,
+``user_passwords`` and ``user_admin_audit`` tables if absent; opening it repeatedly
+preserves all
 existing records. No historical nicknames or attribution strings are imported.
 There is no separate database, migration framework, or bot startup hook.
 The web viewer uses this service for login; see :doc:`deployment`.
@@ -73,4 +74,70 @@ normalization, or truncation. This is a storage limit, not a password strength
 policy. Administrators provision strong passwords; web transport, rate limiting,
 and sessions are documented in :doc:`deployment`. Web registration enforces
 matching passwords and its strength policy, and creates disabled accounts
-awaiting administrator approval. There is no password reset UI.
+awaiting administrator approval. Administrators can reset passwords through the
+user-management page.
+
+
+Administration and permissions
+------------------------------
+
+Roles are ``user`` (the default) and ``admin``. Roles control administration
+only. ``can_generate_images`` independently controls artwork generation, and
+``can_pair_irc`` retains its separate pairing policy. Promoting or demoting a
+user never changes either grant. ``User.has_permission('generate_images')``
+checks an explicit capability; ``User.is_admin`` checks administration access.
+Disabled accounts and accounts awaiting a mandatory password change cannot use
+these capabilities. ``enabled`` is the account-active flag.
+
+Opening an older SQLite database adds the role, image-generation grant,
+mandatory-password-change flag, session version, and ``user_admin_audit`` table
+transactionally. Existing IDs, usernames, password hashes, pairing grants,
+enabled flags and any existing image-generation grants are preserved. Before
+this migration, all enabled authenticated users could generate images, so a
+missing image-generation column defaults to allowed, including on new accounts.
+Administrators can revoke this permission independently of account activation.
+
+Bootstrap the first administrator from a trusted local shell, using the same
+SQLite database as the viewer and an existing enabled account with a password::
+
+    python -m pmxbot.users_cli --database sqlite:/path/to/pmxbot.sqlite Alice
+
+This explicit operation takes no password on the command line, is audited, and
+refuses to run while an active administrator exists. It preserves all image
+permissions. Bootstrap invalidates the user's existing sessions; sign in again.
+Restrict operating-system access to the database and this shell. If no user
+exists yet, provision one with ``UserStore.create(..., password=...)`` in a
+trusted Python session, or approve a registered account using the local API.
+
+Administrators see **Administration → Users** in the navigation. The page lists
+all accounts and allows changing role, image permission and active status.
+Saving changes and resetting passwords require POST and a session-bound CSRF
+token. The last active administrator cannot be disabled or demoted, including
+by concurrent requests. A user cannot promote themself without existing admin
+access. The local ``update`` and ``set_password`` APIs are trusted provisioning
+operations; web handlers use ``admin_update`` and ``admin_reset_password``,
+which recheck the actor's current role and session version inside the write
+transaction.
+
+A reset generates a random temporary password, displayed only in the POST
+response. Copy it and communicate it securely. The password is never stored in
+plaintext or included in audit records. The user must sign in with it and set a
+different password before accessing other pages or authenticated operations.
+The change form uses the registration strength policy, requires the current
+password and matching confirmation, and signs the user out on success.
+Administrators may reset their own password; they are signed out and must
+complete the same flow.
+
+Password, role, permission and account-status changes increment a persistent
+session version. Each authenticated request re-reads the account and rejects
+stale sessions, including sessions on another web process. Re-enabling an
+account or restoring a permission does not restore old sessions. Public
+browsing remains available to anonymous visitors.
+
+``user_admin_audit`` persists bootstrap, account edits, and administrative resets
+in the same transaction as each mutation. Records contain an actor ID (NULL
+for local bootstrap), target ID, action, SQLite UTC timestamp and JSON changes.
+Account edits include before/after values; resets record only the mandatory
+change flag. Passwords and hashes are excluded. Failed operations roll back and
+do not produce successful-action audit entries. Back up this table with the
+main database. No email recovery or registration behavior is changed.

@@ -129,7 +129,10 @@ def test_login_rotation_identity_navigation_and_logout(web):
     assert response['headers']['Location'] == web.base + '/gallery?sort=band'
     assert web.cookie != anonymous_cookie
     signed_cookie = web.cookie
-    assert RamSession.cache[session_id(signed_cookie)][0] == {'user_id': web.user_id}
+    assert RamSession.cache[session_id(signed_cookie)][0] == {
+        'user_id': web.user_id,
+        'session_version': 0,
+    }
     assert session_id(anonymous_cookie) not in RamSession.cache
     for path in ('/', '/gallery', f'/albums/{web.album_id}', '/login'):
         response = web.request(path)

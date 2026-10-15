@@ -524,12 +524,80 @@ def image_metadata(image):
     return sections
 
 
+class AdminPages:
+    @cherrypy.expose
+    def users(
+        self,
+        user_id='',
+        operation='',
+        role='',
+        enabled='0',
+        can_generate_images='0',
+        csrf_token='',
+    ):
+        cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
+        actor = auth.require_admin()
+        temporary_password = error = None
+        if cherrypy.request.query_string:
+            raise cherrypy.HTTPError(400, 'Use a form body.')
+        if cherrypy.request.method == 'POST':
+            auth.require_csrf(csrf_token)
+        try:
+            with contextlib.closing(UserStore(pmxbot.config.database)) as store:
+                if cherrypy.request.method == 'POST':
+                    if not isinstance(user_id, str) or not re.fullmatch(
+                        r'[0-9]{1,18}', user_id
+                    ):
+                        raise UserError('Invalid user ID.')
+                    if operation == 'reset_password':
+                        temporary_password = store.admin_reset_password(
+                            actor, int(user_id)
+                        )
+                    elif (
+                        operation == 'update'
+                        and enabled in ('0', '1')
+                        and can_generate_images in ('0', '1')
+                    ):
+                        store.admin_update(
+                            actor,
+                            int(user_id),
+                            role=role,
+                            enabled=enabled == '1',
+                            can_generate_images=can_generate_images == '1',
+                        )
+                    else:
+                        raise UserError('Invalid administration action.')
+                    # Show reset secrets once, including when an admin resets themself.
+                    if int(user_id) == actor.id:
+                        auth.invalidate_session()
+                users = store.list_users()
+        except UserError as exc:
+            cherrypy.response.status = 400
+            error = str(exc)
+            with contextlib.closing(UserStore(pmxbot.config.database)) as store:
+                users = store.list_users()
+        except sqlite3.Error:
+            raise cherrypy.HTTPError(503, 'User storage is unavailable') from None
+        cherrypy.response.headers['Referrer-Policy'] = 'no-referrer'
+        return (
+            jenv.overlay(autoescape=True)
+            .get_template('admin_users.html')
+            .render(
+                users=users,
+                error=error,
+                temporary_password=temporary_password,
+                **get_context(),
+            )
+            .encode('utf-8')
+        )
+
+
 class AlbumPage:
     @cherrypy.expose
     def default(self, *path, **params):
         cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
         requesting_user = (
-            auth.require_authenticated_user()
+            auth.require_permission('generate_images')
             if cherrypy.request.method == 'POST'
             else None
         )
@@ -751,6 +819,8 @@ class AlbumPage:
 
 
 class PmxbotPages:
+    admin = AdminPages()
+
     # Only the album index, gallery, and album pages are published. Keep the other
     # page classes available for when the rest of the viewer is enabled again.
     albums = AlbumPage()
@@ -833,11 +903,45 @@ class PmxbotPages:
                 cherrypy.session.clear()
                 cherrypy.session.regenerate()
                 cherrypy.session['user_id'] = user.id
+                cherrypy.session['session_version'] = user.session_version
+                if user.must_change_password:
+                    auth.redirect(pmxbot.config.web_base + '/change_password')
                 auth.redirect(auth.safe_return_to(return_to))
         page = jenv.overlay(autoescape=True).get_template('login.html')
         return page.render(
             error=error, return_to=auth.safe_return_to(return_to), **get_context()
         ).encode('utf-8')
+
+    @cherrypy.expose
+    def change_password(
+        self, current_password='', password='', password_confirmation='', csrf_token=''
+    ):
+        cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
+        user = auth.require_authenticated_user()
+        error = None
+        if cherrypy.request.query_string:
+            raise cherrypy.HTTPError(400, 'Use a form body.')
+        if cherrypy.request.method == 'POST':
+            auth.require_csrf(csrf_token)
+            auth.login_throttle.check()
+            try:
+                auth.validate_registration_password(password, password_confirmation)
+                with contextlib.closing(UserStore(pmxbot.config.database)) as store:
+                    store.change_password(user, current_password, password)
+            except UserError as exc:
+                cherrypy.response.status = 400
+                error = str(exc)
+            except sqlite3.Error:
+                raise cherrypy.HTTPError(503, 'User storage is unavailable') from None
+            else:
+                auth.invalidate_session()
+                auth.redirect(pmxbot.config.web_base + '/login')
+        return (
+            jenv.overlay(autoescape=True)
+            .get_template('change_password.html')
+            .render(error=error, **get_context())
+            .encode('utf-8')
+        )
 
     @cherrypy.expose
     def register(

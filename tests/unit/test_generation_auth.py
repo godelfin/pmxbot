@@ -103,3 +103,32 @@ def test_unsigned_post_does_not_create_storage(page):
     cache, request = page
     assert request(method='POST', data={'source_image_id': '42'})['status'] == 401
     assert not cache.database.exists()
+
+
+@pytest.mark.parametrize('page', ['', '/bot'], indirect=True)
+@pytest.mark.parametrize('role', ['user', 'admin'])
+def test_image_permission_denies_regular_users_and_administrators(
+    variation, monkeypatch, role
+):
+    cache, request, provider, hosting, values, source = variation
+    monkeypatch.setattr(auth, 'current_user', CURRENT_USER)
+    user, _ = login(cache, request)
+    with closing(UserStore(pmxbot.config.database)) as store:
+        store.update(user.id, can_generate_images=False)
+        if role == 'admin':
+            store.bootstrap_admin(user.username)
+    # Establish a fresh session after the permission change.
+    response = request(
+        '/login',
+        method='POST',
+        data={
+            'username': 'Alice',
+            'password': 'correct password',
+        },
+    )
+    assert response['status'] == 303
+    body = BeautifulSoup(request()['body'], 'html.parser')
+    assert body.select_one('#variation-form button').has_attr('disabled')
+    assert request(method='POST', data=values)['status'] == 403
+    provider.assert_not_called()
+    hosting.put_object.assert_not_called()
