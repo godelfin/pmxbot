@@ -431,6 +431,7 @@ class ImageCache:
         db = sqlite3.connect(str(self.database), timeout=20, isolation_level=None)
         db.row_factory = sqlite3.Row
         try:
+            db.execute('PRAGMA foreign_keys = ON')
             initialize_image_records(db)
         except Exception:
             db.close()
@@ -465,9 +466,10 @@ class ImageCache:
                 raise LookupError('Unknown image ID')
             return dict(row)
 
-    def get_album_page(self, album_id, source_image_id=None):
-        """Read an album and its selected or newest artwork without modifying storage."""
+    def get_album_page(self, album_id, source_image_id=None, user_id=None):
+        """Read an album and its resolved default artwork without modifying storage."""
         with closing(self.read_connection()) as db:
+            db.execute('BEGIN')
             tables = {
                 row[0]
                 for row in db.execute(
@@ -486,18 +488,19 @@ class ImageCache:
             ).fetchone()
             if row is None:
                 raise LookupError('Unknown album ID')
-            image = None
-            if {'album_images', 'image_cache'} <= tables:
-                image = db.execute(
-                    '''SELECT image_cache.* FROM image_cache
-                    JOIN album_images USING (cache_key) WHERE album_id = ?
-                    AND (? IS NULL OR image_cache.id = ?)
-                    ORDER BY image_cache.created_at DESC, image_cache.id DESC LIMIT 1''',
-                    (album_id, source_image_id, source_image_id),
-                ).fetchone()
-            if source_image_id is not None and image is None:
+            from .favorites import resolve_album_artwork
+
+            choice = resolve_album_artwork(
+                db, [album_id], user_id, source_image_id
+            ).get(album_id)
+            image = choice.image if choice else None
+            if source_image_id is not None and (
+                image is None or image['id'] != source_image_id
+            ):
                 raise LookupError('Unknown source image ID')
-            return dict(row), dict(image) if image is not None else None
+            album = dict(row)
+            album['favorite_image_id'] = choice.favorite_image_id if choice else None
+            return album, image
 
     def list_albums(self):
         """Read all album titles and bands without initializing storage."""
@@ -605,8 +608,8 @@ class ImageCache:
                 )
             ]
 
-    def gallery_albums(self, page, page_size=24, sort='date_desc'):
-        """Read one page of albums and their latest artwork without writes."""
+    def gallery_albums(self, page, page_size=24, sort='date_desc', user_id=None):
+        """Read one page of albums and their preferred artwork without writes."""
         column, direction = {
             'band': ('artist', 'asc'),
             'album': ('album', 'asc'),
@@ -614,7 +617,9 @@ class ImageCache:
             'date_desc': ('chronology', 'desc'),
             'genre': ('genre', 'asc'),
         }[sort]
-        return self.catalog_albums(page, page_size, sort=column, order=direction)
+        return self.catalog_albums(
+            page, page_size, sort=column, order=direction, user_id=user_id
+        )
 
     @staticmethod
     def _collection_query(db, q, artist, album_title, sort, order):
@@ -692,6 +697,7 @@ class ImageCache:
         album_title='',
         sort='chronology',
         order='desc',
+        user_id=None,
     ):
         """Read a filtered album page and count in one consistent read snapshot."""
         if not self.database.is_file():
@@ -707,7 +713,18 @@ class ImageCache:
                 f'SELECT * FROM ({selection}) ORDER BY {ordering} LIMIT ? OFFSET ?',
                 values + [page_size, (page - 1) * page_size],
             )
-            return [dict(row) for row in rows], total
+            albums = [dict(row) for row in rows]
+            from .favorites import resolve_album_artwork
+
+            choices = resolve_album_artwork(
+                db, [album['id'] for album in albums], user_id
+            )
+            for album in albums:
+                choice = choices.get(album['id'])
+                if choice:
+                    album['hosted_url'] = choice.image['hosted_url']
+                    album['thumb_url'] = choice.image.get('thumb_url')
+            return albums, total
 
     def album_neighbors(
         self, album_id, q='', artist='', album_title='', sort='chronology', order='desc'

@@ -456,3 +456,111 @@ for (const width of [320, 1400]) test(`browsing and editing layout and independe
   }
   await page.close();
 });
+
+test('favorite follows artwork selection, supports keyboard toggling and preserves drafts', async () => {
+  const writes = [];
+  let favorite = null;
+  const page = await setup({signed: true, handle: async route => {
+    if (!route.request().url().includes('/favorites')) return false;
+    const values = new URLSearchParams(route.request().postData());
+    writes.push(Object.fromEntries(values));
+    favorite = favorite === values.get('image_id') ? null : values.get('image_id');
+    await route.fulfill({contentType: 'application/json', body: JSON.stringify({favorite_image_id: favorite})});
+    return true;
+  }});
+  await page.evaluate(() => window.favoriteDocument = document);
+  await thumbnail(page, 43).click(); await selected(page, 43);
+  const star = page.locator('#favorite-toggle');
+  assert.equal(await star.getAttribute('aria-pressed'), 'false');
+  await page.locator('[name=description]').fill('unsaved favorite draft');
+  const url = page.url();
+  await star.focus(); await page.keyboard.press('Space');
+  await page.waitForFunction(() => document.querySelector('#favorite-toggle').getAttribute('aria-pressed') === 'true');
+  assert.equal(await star.locator('span').innerText(), '★');
+  if (process.env.BROWSER_SCREENSHOTS_DIR) {
+    fs.mkdirSync(process.env.BROWSER_SCREENSHOTS_DIR, {recursive: true});
+    await page.screenshot({path: path.join(process.env.BROWSER_SCREENSHOTS_DIR, 'favorite-selected.png'), fullPage: true});
+  }
+  assert.equal(page.url(), url);
+  assert.equal(await page.locator('[name=description]').inputValue(), 'unsaved favorite draft');
+  assert.equal(await page.evaluate(() => document === window.favoriteDocument), true);
+  assert.equal(writes[0].album_id, '42');
+  assert.equal(writes[0].image_id, '43');
+  assert.ok(writes[0].csrf_token);
+  assert.equal(writes[0].user_id, undefined);
+  await thumbnail(page, 44).click(); await selected(page, 44);
+  assert.equal(await star.getAttribute('aria-pressed'), 'false');
+  await page.goBack(); await selected(page, 43);
+  assert.equal(await star.getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('[name=description]').inputValue(), 'unsaved favorite draft');
+  await star.click();
+  await page.waitForFunction(() => document.querySelector('#favorite-toggle').getAttribute('aria-pressed') === 'false');
+  assert.equal(await star.locator('span').innerText(), '☆');
+  await page.close();
+});
+
+test('favorite failures reconcile a lost response and disable unknown state without altering artwork', async () => {
+  for (const available of [true, false]) {
+    const page = await setup({signed: true, handle: async route => {
+      if (!route.request().url().includes('/favorites')) return false;
+      if (route.request().method() === 'POST' || !available) await route.abort();
+      else await route.fulfill({contentType: 'application/json', body: '{"favorite_image_id":"43"}'});
+      return true;
+    }});
+    await thumbnail(page, 43).click(); await selected(page, 43);
+    await page.locator('[name=description]').fill('keep my draft');
+    await page.locator('#favorite-toggle').click();
+    await page.waitForFunction(() => document.querySelector('#favorite-status').textContent.includes('Could not') || document.querySelector('#favorite-toggle').getAttribute('aria-pressed') === 'mixed');
+    assert.equal(await page.locator('#favorite-toggle').getAttribute('aria-pressed'), available ? 'true' : 'mixed');
+    assert.equal(await page.locator('#favorite-toggle').isDisabled(), !available);
+    assert.equal(await page.locator('[name=source_image_id]').inputValue(), '43');
+    assert.equal(await page.locator('[name=description]').inputValue(), 'keep my draft');
+    await page.close();
+  }
+});
+
+test('a favorite save finishing after navigation updates the current star correctly', async () => {
+  let finish;
+  const page = await setup({signed: true, handle: async route => {
+    if (!route.request().url().includes('/favorites')) return false;
+    await new Promise(resolve => finish = resolve);
+    await route.fulfill({contentType: 'application/json', body: '{"favorite_image_id":"42"}'});
+    return true;
+  }});
+  await page.locator('#favorite-toggle').click();
+  await page.waitForFunction(() => document.querySelector('#favorite-toggle').disabled);
+  await thumbnail(page, 43).click(); await selected(page, 43);
+  assert.equal(await page.locator('#favorite-toggle').isDisabled(), true);
+  finish();
+  await page.waitForFunction(() => !document.querySelector('#favorite-toggle').disabled);
+  assert.equal(await page.locator('#favorite-toggle').getAttribute('aria-pressed'), 'false');
+  await page.goBack(); await selected(page, 42);
+  assert.equal(await page.locator('#favorite-toggle').getAttribute('aria-pressed'), 'true');
+  await page.close();
+});
+
+test('Back restores the original default selection after a favorite change on a queryless URL', async () => {
+  let favorite = null;
+  const page = await setup({signed: true, handle: async route => {
+    const request = route.request();
+    if (request.url().includes('/favorites')) {
+      favorite = '43';
+      await route.fulfill({contentType: 'application/json', body: '{"favorite_image_id":"43"}'});
+      return true;
+    }
+    if (favorite && !new URL(request.url()).searchParams.has('source_image_id')) {
+      await route.fulfill({contentType: 'application/json', body: fs.readFileSync(path.join(fixtures, '43-signed.json'), 'utf8')});
+      return true;
+    }
+    return false;
+  }});
+  await page.goto('http://album.test/bot/albums/42');
+  await thumbnail(page, 43).click(); await selected(page, 43);
+  await page.locator('#favorite-toggle').click();
+  await page.waitForFunction(() => document.querySelector('#favorite-toggle').getAttribute('aria-pressed') === 'true');
+  await thumbnail(page, 44).click(); await selected(page, 44);
+  await page.goBack(); await selected(page, 43);
+  await page.goBack(); await selected(page, 42);
+  assert.equal(new URL(page.url()).searchParams.has('source_image_id'), false);
+  await page.close();
+});

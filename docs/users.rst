@@ -143,3 +143,43 @@ Account edits include before/after values; resets record only the mandatory
 change flag. Passwords and hashes are excluded. Failed operations roll back and
 do not produce successful-action audit entries. Back up this table with the
 main database. No email recovery or registration behavior is changed.
+
+Favorite album artwork
+----------------------
+
+Every enabled, authenticated user may favorite artwork, including users without
+image-generation permission. Favorites are independent of administrator roles
+and of any future image ratings. A favorite chooses the version that represents
+an album; it does not rate image quality.
+
+Albums with at least two artwork versions show a star beside the selected image.
+Select the outlined star to save that version as your favorite, replacing your
+previous choice for the album. Select the filled star to remove your preference.
+The button supports keyboard activation and announces save results. Saving uses
+a CSRF-protected asynchronous request and preserves the selected artwork,
+browser history and unsaved generation settings. If a response is lost, the page
+rechecks your saved preference. If that also fails, reload to verify the state.
+
+Gallery covers and initial album artwork use the same selection rules:
+
+#. A valid explicit image selection takes precedence (including shared URLs and
+   history navigation).
+#. Your personal favorite wins when present.
+#. Without a personal favorite, a unique leader in aggregate favorites wins.
+#. Tied or zero counts retain the newest-image fallback: creation timestamp
+   descending, then image ID descending.
+
+Album order, pagination and missing-thumbnail fallbacks remain unchanged.
+Favorites affect subsequent page loads, without automatically changing artwork
+already selected in an open album page. Individual users' preferences are not
+listed publicly; anonymous visitors see only the resulting default artwork.
+
+``pmxbot.favorites.FavoriteStore`` initializes the additive SQLite schema when
+first used for a mutation. Read-only gallery and album requests work unchanged
+on databases without this table. ``user_album_favorites`` stores user, album,
+image, creation timestamp and a cache key used to enforce image membership with
+composite foreign keys. The primary key is ``(user_id, album_id)``. Deleting a
+user, album, image or album/image link cascades to its favorite records when
+using the application's foreign-key-enabled connections. Other user and artwork
+records are preserved. Toggle operations serialize with ``BEGIN IMMEDIATE``;
+cover selection batches a gallery page in a fixed number of queries.

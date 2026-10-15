@@ -25,6 +25,7 @@ import pmxbot.albums
 import pmxbot.styles
 import pmxbot.logging
 import pmxbot.util
+from pmxbot.favorites import FavoriteError, FavoriteStore
 from pmxbot.images import ImageCache, ImageError
 from pmxbot.users import InvalidCredentials, UserError, UserStore, UsernameTaken
 from pmxbot.web import auth
@@ -654,9 +655,13 @@ class AlbumPage:
             params or explicit_operation or submission_token is not None
         ):
             raise cherrypy.HTTPError(400, 'Unexpected variation fields')
+        context = get_context()
+        user = context['current_user']
         try:
             cache = ImageCache(pmxbot.config)
-            album, image = cache.get_album_page(int(value), source_id)
+            album, image = cache.get_album_page(
+                int(value), source_id, user.id if user else None
+            )
             neighbors = cache.album_neighbors(int(value), **browsing_filters)
             image_history = cache.album_image_history(int(value))
             failures = cache.album_image_failures(int(value))
@@ -664,7 +669,6 @@ class AlbumPage:
             raise cherrypy.HTTPError(404, 'Unknown album ID') from None
         except (sqlite3.Error, OSError, ImageError):
             raise cherrypy.HTTPError(503, 'Album storage is unavailable') from None
-        context = get_context()
         context['pending_jobs'] = []
         try:
             context['pending_jobs'] = [
@@ -882,6 +886,44 @@ class PmxbotPages:
         )
 
     @cherrypy.expose
+    def favorites(self, album_id='', image_id='', csrf_token=''):
+        cherrypy.lib.cptools.allow(['GET', 'POST'])
+        user = auth.require_authenticated_user()
+        if cherrypy.request.method == 'POST':
+            auth.require_csrf(csrf_token)
+            if cherrypy.request.query_string:
+                raise cherrypy.HTTPError(400, 'Use a form body.')
+        for value in (
+            (album_id, image_id) if cherrypy.request.method == 'POST' else (album_id,)
+        ):
+            if (
+                not isinstance(value, str)
+                or not re.fullmatch(r'[0-9]{1,19}', value)
+                or not 0 < int(value) <= 2**63 - 1
+            ):
+                raise cherrypy.HTTPError(400, 'Invalid album or image ID.')
+        try:
+            cache = ImageCache(pmxbot.config)
+            if cherrypy.request.method == 'POST':
+                favorite = FavoriteStore(cache.database).toggle(
+                    user, int(album_id), int(image_id)
+                )
+            else:
+                album, _ = cache.get_album_page(int(album_id), user_id=user.id)
+                favorite = album['favorite_image_id']
+        except FavoriteError as exc:
+            raise cherrypy.HTTPError(400, str(exc)) from None
+        except PermissionError:
+            raise cherrypy.HTTPError(401, 'Sign in again.') from None
+        except LookupError:
+            raise cherrypy.HTTPError(404, 'Unknown album ID') from None
+        except (sqlite3.Error, OSError, ImageError):
+            raise cherrypy.HTTPError(503, 'Favorite storage is unavailable') from None
+        return json_response(
+            {'favorite_image_id': str(favorite) if favorite is not None else None}
+        )
+
+    @cherrypy.expose
     def login(self, username='', password='', csrf_token='', return_to=''):
         cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
         error = None
@@ -1039,10 +1081,19 @@ class PmxbotPages:
         album_title = album_title.strip()
         page_number = int(page)
 
+        context = get_context()
+        user = context['current_user']
         try:
             cache = ImageCache(pmxbot.config)
             albums, total = cache.catalog_albums(
-                page_number, COLLECTION_PAGE_SIZE, q, artist, album_title, sort, order
+                page_number,
+                COLLECTION_PAGE_SIZE,
+                q,
+                artist,
+                album_title,
+                sort,
+                order,
+                user_id=user.id if user else None,
             )
             leaderboard = cache.generation_leaderboard() if view == 'list' else []
         except (sqlite3.Error, ImageError):
@@ -1109,7 +1160,7 @@ class PmxbotPages:
             collection_path=pmxbot.config.web_base
             + ('/gallery' if view == 'gallery' else '/'),
             **filters,
-            **get_context(),
+            **context,
         ).encode('utf-8')
 
 

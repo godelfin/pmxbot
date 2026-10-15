@@ -33,3 +33,13 @@ previous image, matching source and draft; Retry repeats the failed selection.
 CI retains desktop (1400px) and mobile (320px) screenshots of collection views
 and album editing states in the `ui-screenshots` artifact for seven days. Set
 `BROWSER_SCREENSHOTS_DIR` when running locally to capture the same views.
+
+
+Authenticated users can choose one favorite artwork per album using the star
+below the selected image, when multiple versions exist. The control works after
+history selection and keyboard activation, preserves unsaved generation values,
+and announces saves or failures. Lost responses trigger a status reconciliation;
+unknown state disables the control until reload. Favorites do not change an
+explicit selection or Back/Forward history. Browser checks cover these behaviors,
+including a save completing after selection changes. The screenshot artifact
+includes a filled favorite star with an unsaved generation draft.
