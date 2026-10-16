@@ -12,9 +12,12 @@ ul { padding: 1.25rem 1.25rem 1.25rem 2.5rem; background: white; border: 1px sol
 li + li { margin-top: .5rem; }
 a { color: #135ba1; }
 a:focus-visible, button:focus-visible { outline: 3px solid #135ba1; outline-offset: 4px; }
-.leaderboard { box-sizing: border-box; flex: 1 1 24rem; min-width: 0; max-width: 28rem; margin: 1.25rem 0; padding: 1rem; background: white; border: 1px solid #d4dbe2; border-radius: .5rem; }
-.leaderboard h2 { margin: 0; font-size: 1.125rem; }
-.leaderboard p { margin: .25rem 0 .75rem; }
+.community-panels { display: flex; flex-wrap: wrap; gap: 1.25rem; margin: 1.25rem 0; }
+.leaderboard, .account-features { box-sizing: border-box; flex: 1 1 24rem; min-width: 0; margin: 0; padding: 1rem; background: white; border: 1px solid #d4dbe2; border-radius: .5rem; }
+.leaderboard h2, .account-features h2 { margin: 0; font-size: 1.125rem; }
+.leaderboard p, .account-features p { margin: .25rem 0 .75rem; }
+.account-features ul { margin: .75rem 0; padding: 0 0 0 1.25rem; border: 0; border-radius: 0; background: transparent; }
+.account-signup { display: inline-block; margin-top: .25rem; padding: .45rem .85rem; border-radius: .25rem; background: #135ba1; color: white; font-weight: bold; text-decoration: none; }
 table { width: 100%; border-collapse: collapse; overflow-wrap: anywhere; }
 th, td { padding: .25rem .5rem; text-align: left; }
 th:last-child, td:last-child { text-align: right; }
@@ -57,6 +60,7 @@ th:last-child, td:last-child { text-align: right; }
 </tbody>
 </table>
 {% with pagination_position='bottom' %}{% include "collection_pagination.html" %}{% endwith %}
+<div class="community-panels">
 {% if leaderboard %}
 <section class="leaderboard" aria-labelledby="leaderboard-heading">
 <h2 id="leaderboard-heading">Top album image generators</h2>
@@ -71,6 +75,16 @@ th:last-child, td:last-child { text-align: right; }
 </table>
 </section>
 {% endif %}
+<section class="account-features" aria-labelledby="account-features-heading">
+<h2 id="account-features-heading">Get more with an account</h2>
+<ul>
+<li>Generate new images and edit existing artwork.</li>
+<li>Choose your favorite album covers.</li>
+<li>Torta Mode.</li>
+</ul>
+<a class="account-signup" href="{{ base }}/register">Create an account</a>
+</section>
+</div>
 </main>
 {% include "collection_scroll.html" %}
 </body>
