@@ -608,7 +608,9 @@ class ImageCache:
                 )
             ]
 
-    def gallery_albums(self, page, page_size=24, sort='date_desc', user_id=None):
+    def gallery_albums(
+        self, page, page_size=24, sort='date_desc', user_id=None, include_nsfw=False
+    ):
         """Read one page of albums and their preferred artwork without writes."""
         column, direction = {
             'band': ('artist', 'asc'),
@@ -618,11 +620,16 @@ class ImageCache:
             'genre': ('genre', 'asc'),
         }[sort]
         return self.catalog_albums(
-            page, page_size, sort=column, order=direction, user_id=user_id
+            page,
+            page_size,
+            sort=column,
+            order=direction,
+            user_id=user_id,
+            include_nsfw=include_nsfw,
         )
 
     @staticmethod
-    def _collection_query(db, q, artist, album_title, sort, order):
+    def _collection_query(db, q, artist, album_title, sort, order, include_nsfw=False):
         """Share filtering, sort keys, and deterministic ties with album navigation."""
         columns = {
             'artist': 'artist_sort',
@@ -647,6 +654,15 @@ class ImageCache:
             return None
         db.create_function('casefold', 1, lambda value: value.casefold())
         conditions, values = [], []
+        if not include_nsfw:
+            db.create_function(
+                'is_torta',
+                1,
+                lambda value: bool(
+                    re.search(r'\btortas?\b', value or '', re.IGNORECASE)
+                ),
+            )
+            conditions.append('NOT (is_torta(albums.title) OR is_torta(artists.name))')
         if q:
             conditions.append(
                 '(instr(casefold(albums.title), ?) > 0 OR instr(casefold(artists.name), ?) > 0)'
@@ -698,13 +714,16 @@ class ImageCache:
         sort='chronology',
         order='desc',
         user_id=None,
+        include_nsfw=False,
     ):
         """Read a filtered album page and count in one consistent read snapshot."""
         if not self.database.is_file():
             return [], 0
         with closing(self.read_connection()) as db:
             db.execute('BEGIN')
-            query = self._collection_query(db, q, artist, album_title, sort, order)
+            query = self._collection_query(
+                db, q, artist, album_title, sort, order, include_nsfw
+            )
             if query is None:
                 return [], 0
             selection, ordering, source, values = query
@@ -727,13 +746,22 @@ class ImageCache:
             return albums, total
 
     def album_neighbors(
-        self, album_id, q='', artist='', album_title='', sort='chronology', order='desc'
+        self,
+        album_id,
+        q='',
+        artist='',
+        album_title='',
+        sort='chronology',
+        order='desc',
+        include_nsfw=False,
     ):
         """Find neighbors across the entire filtered collection, ignoring page limits."""
         empty = dict(previous=None, next=None)
         with closing(self.read_connection()) as db:
             db.execute('BEGIN')
-            query = self._collection_query(db, q, artist, album_title, sort, order)
+            query = self._collection_query(
+                db, q, artist, album_title, sort, order, include_nsfw
+            )
             if query is None:
                 return empty
             selection, ordering, _, values = query

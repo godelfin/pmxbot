@@ -183,3 +183,26 @@ user, album, image or album/image link cascades to its favorite records when
 using the application's foreign-key-enabled connections. Other user and artwork
 records are preserved. Toggle operations serialize with ``BEGIN IMMEDIATE``;
 cover selection batches a gallery page in a fixed number of queries.
+
+Torta Mode
+----------
+
+Signed-in users see a **Torta Mode** checkbox beside **Sign out** in the header
+on every page. It defaults to off and is stored per account in the SQLite
+``users.nsfw`` boolean column. Existing databases gain this column additively;
+existing user identities, hashes, roles and other permissions remain unchanged.
+The setting is independent of image generation and administrator access, so any
+enabled signed-in user may enable or disable it for their own account.
+
+When off, list and gallery views omit albums whose band name or album title
+contains the whole word ``torta`` or ``tortas``, ignoring case. This applies to
+search results, result counts, pagination and Previous/Next album navigation.
+Longer words such as ``Tortasaurus`` and ``Retorta`` remain visible. Enabling
+Torta Mode removes this filter for that user. Direct album URLs remain readable
+regardless of the setting.
+
+Anonymous visitors see neither the checkbox nor its label and always receive
+filtered collections. Signing out restores that behavior; signing back in
+restores the account's saved setting. Changes require an authenticated,
+CSRF-protected POST and do not revoke existing sessions. The checkbox submits
+on change; without JavaScript, use its **Save Torta Mode** button.

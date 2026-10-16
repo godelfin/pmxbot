@@ -79,6 +79,7 @@ def redact_auth_query():
             '/change_password',
             '/admin/users',
             '/favorites',
+            '/torta_mode',
         )
     ):
         request.request_line = '{} {} {}'.format(

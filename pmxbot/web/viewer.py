@@ -662,7 +662,11 @@ class AlbumPage:
             album, image = cache.get_album_page(
                 int(value), source_id, user.id if user else None
             )
-            neighbors = cache.album_neighbors(int(value), **browsing_filters)
+            neighbors = cache.album_neighbors(
+                int(value),
+                include_nsfw=bool(user and user.has_permission('nsfw')),
+                **browsing_filters,
+            )
             image_history = cache.album_image_history(int(value))
             failures = cache.album_image_failures(int(value))
         except LookupError:
@@ -886,6 +890,24 @@ class PmxbotPages:
         )
 
     @cherrypy.expose
+    def torta_mode(self, enabled='0', csrf_token='', return_to=''):
+        user = auth.require_authenticated_user()
+        auth.require_csrf(csrf_token)
+        if cherrypy.request.query_string:
+            raise cherrypy.HTTPError(400, 'Use a form body.')
+        if enabled not in ('0', '1'):
+            raise cherrypy.HTTPError(400, 'Invalid Torta Mode setting.')
+        try:
+            with contextlib.closing(UserStore(pmxbot.config.database)) as store:
+                store.set_nsfw(user, enabled == '1')
+        except InvalidCredentials:
+            auth.invalidate_session()
+            raise cherrypy.HTTPError(401, 'Sign in again.') from None
+        except (sqlite3.Error, UserError):
+            raise cherrypy.HTTPError(503, 'User storage is unavailable') from None
+        auth.redirect(auth.safe_return_to(return_to))
+
+    @cherrypy.expose
     def favorites(self, album_id='', image_id='', csrf_token=''):
         cherrypy.lib.cptools.allow(['GET', 'POST'])
         user = auth.require_authenticated_user()
@@ -1094,6 +1116,7 @@ class PmxbotPages:
                 sort,
                 order,
                 user_id=user.id if user else None,
+                include_nsfw=bool(user and user.has_permission('nsfw')),
             )
             leaderboard = cache.generation_leaderboard() if view == 'list' else []
         except (sqlite3.Error, ImageError):
