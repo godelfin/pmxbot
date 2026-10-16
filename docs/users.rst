@@ -197,8 +197,9 @@ The setting is independent of image generation and administrator access, so any
 enabled signed-in user may enable or disable it for their own account.
 
 When off, list and gallery views omit albums whose band name or album title
-contains the whole word ``torta`` or ``tortas``, ignoring case. This applies to
-search results, result counts, pagination and Previous/Next album navigation.
+contains the whole word ``torta``, ``tortas``, ``nalga`` or ``nalgas``, ignoring
+case. This applies to search results, result counts, pagination and Previous/Next
+album navigation.
 Longer words such as ``Tortasaurus`` and ``Retorta`` remain visible. Enabling
 Torta Mode removes this filter for that user. Direct album URLs remain readable
 regardless of the setting.

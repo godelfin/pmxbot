@@ -84,6 +84,13 @@ def test_additive_migration_preserves_users_and_permissions(tmp_path):
         ('Band', 'Retorta', True),
         ('Band', 'Tortas2', True),
         ('Band', 'Ordinary', True),
+        ('Nalga', 'Album', False),
+        ('NALGAS!', 'Album', False),
+        ('A nalga band', 'Album', False),
+        ('Band', 'A Nalga!', False),
+        ('Band', 'The nalgas-song', False),
+        ('Nalgasaurus', 'Album', True),
+        ('Band', 'Nalgas2', True),
     ],
 )
 def test_whole_word_matching(collection, artist, title, visible):
