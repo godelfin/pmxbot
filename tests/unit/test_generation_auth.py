@@ -133,3 +133,125 @@ def test_image_permission_denies_regular_users_and_administrators(
     assert request(method='POST', data=values)['status'] == 403
     provider.assert_not_called()
     hosting.put_object.assert_not_called()
+
+
+@pytest.mark.parametrize('page', ['', '/bot'], indirect=True)
+def test_registered_user_can_use_preferences_but_image_tools_require_grant(
+    variation, monkeypatch
+):
+    from pmxbot.music import MusicLibrary
+
+    cache, request, provider, hosting, values, _source = variation
+    monkeypatch.setattr(auth, 'current_user', CURRENT_USER)
+    password = 'NewAccountPassword123'
+    assert (
+        request(
+            '/register',
+            method='POST',
+            data={
+                'username': 'NewUser',
+                'password': password,
+                'password_confirmation': password,
+            },
+        )['status']
+        == 303
+    )
+    assert (
+        request(
+            '/login',
+            method='POST',
+            data={
+                'username': 'NewUser',
+                'password': password,
+            },
+        )['status']
+        == 303
+    )
+    with closing(UserStore(pmxbot.config.database)) as store:
+        user = store.get_by_username('NewUser')
+        assert user.enabled and not user.can_generate_images and not user.is_admin
+    # Two artwork versions allow choosing a personal favorite without approval.
+    with closing(cache.connect()) as db:
+        db.execute(
+            """INSERT INTO image_cache
+            (id, cache_key, prompt, normalized_prompt, settings_json, local_filename,
+             hosted_url, generation_metadata_json)
+            VALUES (43, 'second', '', '', '{}', '/unused', 'https://art.example/second', '{}')"""
+        )
+    MusicLibrary(cache.database).record_image(42, 'second')
+    csrf = BeautifulSoup(request()['body'], 'html.parser').select_one(
+        '[name=csrf_token]'
+    )['value']
+    favorite = request(
+        '/favorites',
+        method='POST',
+        data={
+            'album_id': '42',
+            'image_id': '42',
+            'csrf_token': csrf,
+        },
+    )
+    assert favorite['status'] == 200
+    assert json.loads(favorite['body']) == {'favorite_image_id': '42'}
+    assert (
+        request(
+            '/torta_mode',
+            method='POST',
+            data={
+                'enabled': '1',
+                'csrf_token': csrf,
+            },
+        )['status']
+        == 303
+    )
+    assert request()['status'] == 200
+    with closing(UserStore(pmxbot.config.database)) as store:
+        assert store.get_by_id(user.id).nsfw
+        assert not store.get_by_id(user.id).can_generate_images
+    for operation in ('edit', 'create_new'):
+        assert (
+            request(
+                method='POST',
+                data={
+                    **values,
+                    'operation': operation,
+                    'submission_token': 'a' * 32,
+                },
+                accept='application/json',
+            )['status']
+            == 403
+        )
+    provider.assert_not_called()
+    hosting.put_object.assert_not_called()
+    # Granting image permission still revokes the old session, then allows tools.
+    with closing(UserStore(pmxbot.config.database)) as store:
+        store.update(user.id, can_generate_images=True)
+    assert request(method='POST', data=values)['status'] == 401
+    assert (
+        request(
+            '/login',
+            method='POST',
+            data={
+                'username': 'NewUser',
+                'password': password,
+            },
+        )['status']
+        == 303
+    )
+    for operation, token in (('edit', 'b' * 32), ('create_new', 'c' * 32)):
+        response = request(
+            method='POST',
+            data={
+                **values,
+                'operation': operation,
+                'submission_token': token,
+            },
+            accept='application/json',
+        )
+        assert response['status'] == 202
+    assert (
+        json.loads(request('/favorites?album_id=42')['body'])['favorite_image_id']
+        == '42'
+    )
+    provider.assert_not_called()
+    hosting.put_object.assert_not_called()

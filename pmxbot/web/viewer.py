@@ -1026,7 +1026,7 @@ class PmxbotPages:
             try:
                 auth.validate_registration_password(password, password_confirmation)
                 with contextlib.closing(UserStore(pmxbot.config.database)) as store:
-                    store.create(username, password=password, enabled=False)
+                    store.create(username, password=password, enabled=True)
             except UsernameTaken:
                 error = 'That username is already registered.'
             except UserError as exc:

@@ -35,6 +35,7 @@ def page(tmp_path, monkeypatch, request):
         logo='/bot/pmxbot.png',
     )
     monkeypatch.setattr(pmxbot, 'config', config)
+    monkeypatch.setattr(auth, 'login_throttle', auth.LoginThrottle())
     cache = ImageCache(pmxbot.config)
     monkeypatch.setattr(
         ImageCache, 'generate', Mock(side_effect=AssertionError('generation'))

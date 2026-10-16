@@ -73,8 +73,10 @@ Passwords accept 1–1024 Unicode characters, including spaces, without trimming
 normalization, or truncation. This is a storage limit, not a password strength
 policy. Administrators provision strong passwords; web transport, rate limiting,
 and sessions are documented in :doc:`deployment`. Web registration enforces
-matching passwords and its strength policy, and creates disabled accounts
-awaiting administrator approval. Administrators can reset passwords through the
+matching passwords and its strength policy, and creates active accounts that
+can sign in immediately, save favorite covers and enable Torta Mode. Image
+creation and editing remain disabled until an administrator explicitly grants
+image-generation permission. Administrators can reset passwords through the
 user-management page.
 
 
@@ -108,8 +110,8 @@ This explicit operation takes no password on the command line, is audited, and
 refuses to run while an active administrator exists. It preserves all image
 permissions. Bootstrap invalidates the user's existing sessions; sign in again.
 Restrict operating-system access to the database and this shell. If no user
-exists yet, provision one with ``UserStore.create(..., password=...)`` in a
-trusted Python session, or approve a registered account using the local API.
+exists yet, register through the web form or provision one with
+``UserStore.create(..., password=...)`` in a trusted Python session.
 
 Administrators see **Administration → Users** in the navigation. The page lists
 all accounts and allows changing role, image permission and active status.
@@ -142,7 +144,7 @@ for local bootstrap), target ID, action, SQLite UTC timestamp and JSON changes.
 Account edits include before/after values; resets record only the mandatory
 change flag. Passwords and hashes are excluded. Failed operations roll back and
 do not produce successful-action audit entries. Back up this table with the
-main database. No email recovery or registration behavior is changed.
+main database. Email-based password recovery is not provided.
 
 Favorite album artwork
 ----------------------
