@@ -115,7 +115,8 @@ def test_opt_in_is_personal_persistent_and_logout_restores_filter(web, collectio
     cache, hidden, _ = collection
     for view in ('/', '/gallery'):
         body = web.request(view)['body']
-        assert 'Torta Mode' not in body and 'Las Tortas' not in body
+        header = BeautifulSoup(body, 'html.parser').select_one('.site-header')
+        assert 'Torta Mode' not in header.get_text() and 'Las Tortas' not in body
     assert web.login()['status'] == 303
     assert mode(web)['status'] == 303
     assert (
@@ -133,7 +134,9 @@ def test_opt_in_is_personal_persistent_and_logout_restores_filter(web, collectio
     assert (
         web.request('/logout', 'POST', {'csrf_token': web.token('/')})['status'] == 303
     )
-    assert 'Torta Mode' not in web.request('/')['body']
+    assert not BeautifulSoup(web.request('/')['body'], 'html.parser').select(
+        '.torta-mode'
+    )
     assert 'Las Tortas' not in web.request('/gallery')['body']
     # Direct URLs are readable both signed out and with filtering enabled.
     assert web.request('/albums/' + str(hidden[0]['id']))['status'] == 200

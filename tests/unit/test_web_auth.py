@@ -359,34 +359,30 @@ def registration(web, **overrides):
     return web.request('/register', 'POST', data)
 
 
-def test_registration_creates_disabled_salted_credentials(web):
+def test_registration_creates_active_account_without_image_permission(web):
     response = registration(web)
     assert response['status'] == 303
     assert response['headers']['Location'] == web.base + '/register?created=1'
-    assert (
-        'awaiting administrator approval' in web.request('/register?created=1')['body']
-    )
+    assert 'You can sign in now.' in web.request('/register?created=1')['body']
     with closing(UserStore(pmxbot.config.database)) as store:
         user = store.get_by_username('newuser')
-        assert user.username == 'NewUser' and not user.enabled and not user.can_pair_irc
+        assert user.username == 'NewUser' and user.enabled and not user.can_pair_irc
         assert not user.can_generate_images
         assert store.db.execute(
             'SELECT enabled FROM users WHERE id = ?', (user.id,)
-        ).fetchone() == (0,)
+        ).fetchone() == (1,)
         encoded = store.db.execute(
             'SELECT password_hash FROM user_passwords WHERE user_id = ?', (user.id,)
         ).fetchone()[0]
         assert encoded.startswith('pbkdf2_sha256$600000$')
         assert 'ValidPassword123' not in encoded
-        from pmxbot.users import InvalidCredentials
-
-        with pytest.raises(InvalidCredentials):
-            store.authenticate('newuser', 'ValidPassword123')
-        store.update(user.id, enabled=True)
         approved = store.authenticate('newuser', 'ValidPassword123')
         assert approved.id == user.id
         assert not approved.has_permission('generate_images')
+        assert not approved.is_admin and not approved.nsfw
     assert web.request('/protected')['status'] == 401
+    assert web.login(username='newuser', password='ValidPassword123')['status'] == 303
+    assert web.request('/protected')['status'] == 200
 
 
 @pytest.mark.parametrize(

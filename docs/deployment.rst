@@ -195,10 +195,12 @@ Web authentication
 
 Accounts can be provisioned by administrators or requested through the web
 registration form. Registration requires matching passwords of 12–1024 characters
-with uppercase and lowercase letters and a number. New web accounts are disabled
-until an administrator enables them; registration never signs the applicant in.
-For example, use ``store.update(store.get_by_username('Alice').id, enabled=True)``
-inside the administrator session below after approving the account.
+with uppercase and lowercase letters and a number. New web accounts are active
+and can sign in immediately after registration; registration itself does not
+sign the applicant in. Users can save favorite covers and enable Torta Mode.
+Image creation and editing require a separate administrator grant of
+``can_generate_images`` through **Administration → Users**. Existing disabled
+accounts stay disabled until an administrator explicitly enables them.
 
 To provision an account directly in the main SQLite database, use an
 administrator's interactive Python session on the server (using the service
@@ -222,7 +224,7 @@ Bootstrap the first administrator from a trusted server shell::
 
 The account must be enabled and have a password. Bootstrap refuses to run if an
 active administrator already exists. Sign in again, then use
-**Administration → Users** to approve accounts, assign roles, independently
+**Administration → Users** to enable or disable accounts, assign roles, independently
 allow or deny image generation, and reset passwords. Reset passwords are
 random temporary secrets shown once, and users must replace them after signing
 in. Communicate them through a trusted private channel. See :doc:`users` for
