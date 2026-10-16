@@ -20,6 +20,12 @@
 <a href="{{ base|e }}/logout" hidden>Sign out</a>
 <button type="submit">Sign out</button>
 </form>
+<form class="torta-mode" action="{{ base|e }}/torta_mode" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token|e }}" />
+<input type="hidden" name="return_to" value="{{ (base ~ request.path_info ~ ('?' ~ request.query_string if request.query_string else ''))|e }}" />
+<label><input type="checkbox" name="enabled" value="1"{% if current_user.nsfw %} checked{% endif %} /> Torta Mode</label>
+<button type="submit">Save Torta Mode</button>
+</form>
 {% else %}
 <a href="{{ base|e }}/login?return_to={{ (base ~ request.path_info ~ ('?' ~ request.query_string if request.query_string else ''))|urlencode }}">Sign in</a>
 {% endif %}
@@ -28,7 +34,8 @@
 {% if current_user %}
 <script>
 (function () {
-    const form = document.currentScript.previousElementSibling.querySelector('form');
+    const header = document.currentScript.previousElementSibling;
+    const form = header.querySelector('form[action$="/logout"]');
     const link = form.querySelector('a');
     link.addEventListener('click', function (event) {
         event.preventDefault();
@@ -36,6 +43,9 @@
     });
     link.hidden = false;
     form.querySelector('button').hidden = true;
+    const mode = header.querySelector('.torta-mode');
+    mode.querySelector('input[type=checkbox]').addEventListener('change', () => mode.requestSubmit());
+    mode.querySelector('button').hidden = true;
 })();
 </script>
 {% endif %}

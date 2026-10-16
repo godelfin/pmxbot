@@ -564,3 +564,39 @@ test('Back restores the original default selection after a favorite change on a 
   assert.equal(new URL(page.url()).searchParams.has('source_image_id'), false);
   await page.close();
 });
+
+test('Torta Mode is private to signed-in users and submits its CSRF-protected checkbox', async () => {
+  const anonymous = await setup();
+  assert.equal(await anonymous.getByLabel('Torta Mode', {exact: true}).count(), 0);
+  assert.equal(await anonymous.getByText('Torta Mode', {exact: true}).count(), 0);
+  await anonymous.close();
+  const writes = [];
+  const page = await setup({signed: true, handle: async route => {
+    if (!route.request().url().includes('/torta_mode')) return false;
+    writes.push(Object.fromEntries(new URLSearchParams(route.request().postData())));
+    await route.fulfill({contentType: 'text/html', body: fs.readFileSync(path.join(fixtures, '42-signed.html'), 'utf8')});
+    return true;
+  }});
+  const checkbox = page.getByLabel('Torta Mode', {exact: true});
+  assert.equal(await checkbox.isChecked(), false);
+  assert.equal(await page.getByRole('button', {name: 'Save Torta Mode', exact: true}).isVisible(), false);
+  await Promise.all([page.waitForNavigation(), checkbox.check()]);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].enabled, '1');
+  assert.ok(writes[0].csrf_token);
+  assert.equal(writes[0].return_to, '/bot/albums/42?source_image_id=42');
+  assert.equal(writes[0].user_id, undefined);
+  // Adding a second navigation form must not break the sign-out link.
+  let logout = false;
+  await page.route('**/logout', async route => {
+    logout = route.request().method() === 'POST' && new URLSearchParams(route.request().postData()).has('csrf_token');
+    await route.fulfill({status: 200, body: 'Signed out'});
+  });
+  await Promise.all([page.waitForNavigation(), page.getByRole('link', {name: 'Sign out', exact: true}).click()]);
+  assert.equal(logout, true);
+  await page.close();
+  const noJS = await setup({signed: true, javascript: false});
+  assert.equal(await noJS.getByLabel('Torta Mode', {exact: true}).isVisible(), true);
+  assert.equal(await noJS.getByRole('button', {name: 'Save Torta Mode', exact: true}).isVisible(), true);
+  await noJS.close();
+});

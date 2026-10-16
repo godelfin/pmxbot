@@ -36,7 +36,7 @@ class InvalidCredentials(UserError):
 _PASSWORD_ITERATIONS = 600_000
 _USER_COLUMNS = (
     'id, username, normalized_username, display_name, created_at, enabled, can_pair_irc, '
-    'role, can_generate_images, must_change_password, session_version'
+    'role, can_generate_images, must_change_password, session_version, nsfw'
 )
 
 
@@ -107,13 +107,18 @@ class User:
     must_change_password: bool = False
     session_version: int = field(default=0, compare=False, repr=False)
 
+    nsfw: bool = False
+
     def has_permission(self, permission):
         """Explicit capabilities remain independent of administrative roles."""
         return (
             self.enabled
             and not self.must_change_password
-            and permission in ('generate_images', 'pair_irc')
-            and getattr(self, 'can_' + permission)
+            and {
+                'generate_images': self.can_generate_images,
+                'pair_irc': self.can_pair_irc,
+                'nsfw': self.nsfw,
+            }.get(permission, False)
         )
 
     @property
@@ -186,6 +191,7 @@ class UserStore(SQLiteStorage):
                     'INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))',
                 ),
                 ('session_version', 'INTEGER NOT NULL DEFAULT 0'),
+                ('nsfw', 'INTEGER NOT NULL DEFAULT 0 CHECK (nsfw IN (0, 1))'),
             ):
                 if name not in columns:
                     self.db.execute(f'ALTER TABLE users ADD COLUMN {name} {definition}')
@@ -220,6 +226,7 @@ class UserStore(SQLiteStorage):
             bool(row[8]),
             bool(row[9]),
             row[10],
+            bool(row[11]),
         )
 
     def get_by_id(self, user_id):
@@ -438,6 +445,23 @@ class UserStore(SQLiteStorage):
             key: {'before': getattr(user, key), 'after': value}
             for key, value in changes.items()
         }
+
+    def set_nsfw(self, user, enabled):
+        """Save this user's browsing preference without revoking their sessions."""
+        if type(enabled) is not bool:
+            raise UserError('Torta Mode must be a boolean.')
+        with self._transaction():
+            fresh = self.get_by_id(user.id)
+            if (
+                not fresh.enabled
+                or fresh.must_change_password
+                or fresh.session_version != user.session_version
+            ):
+                raise InvalidCredentials('Sign in again.')
+            self.db.execute(
+                'UPDATE users SET nsfw = ? WHERE id = ?', (enabled, user.id)
+            )
+        return self.get_by_id(user.id)
 
     def admin_update(self, actor, target_id, *, role, enabled, can_generate_images):
         if (
