@@ -70,6 +70,22 @@ provider, or changes synchronization metadata or cooldown. These restrictions
 apply only to live IRC updates; the local import utility remains a trusted
 operator tool. Public read commands need no account mapping or authentication.
 
+IRC updates run in a bounded background worker. The bot promptly acknowledges
+mapped requests while the worker checks the current local administrator role,
+opens its own database connection, and fetches/imports provider pages. No update
+SQLite connection or network request runs on the IRC event-loop thread.
+Requests use a snapshot of the configured database, source, token, and filtering
+settings. Failed role checks return a denial without starting synchronization.
+
+Only one IRC update may be active or awaiting result delivery; additional
+requests receive a busy response rather than accumulating in an executor queue.
+The worker never writes to the IRC connection directly. A scheduled callback
+drains its bounded result queue on the bot thread, normally within one second,
+and addresses the completion or safe error to the requester in the originating
+channel or private conversation. Delivery follows normal logging and silent-mode
+rules. The slot is released when the result is drained, including after errors.
+The local import utility remains synchronous.
+
 Tendie uses the existing primary ``database`` setting and pmxbot's
 ``SQLiteStorage`` connection and schema-initialization conventions. Opening
 the collection additively creates only ``tendie_posts``, ``tendie_sync``, and

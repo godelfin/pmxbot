@@ -1,6 +1,7 @@
 import contextlib
 import datetime
 import json
+import queue
 import sqlite3
 import threading
 from unittest.mock import Mock
@@ -28,8 +29,29 @@ def irc_event(
     )
 
 
+def wait_for_result():
+    item = tendie._results.get(timeout=5)
+    tendie._results.put_nowait(item)
+    return item
+
+
 def admin_update():
-    return tendie.tendie('update', event=irc_event())
+    acknowledgement = tendie.tendie('update', event=irc_event())
+    if acknowledgement != tendie.ACKNOWLEDGEMENT:
+        return acknowledgement
+    _, _, result = wait_for_result()
+    list(tendie.tendie_results())
+    return result
+
+
+def dispatch_and_complete(bot, event):
+    getattr(LoggingCommandBot, 'on_' + event.type)(bot, None, event)
+    if bot.messages[-1] == tendie.ACKNOWLEDGEMENT:
+        wait_for_result()
+        scheduled = next(
+            h for h in core.Scheduled._registry if h.func is tendie.tendie_results
+        )
+        bot.handle_scheduled(scheduled)
 
 
 def post(post_id='1', created_at='2026-10-17T12:00:00Z', **kwargs):
@@ -48,6 +70,8 @@ def provider(*posts):
 
 @pytest.fixture
 def collection(tmp_path, monkeypatch):
+    monkeypatch.setattr(tendie, '_results', queue.Queue(maxsize=1))
+    monkeypatch.setattr(tendie, '_update_slot', threading.Lock())
     filename = tmp_path / 'pmxbot.sqlite'
     monkeypatch.setattr(
         pmxbot,
@@ -595,9 +619,13 @@ class DispatchBot(core.Bot):
 
     def __init__(self):
         self.messages = []
+        self.destinations = []
+        self.output_threads = []
 
     def transmit(self, channel, message):
         self.messages.append(str(message))
+        self.destinations.append(channel)
+        self.output_threads.append(threading.get_ident())
         return message
 
 
@@ -626,10 +654,11 @@ def test_dispatch_denies_unauthorized_updates_without_provider_or_cooldown(
     before = sync_state(collection)
     # Even a nickname equal to the local admin name grants no authority.
     event = irc_event(account=account, kind=kind, nick='local-admin')
-    getattr(LoggingCommandBot, 'on_' + kind)(dispatcher, None, event)
-    assert dispatcher.messages == [
+    dispatch_and_complete(dispatcher, event)
+    assert (
         'Tendie update requires an authenticated administrator.'
-    ]
+        in dispatcher.messages[-1]
+    )
     factory.assert_not_called()
     tendie.requests.get.assert_not_called()
     assert sync_state(collection) == before
@@ -642,7 +671,7 @@ def test_missing_event_denies_before_opening_collection(
     opener = Mock()
     monkeypatch.setattr(tendie, 'Collection', opener)
     dispatcher.handle_action('#test', 'local-admin', '!tendie update')
-    assert 'authenticated administrator' in dispatcher.messages[0]
+    assert 'authenticated administrator' in dispatcher.messages[-1]
     opener.assert_not_called()
     tendie.requests.get.assert_not_called()
 
@@ -661,8 +690,8 @@ def test_missing_event_denies_before_opening_collection(
 def test_client_only_and_ambiguous_tags_fail_closed(dispatcher, collection, tags):
     event = irc_event()
     event.tags = tags
-    LoggingCommandBot.on_pubmsg(dispatcher, None, event)
-    assert 'authenticated administrator' in dispatcher.messages[0]
+    dispatch_and_complete(dispatcher, event)
+    assert 'authenticated administrator' in dispatcher.messages[-1]
     assert collection.meta('last_attempt') is None
     tendie.requests.get.assert_not_called()
 
@@ -679,8 +708,8 @@ def test_client_only_and_ambiguous_tags_fail_closed(dispatcher, collection, tags
 )
 def test_missing_invalid_or_non_admin_mapping_denied(dispatcher, collection, mapping):
     pmxbot.config['tendie_admin_accounts'] = mapping
-    LoggingCommandBot.on_pubmsg(dispatcher, None, irc_event())
-    assert 'authenticated administrator' in dispatcher.messages[0]
+    dispatch_and_complete(dispatcher, irc_event())
+    assert 'authenticated administrator' in dispatcher.messages[-1]
     assert collection.meta('last_attempt') is None
     tendie.requests.get.assert_not_called()
 
@@ -692,8 +721,8 @@ def test_current_admin_state_is_rechecked_each_request(
     api, dispatcher, collection, change
 ):
     api.side_effect = [api_response({'id': '42'}), api_response([xpost()], meta={})]
-    LoggingCommandBot.on_pubmsg(dispatcher, None, irc_event())
-    assert dispatcher.messages[-1] == 'Tendie: imported 1 posts.'
+    dispatch_and_complete(dispatcher, irc_event())
+    assert dispatcher.messages[-1].endswith('Tendie: imported 1 posts.')
     calls = api.call_count
     # Simulate a trusted administrator changing this account after authorization.
     with collection.db:
@@ -701,7 +730,7 @@ def test_current_admin_state_is_rechecked_each_request(
             "UPDATE users SET " + change + " WHERE username='local-admin'"
         )
     before = sync_state(collection)
-    LoggingCommandBot.on_pubmsg(dispatcher, None, irc_event())
+    dispatch_and_complete(dispatcher, irc_event())
     assert 'authenticated administrator' in dispatcher.messages[-1]
     assert api.call_count == calls
     assert sync_state(collection) == before
@@ -712,17 +741,15 @@ def test_denied_update_does_not_stop_authenticated_admin(
     api, dispatcher, collection, kind
 ):
     event = irc_event(account='services-user', kind=kind)
-    deliver = getattr(LoggingCommandBot, 'on_' + kind)
-    deliver(dispatcher, None, event)
+    dispatch_and_complete(dispatcher, event)
     api.assert_not_called()
     assert sync_state(collection) == []
     api.side_effect = [api_response({'id': '42'}), api_response([xpost()], meta={})]
-    deliver(
+    dispatch_and_complete(
         dispatcher,
-        None,
         irc_event(account='SERVICES-ADMIN', kind=kind, nick='different-nick'),
     )
-    assert dispatcher.messages[-1] == 'Tendie: imported 1 posts.'
+    assert dispatcher.messages[-1].endswith('Tendie: imported 1 posts.')
     assert api.call_count == 2
     assert collection.meta('last_attempt') == NOW.isoformat()
 
@@ -736,7 +763,7 @@ def test_public_reads_available_through_dispatch_without_identity(
     pmxbot.config.pop('tendie_admin_accounts')
     before = sync_state(collection)
     event = irc_event(account=None, command='!tendie ' + action, kind=kind)
-    getattr(LoggingCommandBot, 'on_' + kind)(dispatcher, None, event)
+    dispatch_and_complete(dispatcher, event)
     assert len(dispatcher.messages) == 1
     assert 'authenticated administrator' not in dispatcher.messages[0]
     assert ('1 posts' if action == 'status' else '/1') in dispatcher.messages[0]
@@ -767,7 +794,182 @@ def test_public_config_cannot_grant_update_access(dispatcher, collection):
     )
     assert 'configuration file' in dispatcher.messages[-1]
     assert pmxbot.config['tendie_admin_accounts'] == before
-    LoggingCommandBot.on_pubmsg(dispatcher, None, irc_event(account='services-user'))
+    dispatch_and_complete(dispatcher, irc_event(account='services-user'))
     assert 'authenticated administrator' in dispatcher.messages[-1]
     assert collection.meta('last_attempt') is None
     tendie.requests.get.assert_not_called()
+
+
+@pytest.mark.parametrize('kind', ['pubmsg', 'privmsg'])
+def test_blocked_provider_keeps_irc_responsive_and_opens_database_in_worker(
+    dispatcher, collection, monkeypatch, kind
+):
+    collection.sync(provider(post()))
+    allow_sync(collection)
+    pmxbot.config['x_bearer_token'] = 'test-secret'
+    entered, finish = threading.Event(), threading.Event()
+    provider_threads, connection_threads, authorization_threads = [], [], []
+    caller_thread = threading.get_ident()
+    original = tendie.Collection
+    original_users = tendie.UserStore
+
+    def open_users(*args, **kwargs):
+        authorization_threads.append(threading.get_ident())
+        return original_users(*args, **kwargs)
+
+    def open_collection(*args, **kwargs):
+        connection_threads.append(threading.get_ident())
+        return original(*args, **kwargs)
+
+    def posts(since_id):
+        provider_threads.append(threading.get_ident())
+        entered.set()
+        assert finish.wait(5)
+        assert since_id == '1'
+        yield post('2')
+
+    factory = Mock(return_value=Mock(posts=posts))
+    monkeypatch.setattr(tendie, 'Collection', open_collection)
+    monkeypatch.setattr(tendie, 'UserStore', open_users)
+    monkeypatch.setattr(tendie, 'XProvider', factory)
+    deliver = getattr(LoggingCommandBot, 'on_' + kind)
+    try:
+        deliver(dispatcher, None, irc_event(kind=kind, nick='requester'))
+        assert dispatcher.messages == [tendie.ACKNOWLEDGEMENT]
+        assert entered.wait(5)
+        assert not finish.is_set()
+        assert provider_threads == connection_threads == authorization_threads
+        assert provider_threads[0] != caller_thread
+        assert list(tendie.tendie_results()) == []
+
+        # The same thread continues dispatching while the provider is blocked.
+        for action in ('latest', 'days', 'status'):
+            deliver(
+                dispatcher,
+                None,
+                irc_event(account=None, command='!tendie ' + action, kind=kind),
+            )
+            expected = '1 posts' if action == 'status' else '/1'
+            assert expected in dispatcher.messages[-1]
+
+        @core.command(name='responsive')
+        def responsive():
+            return 'still responding'
+
+        deliver(
+            dispatcher, None, irc_event(account=None, command='!responsive', kind=kind)
+        )
+        assert dispatcher.messages[-1] == 'still responding'
+        deliver(dispatcher, None, irc_event(kind=kind, nick='second-requester'))
+        assert 'already running' in dispatcher.messages[-1]
+        assert factory.call_count == 1
+        assert tendie._results.empty()
+    finally:
+        finish.set()
+        wait_for_result()
+
+    # A completed but undelivered result also occupies the sole worker slot.
+    deliver(dispatcher, None, irc_event(kind=kind, nick='third-requester'))
+    assert 'awaiting delivery' in dispatcher.messages[-1]
+    assert factory.call_count == 1
+    scheduled = next(
+        h for h in core.Scheduled._registry if h.func is tendie.tendie_results
+    )
+    dispatcher.handle_scheduled(scheduled)
+    assert dispatcher.messages[-1] == 'requester: Tendie: imported 1 posts.'
+    assert dispatcher.destinations[-1] == (
+        'requester' if kind == 'privmsg' else '#test'
+    )
+    assert set(dispatcher.output_threads) == {caller_thread}
+    assert collection.size() == 2
+    assert not tendie._update_slot.locked()
+    assert list(tendie.tendie_results()) == []
+
+
+def test_worker_start_failure_releases_capacity_without_database_or_cooldown(
+    collection, monkeypatch
+):
+    monkeypatch.setattr(
+        tendie.threading, 'Thread', Mock(side_effect=RuntimeError('secret'))
+    )
+    opener = Mock()
+    monkeypatch.setattr(tendie, 'Collection', opener)
+    result = admin_update()
+    assert 'Could not start' in result and 'secret' not in result
+    opener.assert_not_called()
+    assert collection.meta('last_attempt') is None
+    assert not tendie._update_slot.locked()
+    assert tendie._results.empty()
+
+
+def test_unexpected_worker_failure_is_safe_and_allows_next_request(
+    collection, monkeypatch, caplog
+):
+    original = tendie._response
+    monkeypatch.setattr(tendie, '_response', Mock(side_effect=RuntimeError('secret')))
+    assert admin_update() == 'Tendie update failed; please try again later.'
+    assert 'secret' not in caplog.text
+    assert not tendie._update_slot.locked()
+    monkeypatch.setattr(tendie, '_response', original)
+    pmxbot.config['x_bearer_token'] = 'test-secret'
+    monkeypatch.setattr(tendie, 'XProvider', Mock(return_value=provider(post())))
+    assert admin_update() == 'Tendie: imported 1 posts.'
+
+
+def test_scheduled_worker_delivery_respects_silent_mode(
+    dispatcher, collection, monkeypatch
+):
+    pmxbot.config['x_bearer_token'] = 'test-secret'
+    monkeypatch.setattr(tendie, 'XProvider', Mock(return_value=provider(post())))
+    dispatcher.silent = True
+    LoggingCommandBot.on_privmsg(dispatcher, None, irc_event(kind='privmsg'))
+    wait_for_result()
+    scheduled = next(
+        h for h in core.Scheduled._registry if h.func is tendie.tendie_results
+    )
+    dispatcher.handle_scheduled(scheduled)
+    assert dispatcher.messages == []
+    assert collection.size() == 1
+    assert not tendie._update_slot.locked()
+
+
+def test_authorization_database_wait_is_off_loop_and_configuration_is_snapshotted(
+    dispatcher, collection, monkeypatch
+):
+    pmxbot.config['x_bearer_token'] = 'original-token'
+    started, finish = threading.Event(), threading.Event()
+    original = tendie.local_administrator
+    caller = threading.get_ident()
+    auth_threads = []
+
+    def authorize(username, config):
+        auth_threads.append(threading.get_ident())
+        started.set()
+        assert finish.wait(5)
+        return original(username, config)
+
+    factory = Mock(return_value=provider(post()))
+    monkeypatch.setattr(tendie, 'local_administrator', authorize)
+    monkeypatch.setattr(tendie, 'XProvider', factory)
+    try:
+        LoggingCommandBot.on_pubmsg(dispatcher, None, irc_event())
+        assert dispatcher.messages == [tendie.ACKNOWLEDGEMENT]
+        assert started.wait(5)
+        assert auth_threads[0] != caller
+        assert collection.meta('last_attempt') is None
+        factory.assert_not_called()
+        pmxbot.config.update(
+            database='sqlite:/missing/directory/other.sqlite',
+            tendie_author='OtherAccount',
+            x_bearer_token='changed-token',
+        )
+    finally:
+        finish.set()
+        wait_for_result()
+    scheduled = next(
+        h for h in core.Scheduled._registry if h.func is tendie.tendie_results
+    )
+    dispatcher.handle_scheduled(scheduled)
+    assert dispatcher.messages[-1].endswith('Tendie: imported 1 posts.')
+    factory.assert_called_once_with('original-token', 'ExampleAccount')
+    assert collection.size() == 1
