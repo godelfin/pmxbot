@@ -74,3 +74,10 @@ responses_store: true
 images_model: gpt-image-1
 images_size: 1024x1024
 images_quality: low
+
+# !tendie: local SQLite collection; live X synchronization is optional.
+tendie_database: tendie.sqlite
+x_bearer_token: !env X_BEARER_TOKEN
+tendie_sync_cooldown: 300 # seconds, including after failed attempts
+tendie_include_replies: false
+tendie_include_quotes: true

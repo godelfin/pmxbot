@@ -11,6 +11,7 @@ Welcome to |project| documentation!
    history
    deployment
    users
+   tendie
 
 
 .. tidelift-referral-banner::
