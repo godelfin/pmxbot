@@ -2,7 +2,6 @@
 .eggs/
 dist/
 build/
-_build/
 *.egg-info/
 *.pyc
 pmxbot.sqlite
