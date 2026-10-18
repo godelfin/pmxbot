@@ -1,4 +1,4 @@
-"""Local Robert_McTender collection and provider-independent imports."""
+"""Local configured-account collection and provider-independent imports."""
 
 import argparse
 import contextlib
@@ -17,7 +17,6 @@ import pmxbot
 from .core import command
 
 
-AUTHOR = 'Robert_McTender'
 UTC = datetime.timezone.utc
 _sync_lock = threading.Lock()
 
@@ -38,8 +37,25 @@ class SyncError(Exception):
     """Safe, public synchronization failure message."""
 
 
+def configured_author(value=None):
+    value = (
+        value or pmxbot.config.get('tendie_author') or os.environ.get('TENDIE_AUTHOR')
+    )
+    if not value:
+        raise SyncError(
+            'Configure tendie_author or TENDIE_AUTHOR with the source X username.'
+        )
+    if not isinstance(value, str):
+        raise ValueError('Invalid source username')
+    author = value.strip().lstrip('@')
+    if not re.fullmatch(r'[A-Za-z0-9_]{1,15}', author):
+        raise ValueError('Invalid source username')
+    return author
+
+
 class Collection:
-    def __init__(self, filename):
+    def __init__(self, filename, author=None):
+        self.author = configured_author(author)
         self.db = sqlite3.connect(str(filename), timeout=0)
         self.db.row_factory = sqlite3.Row
         self.db.execute('PRAGMA journal_mode=WAL')
@@ -61,23 +77,31 @@ class Collection:
 
     def meta(self, key):
         row = self.db.execute(
-            'SELECT value FROM tendie_sync WHERE key=?', (key,)
+            'SELECT value FROM tendie_sync WHERE key=?',
+            (self.author.lower() + ':' + key,),
         ).fetchone()
         return row[0] if row else None
 
     def set_meta(self, key, value):
         self.db.execute(
-            'INSERT OR REPLACE INTO tendie_sync VALUES (?, ?)', (key, value)
+            'INSERT OR REPLACE INTO tendie_sync VALUES (?, ?)',
+            (self.author.lower() + ':' + key, value),
         )
 
     def select(self, latest=False):
         order = 'created_at DESC, length(id) DESC, id DESC' if latest else 'RANDOM()'
         return self.db.execute(
-            'SELECT * FROM tendie_posts ORDER BY ' + order + ' LIMIT 1'
+            'SELECT * FROM tendie_posts WHERE author=? COLLATE NOCASE ORDER BY '
+            + order
+            + ' LIMIT 1',
+            (self.author,),
         ).fetchone()
 
     def size(self):
-        return self.db.execute('SELECT count(*) FROM tendie_posts').fetchone()[0]
+        return self.db.execute(
+            'SELECT count(*) FROM tendie_posts WHERE author=? COLLATE NOCASE',
+            (self.author,),
+        ).fetchone()[0]
 
     def sync(self, provider, cooldown=300, include_replies=False, include_quotes=True):
         """Import provider.posts(since_id) atomically; retain cooldown on failure.
@@ -109,7 +133,8 @@ class Collection:
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
             row = self.db.execute(
-                'SELECT id FROM tendie_posts ORDER BY length(id) DESC, id DESC LIMIT 1'
+                'SELECT id FROM tendie_posts WHERE author=? COLLATE NOCASE ORDER BY length(id) DESC, id DESC LIMIT 1',
+                (self.author,),
             ).fetchone()
             since_id = row[0] if row else None
             count = 0
@@ -117,7 +142,7 @@ class Collection:
                 post_id = str(post['id'])
                 if not re.fullmatch(r'[1-9][0-9]{0,29}', post_id):
                     raise ValueError('Invalid post ID')
-                if post['author'].lstrip('@').lower() != AUTHOR.lower():
+                if post['author'].lstrip('@').lower() != self.author.lower():
                     raise ValueError('Unexpected author')
                 created = timestamp(post['created_at']).isoformat()
                 if not isinstance(post['text'], str):
@@ -134,10 +159,10 @@ class Collection:
                     (
                         post_id,
                         post['text'],
-                        AUTHOR,
+                        self.author,
                         created,
                         now().isoformat(),
-                        f'https://x.com/{AUTHOR}/status/{post_id}',
+                        f'https://x.com/{self.author}/status/{post_id}',
                     ),
                 ).rowcount
             self.set_meta('last_success', now().isoformat())
@@ -147,8 +172,9 @@ class Collection:
 class XProvider:
     """Official X v2 user timeline, with bounded pagination and request timeouts."""
 
-    def __init__(self, token):
+    def __init__(self, token, author=None):
         self.token = token
+        self.author = configured_author(author)
 
     def get(self, path, params=None):
         response = requests.get(
@@ -166,7 +192,7 @@ class XProvider:
         return result
 
     def posts(self, since_id):
-        user = self.get('users/by/username/' + AUTHOR)['data']['id']
+        user = self.get('users/by/username/' + self.author)['data']['id']
         if not re.fullmatch(r'[0-9]+', str(user)):
             raise ValueError('Invalid user ID')
         params = {
@@ -188,7 +214,7 @@ class XProvider:
             for post in posts:
                 if str(post['author_id']) != str(user):
                     raise ValueError('Unexpected author ID')
-                yield dict(post, author=AUTHOR)
+                yield dict(post, author=self.author)
             cursor = meta.get('next_token')
             if not cursor:
                 return
@@ -259,7 +285,7 @@ def tendie(rest):
                 if not token:
                     return 'Configure x_bearer_token or X_BEARER_TOKEN to synchronize tendies.'
                 count = store.sync(
-                    XProvider(token),
+                    XProvider(token, store.author),
                     cooldown=float(pmxbot.config.get('tendie_sync_cooldown', 300)),
                     include_replies=pmxbot.config.get('tendie_include_replies', False),
                     include_quotes=pmxbot.config.get('tendie_include_quotes', True),
@@ -285,11 +311,12 @@ def main():
     parser = argparse.ArgumentParser(description='Import local tendie JSON/CSV posts')
     parser.add_argument('filename')
     parser.add_argument('--database', default='tendie.sqlite')
+    parser.add_argument('--author', help='Source X username (or set TENDIE_AUTHOR)')
     parser.add_argument('--include-replies', action='store_true')
     parser.add_argument('--exclude-quotes', action='store_true')
     args = parser.parse_args()
     try:
-        with contextlib.closing(Collection(args.database)) as store:
+        with contextlib.closing(Collection(args.database, args.author)) as store:
             count = store.sync(
                 FileProvider(args.filename),
                 include_replies=args.include_replies,

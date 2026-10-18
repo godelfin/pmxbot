@@ -77,6 +77,8 @@ images_quality: low
 
 # !tendie: local SQLite collection; live X synchronization is optional.
 tendie_database: tendie.sqlite
+# Source X username; set privately in the environment or replace with your account.
+tendie_author: !env TENDIE_AUTHOR
 x_bearer_token: !env X_BEARER_TOKEN
 tendie_sync_cooldown: 300 # seconds, including after failed attempts
 tendie_include_replies: false

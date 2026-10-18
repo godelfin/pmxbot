@@ -20,7 +20,7 @@ def post(post_id='1', created_at='2026-10-17T12:00:00Z', **kwargs):
     return dict(
         id=post_id,
         text='crispy tendies',
-        author=tendie.AUTHOR,
+        author='ExampleAccount',
         created_at=created_at,
         **kwargs,
     )
@@ -37,11 +37,15 @@ def collection(tmp_path, monkeypatch):
         pmxbot,
         'config',
         core.ConfigDict(
-            tendie_database=str(filename), log_channels=[], other_channels=[]
+            tendie_database=str(filename),
+            tendie_author='ExampleAccount',
+            log_channels=[],
+            other_channels=[],
         ),
     )
     monkeypatch.setattr(tendie, 'now', lambda: NOW)
     monkeypatch.delenv('X_BEARER_TOKEN', raising=False)
+    monkeypatch.delenv('TENDIE_AUTHOR', raising=False)
     # Every unexpected network request fails the test, including database reads.
     monkeypatch.setattr(
         tendie.requests, 'get', Mock(side_effect=AssertionError('Network'))
@@ -52,7 +56,10 @@ def collection(tmp_path, monkeypatch):
 
 def allow_sync(store):
     with store.db:
-        store.db.execute("DELETE FROM tendie_sync WHERE key='last_attempt'")
+        store.db.execute(
+            'DELETE FROM tendie_sync WHERE key=?',
+            (store.author.lower() + ':last_attempt',),
+        )
 
 
 def test_registration_and_public_days(collection):
@@ -105,7 +112,7 @@ def test_days_creation_time_not_import(collection, created, days):
     collection.sync(provider(post(created_at=created)))
     result = tendie.tendie('days')
     assert result.startswith(f'{days} complete day')
-    assert result.endswith('https://x.com/Robert_McTender/status/1')
+    assert result.endswith('https://x.com/ExampleAccount/status/1')
 
 
 @pytest.mark.parametrize('created', ['broken', '2026-10-17T12:00:00', ''])
@@ -319,7 +326,7 @@ def test_offline_import(collection, tmp_path, extension):
         filename.write_text(json.dumps([post(), post('2')]), encoding='utf-8')
     else:
         filename.write_text(
-            'id,text,author,created_at\n1,crispy,Robert_McTender,2026-10-17T12:00:00Z\n2,tasty,@Robert_McTender,2026-10-17T12:00:00Z\n',
+            'id,text,author,created_at\n1,crispy,ExampleAccount,2026-10-17T12:00:00Z\n2,tasty,@ExampleAccount,2026-10-17T12:00:00Z\n',
             encoding='utf-8',
         )
     source = tendie.FileProvider(filename)
@@ -341,7 +348,7 @@ def test_irc_formatting(collection):
     collection.sync(provider(dirty))
     result = tendie.tendie('')
     assert len(result.encode('utf-8')) <= 400
-    assert result.endswith('... https://x.com/Robert_McTender/status/1')
+    assert result.endswith('... https://x.com/ExampleAccount/status/1')
     assert not any(ord(char) < 32 for char in result)
     assert '&amp;' not in result
 
@@ -370,7 +377,14 @@ def test_cli_import(collection, tmp_path, monkeypatch, capsys):
     filename.write_text(json.dumps([post()]), encoding='utf-8')
     monkeypatch.setattr(
         'sys.argv',
-        ['tendie', str(filename), '--database', pmxbot.config['tendie_database']],
+        [
+            'tendie',
+            str(filename),
+            '--database',
+            pmxbot.config['tendie_database'],
+            '--author',
+            'ExampleAccount',
+        ],
     )
     tendie.main()
     assert 'Imported 1 posts.' in capsys.readouterr().out
@@ -401,3 +415,57 @@ def test_pagination_bound_rolls_back(api, collection):
     assert 'pagination limit' in tendie.tendie('update')
     assert collection.size() == 0
     assert collection.meta('last_success') is None
+
+
+def test_configured_source_controls_api_and_urls(api, collection):
+    pmxbot.config['tendie_author'] = '@AnotherAccount'
+    api.side_effect = [api_response({'id': '42'}), api_response([xpost()], meta={})]
+    assert 'imported 1' in tendie.tendie('update')
+    assert (
+        api.call_args_list[0].args[0]
+        == 'https://api.x.com/2/users/by/username/AnotherAccount'
+    )
+    assert tendie.tendie('latest').endswith('https://x.com/AnotherAccount/status/1')
+    assert collection.size() == 0
+
+
+def test_switching_accounts_isolates_history_and_sync_state(collection, monkeypatch):
+    collection.sync(provider(post('99')))
+    monkeypatch.setitem(pmxbot.config, 'tendie_author', 'AnotherAccount')
+    assert 'No tendies' in tendie.tendie('days')
+    assert '0 posts' in tendie.tendie('status')
+    assert 'never' in tendie.tendie('status')
+    with contextlib.closing(
+        tendie.Collection(pmxbot.config['tendie_database'])
+    ) as other:
+        source = provider(dict(post('1'), author='@anotheraccount'))
+        assert other.sync(source) == 1
+        source.posts.assert_called_once_with(None)
+        assert other.size() == 1
+        assert other.meta('last_success')
+    monkeypatch.setitem(pmxbot.config, 'tendie_author', 'exampleaccount')
+    assert '1 posts' in tendie.tendie('status')
+    assert tendie.tendie('latest').endswith('/99')
+    pmxbot.config['x_bearer_token'] = 'test-secret'
+    assert 'cooling down' in tendie.tendie('update')
+
+
+def test_source_environment_fallback_and_configuration_precedence(
+    collection, monkeypatch
+):
+    monkeypatch.setenv('TENDIE_AUTHOR', '@EnvAccount')
+    assert tendie.configured_author() == 'ExampleAccount'
+    del pmxbot.config['tendie_author']
+    assert tendie.configured_author() == 'EnvAccount'
+
+
+@pytest.mark.parametrize('author', [None, '', 'bad/name', 'a' * 16, 'bad name'])
+def test_missing_or_invalid_source_is_graceful(collection, author):
+    pmxbot.config['tendie_author'] = author
+    result = tendie.tendie('update')
+    assert (
+        'Configure tendie_author'
+        if not author
+        else 'Invalid tendie data or configuration'
+    ) in result
+    tendie.requests.get.assert_not_called()

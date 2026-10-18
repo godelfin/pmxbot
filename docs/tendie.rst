@@ -1,7 +1,7 @@
 Stored tendies
 ==============
 
-``!tendie`` returns a random locally stored post by ``@Robert_McTender``,
+``!tendie`` returns a random locally stored post from the configured X account,
 including its original X.com URL. All IRC users can use these subcommands:
 
 * ``!tendie latest`` returns the newest post by original creation time.
@@ -25,10 +25,19 @@ Configuration
 The example ``config.yaml`` includes these settings::
 
     tendie_database: tendie.sqlite
+    tendie_author: !env TENDIE_AUTHOR
     x_bearer_token: !env X_BEARER_TOKEN
     tendie_sync_cooldown: 300
     tendie_include_replies: false
     tendie_include_quotes: true
+
+Set ``tendie_author`` to the source X username in private configuration, or
+set ``TENDIE_AUTHOR`` in the bot's environment. There is no built-in account.
+A leading ``@`` is optional; usernames are validated before API requests.
+All account names below are placeholders. Reads, incremental IDs, counts,
+cooldowns, and synchronization metadata are scoped to the configured account,
+so changing it does not serve posts from a previous account. Stored history
+is retained if you switch back.
 
 Use a writable local SQLite file, independent of the main pmxbot database
 (including when pmxbot uses MongoDB). Relative paths resolve from the process
@@ -66,8 +75,8 @@ Offline JSON and CSV imports
 
 Run from the same environment as pmxbot, using the same database path::
 
-    python -m pmxbot.tendie posts.json --database /path/to/tendie.sqlite
-    python -m pmxbot.tendie posts.csv --database /path/to/tendie.sqlite
+    python -m pmxbot.tendie posts.json --author ExampleAccount --database /path/to/tendie.sqlite
+    python -m pmxbot.tendie posts.csv --author ExampleAccount --database /path/to/tendie.sqlite
 
 JSON is an array of post objects::
 
@@ -75,7 +84,7 @@ JSON is an array of post objects::
       {
         "id": "1234567890123456789",
         "text": "Example stored post",
-        "author": "Robert_McTender",
+        "author": "ExampleAccount",
         "created_at": "2026-10-17T12:00:00Z"
       }
     ]
@@ -83,10 +92,12 @@ JSON is an array of post objects::
 CSV uses these same column names::
 
     id,text,author,created_at
-    1234567890123456789,Example stored post,Robert_McTender,2026-10-17T12:00:00Z
+    1234567890123456789,Example stored post,ExampleAccount,2026-10-17T12:00:00Z
 
 Both formats use UTF-8. IDs must be decimal strings (up to 30 digits).
-The author must be ``Robert_McTender`` (case insensitive, optional ``@``).
+The author must match the configured source account (case insensitive, optional
+``@``). For the CLI, pass ``--author`` or set ``TENDIE_AUTHOR``; the standalone
+CLI does not load ``config.yaml``.
 Creation timestamps must be ISO 8601 with an explicit timezone. URLs are
 constructed from the validated post ID and author; supplied URLs and import
 timestamps are ignored. Use normal CSV quoting for commas and newlines.
