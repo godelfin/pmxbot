@@ -31,9 +31,11 @@ from pmxbot.users import InvalidCredentials, UserError, UserStore, UsernameTaken
 from pmxbot.web import auth
 from pmxbot.music import GenerationInputs
 from pmxbot.jobs import GenerationExecutor, JobStore
+from pmxbot import tendie, tendie_jobs
 
 jenv = jinja2.Environment(loader=jinja2.loaders.PackageLoader('pmxbot.web'))
 TIMEOUT = 10.0
+tendie_executor = tendie_jobs.TendieExecutor(cherrypy.engine)
 
 
 def wants_json():
@@ -526,6 +528,58 @@ def image_metadata(image):
 
 
 class AdminPages:
+    @cherrypy.expose
+    def tendies(self, csrf_token='', **params):
+        cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
+        auth.require_admin()
+        if cherrypy.request.query_string or params:
+            raise cherrypy.HTTPError(400, 'Use a form body.')
+        error = None
+        if cherrypy.request.method == 'POST':
+            auth.require_csrf(csrf_token)
+            try:
+                accepted = tendie_executor.enqueue(pmxbot.config)
+            except Exception:
+                raise cherrypy.HTTPError(
+                    503,
+                    'Tendie update is unavailable. Check configuration and storage.',
+                ) from None
+            if not accepted:
+                cherrypy.response.status = 409
+                error = 'A tendie update is already queued or running.'
+            else:
+                auth.redirect(pmxbot.config.web_base + '/admin/tendies')
+        try:
+            state = tendie_jobs.status(tendie.settings_snapshot(pmxbot.config))
+        except Exception:
+            raise cherrypy.HTTPError(
+                503, 'Tendie storage or configuration is unavailable.'
+            ) from None
+        return (
+            jenv.overlay(autoescape=True)
+            .get_template('admin_tendies.html')
+            .render(
+                state=state,
+                error=error,
+                **get_context(),
+            )
+            .encode('utf-8')
+        )
+
+    @cherrypy.expose
+    def tendie_status(self, **params):
+        cherrypy.lib.cptools.allow(['GET', 'HEAD'])
+        auth.require_admin()
+        if params or cherrypy.request.query_string:
+            raise cherrypy.HTTPError(400, 'Unexpected status fields.')
+        try:
+            state = tendie_jobs.status(tendie.settings_snapshot(pmxbot.config))
+        except Exception:
+            raise cherrypy.HTTPError(
+                503, 'Tendie storage or configuration is unavailable.'
+            ) from None
+        return json_response(state)
+
     @cherrypy.expose
     def users(
         self,
@@ -1267,12 +1321,15 @@ def startup(config):
 
     executor = GenerationExecutor(cherrypy.engine, config)
     executor.subscribe()
+    tendie_executor.subscribe()
     try:
         with file_manager:
             cherrypy.quickstart(PmxbotPages(), config.web_base, config=app_conf)
     finally:
         executor.stop()
         executor.unsubscribe()
+        tendie_executor.stop()
+        tendie_executor.unsubscribe()
 
 
 def run():

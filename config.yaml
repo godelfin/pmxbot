@@ -25,6 +25,8 @@ feeds:
 librarypaste: http://a.libpa.st/
 
 web_base: /
+# Optional public application root, including web_base; used in IRC administrator links.
+web_public_url: !env PMXBOT_WEB_PUBLIC_URL
 # Keep true for HTTPS, including TLS termination at the trusted reverse proxy.
 # Set false explicitly for isolated local HTTP development only.
 web_session_secure: true
@@ -78,9 +80,6 @@ images_quality: low
 # !tendie: uses the primary SQLite database above; X synchronization is optional.
 # Source X username; set privately in the environment or replace with your account.
 tendie_author: !env TENDIE_AUTHOR
-# Map authenticated IRC services accounts to existing local administrator usernames.
-# The IRC server must support account-tag; nicknames alone never authorize updates.
-tendie_admin_accounts: {}
 x_bearer_token: !env X_BEARER_TOKEN
 tendie_sync_cooldown: 300 # seconds, including after failed attempts
 tendie_include_replies: false

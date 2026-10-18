@@ -13,9 +13,10 @@ to all IRC users:
 * ``!tendie status`` reports the number stored and the last successful import
   or live synchronization, in UTC (or ``never``).
 
-``!tendie update`` requires an authenticated administrator. It fetches newer
-posts through the official X API and reports the number inserted. Existing IDs
-are never overwritten or counted twice.
+``!tendie update`` directs administrators to the authenticated website. It never
+starts synchronization from IRC. When ``web_public_url`` is configured (or
+``albums_url`` is an absolute public application URL), the response links to
+``/admin/tendies``. No IRC services account or account-tag support is required.
 
 Random, latest, days, and status requests make no network requests. Post text
 is HTML-unescaped, stripped of IRC control characters, collapsed to a single
@@ -29,7 +30,7 @@ The example ``config.yaml`` includes these settings::
 
     database: sqlite:pmxbot.sqlite
     tendie_author: !env TENDIE_AUTHOR
-    tendie_admin_accounts: {}
+    web_public_url: !env PMXBOT_WEB_PUBLIC_URL
     x_bearer_token: !env X_BEARER_TOKEN
     tendie_sync_cooldown: 300
     tendie_include_replies: false
@@ -43,48 +44,39 @@ cooldowns, and synchronization metadata are scoped to the configured account,
 so changing it does not serve posts from a previous account. Stored history
 is retained if you switch back.
 
-Authorize updates by mapping an IRC services account to an existing local
-administrator username, for example::
+Administrators synchronize at ``/admin/tendies`` on the existing authenticated
+website (beneath ``web_base``, if mounted in a subdirectory). The page shows the
+configured source account, stored-post count, last successful synchronization,
+and an **Update tendies** button. Sign in as a local administrator first; normal
+users cannot access the page or its polling endpoint. Disabled users and users
+required to change their password cannot start updates or view protected status.
+Authorization is rechecked on every request using the existing canonical users
+and session policy.
 
-    tendie_admin_accounts:
-        services_account: local_admin
+The button submits a CSRF-protected POST to ``/admin/tendies``. GET and HEAD
+requests only display information; they never queue or start updates. The
+administrator-only ``/admin/tendie_status`` endpoint returns current summary and
+job status for polling. A normal form submission redirects back to the page,
+which displays completion or a safe error and polls while the job is active.
+JavaScript is optional: reload the page to check results. Tokens and provider
+response details are never included in the page, status JSON, or error messages.
 
-The IRC server must support the
-`IRCv3 account-tag extension <https://ircv3.net/specs/extensions/account-tag>`_.
-The bot requests this capability when mappings are configured. The caller
-must identify to the mapped services account on that server. The server's
-``account`` tag authenticates the account; nicknames, hostmasks, client-only
-``+account`` tags, and text in a message do not grant access. Mapping keys are
-case insensitive; ambiguous mappings are denied. The mapped local user must
-currently be enabled, have role ``admin``, and not require a password change.
-The role is checked for every update, so demotion or disabling takes effect
-immediately. IRC account mappings must be provisioned in trusted configuration;
-there is no automatic mapping from IRC nicknames to local usernames. The
-public ``!config`` command cannot change ``tendie_admin_accounts`` or the
-primary ``database`` setting; edit the configuration file and restart instead.
+Set ``web_public_url`` to the public application root, including its mount path,
+for example ``https://bot.example/bot``. This is used only to link IRC users to
+the administration page; it grants no access. The public ``!config`` command
+cannot change the primary ``database`` setting; edit trusted configuration and
+restart to change the identity store.
 
-Updates are denied by default, including when the server supplies no account
-tag or the caller arrives through a transport without authenticated IRC event
-metadata. A denied request never opens the tendie collection, constructs an X
-provider, or changes synchronization metadata or cooldown. These restrictions
-apply only to live IRC updates; the local import utility remains a trusted
-operator tool. Public read commands need no account mapping or authentication.
-
-IRC updates run in a bounded background worker. The bot promptly acknowledges
-mapped requests while the worker checks the current local administrator role,
-opens its own database connection, and fetches/imports provider pages. No update
-SQLite connection or network request runs on the IRC event-loop thread.
-Requests use a snapshot of the configured database, source, token, and filtering
-settings. Failed role checks return a denial without starting synchronization.
-
-Only one IRC update may be active or awaiting result delivery; additional
-requests receive a busy response rather than accumulating in an executor queue.
-The worker never writes to the IRC connection directly. A scheduled callback
-drains its bounded result queue on the bot thread, normally within one second,
-and addresses the completion or safe error to the requester in the originating
-channel or private conversation. Delivery follows normal logging and silent-mode
-rules. The slot is released when the result is drained, including after errors.
-The local import utility remains synchronous.
+The viewer manages one bounded tendie executor using the same CherryPy plugin
+lifecycle and thread-pool conventions as generation jobs. Tendie jobs use the
+existing account-scoped synchronization metadata rather than image/album job
+records. Provider requests and imports run outside HTTP request threads, with
+worker-owned SQLite connections. Queued/running status and safe completion
+messages persist in the primary database. Duplicate requests are rejected,
+including requests reaching another web process. Abandoned job claims expire
+after 30 minutes, like synchronization leases; GET does not mutate stale claims.
+The executor drains active work when the viewer stops. The local import utility
+remains a trusted, synchronous operator tool.
 
 Tendie uses the existing primary ``database`` setting and pmxbot's
 ``SQLiteStorage`` connection and schema-initialization conventions. Opening

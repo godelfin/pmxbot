@@ -6,33 +6,25 @@ import csv
 import datetime
 import html
 import json
-import logging
-import queue
 import os
 import re
 import sqlite3
 import threading
 import urllib.parse
 import uuid
-from collections.abc import Mapping
 
 import yaml
 
 import requests
 
 import pmxbot
-from .core import command, execdelay, SwitchChannel
+from .core import command
 from .dictlib import ConfigDict
 from .storage import SQLiteStorage
-from .users import UserStore
 
 
 UTC = datetime.timezone.utc
 _sync_lock = threading.Lock()
-_update_slot = threading.Lock()
-_results: queue.Queue = queue.Queue(maxsize=1)
-log = logging.getLogger(__name__)
-ACKNOWLEDGEMENT = 'Tendie update requested; checking administrator access.'
 
 
 def now():
@@ -320,123 +312,84 @@ def days_since(post, current=None):
     return f'{days} complete {unit} since the latest tendie. ' + post['url']
 
 
-def admin_username(event, config):
-    """Resolve a server account tag through the trusted local-user mapping.
-
-    IRC nicknames and client-only +account tags are not authentication. A
-    missing event (including other transports) or malformed mapping fails closed.
-    """
-    if getattr(event, 'type', None) not in ('pubmsg', 'privmsg'):
-        return None
-    try:
-        accounts = [tag['value'] for tag in event.tags if tag['key'] == 'account']
-        if (
-            len(accounts) != 1
-            or not isinstance(accounts[0], str)
-            or not accounts[0]
-            or accounts[0] == '*'
-        ):
-            return None
-        mapping = config.get('tendie_admin_accounts', {})
-        if not isinstance(mapping, Mapping):
-            return None
-        usernames = [
-            username
-            for account, username in mapping.items()
-            if isinstance(account, str) and account.casefold() == accounts[0].casefold()
-        ]
-        if len(usernames) != 1 or not isinstance(usernames[0], str):
-            return None
-        return usernames[0]
-    except (KeyError, TypeError, AttributeError):
-        return None
+def settings_snapshot(config):
+    result = dict(config)
+    result['tendie_author'] = result.get('tendie_author') or os.environ.get(
+        'TENDIE_AUTHOR'
+    )
+    result['x_bearer_token'] = result.get('x_bearer_token') or os.environ.get(
+        'X_BEARER_TOKEN'
+    )
+    return result
 
 
-def local_administrator(username, config):
-    """Recheck current local roles in the worker, before opening the collection."""
-    try:
-        with contextlib.closing(
-            UserStore(config.get('database', 'sqlite:pmxbot.sqlite'))
-        ) as store:
-            return store.get_by_username(username).is_admin
-    except (ValueError, sqlite3.Error, OSError, KeyError, TypeError, AttributeError):
-        return False
+def synchronize(config):
+    """Trusted operator entry point; the web worker owns its SQLite connection."""
+    if not config.get('tendie_author'):
+        raise SyncError(
+            'Configure tendie_author or TENDIE_AUTHOR with the source X username.'
+        )
+    author = configured_author(config['tendie_author'])
+    if not config.get('x_bearer_token'):
+        raise SyncError(
+            'Configure x_bearer_token or X_BEARER_TOKEN to synchronize tendies.'
+        )
+    with contextlib.closing(
+        Collection(config.get('database', 'sqlite:pmxbot.sqlite'), author)
+    ) as store:
+        return store.sync(
+            XProvider(config['x_bearer_token'], store.author),
+            live=True,
+            cooldown=float(config.get('tendie_sync_cooldown', 300)),
+            include_replies=config.get('tendie_include_replies', False),
+            include_quotes=config.get('tendie_include_quotes', True),
+        )
 
 
-def _update_worker(username, config, channel, nick):
-    try:
-        if not local_administrator(username, config):
-            result = 'Tendie update requires an authenticated administrator.'
-        else:
-            result = _response('update', config)
-    except Exception as exc:
-        # Worker failures must produce a result without exposing provider data,
-        # credentials, database paths, or exception messages to IRC.
-        log.error('Tendie worker failed (%s)', type(exc).__name__)
-        result = 'Tendie update failed; please try again later.'
-    _results.put_nowait((channel, nick, result))
+def synchronization_error(exc):
+    if isinstance(exc, SyncError):
+        return str(exc)
+    if isinstance(exc, requests.RequestException):
+        return 'Tendie synchronization failed; no posts imported. Try again later.'
+    if isinstance(exc, sqlite3.Error):
+        return 'Tendie storage is unavailable; please try again later.'
+    if isinstance(exc, (ValueError, KeyError, TypeError, AttributeError)):
+        return 'Invalid tendie data or configuration; no posts imported.'
+    return 'Tendie update failed; please try again later.'
 
 
-def _start_update(username, config, channel, nick):
-    # Hold the sole slot until the result is drained, bounding both threads and
-    # undelivered results. No unbounded executor queue and no SQLite work here.
-    if not _update_slot.acquire(blocking=False):
-        return 'A tendie update is already running or awaiting delivery.'
-    try:
-        threading.Thread(
-            target=_update_worker,
-            args=(username, config, channel, nick),
-            name='pmxbot-tendie-update',
-            daemon=True,
-        ).start()
-    except Exception as exc:
-        _update_slot.release()
-        log.error('Could not start tendie worker (%s)', type(exc).__name__)
-        return 'Could not start tendie update; please try again later.'
-    return ACKNOWLEDGEMENT
-
-
-@execdelay('tendie results', None, 1, repeat=True)
-def tendie_results():
-    """Deliver completion on the bot thread using normal output and silent mode."""
-    try:
-        channel, nick, result = _results.get_nowait()
-    except queue.Empty:
-        return
-    _update_slot.release()
-    yield SwitchChannel(channel)
-    yield f'{nick}: {result}'
+def administrator_url(config):
+    for value in (config.get('web_public_url'), config.get('albums_url')):
+        if not isinstance(value, str) or any(char.isspace() for char in value):
+            continue
+        try:
+            url = urllib.parse.urlsplit(value)
+            if (
+                url.scheme in ('http', 'https')
+                and url.netloc
+                and not (url.username or url.password or url.query or url.fragment)
+            ):
+                return value.rstrip('/') + '/admin/tendies'
+        except ValueError:
+            pass
+    return None
 
 
 @command()
-def tendie(rest, event=None, channel=None, nick=None):
-    """Random stored tendie; latest, days, status; update requires an authenticated administrator."""
+def tendie(rest):
+    """Random stored tendie; latest, days, status; administrators update on the website."""
     action = rest.strip().lower()
     if action not in ('', 'latest', 'days', 'update', 'status'):
         return 'Usage: !tendie [latest|days|update|status]'
     if action == 'update':
-        config = dict(pmxbot.config)
-        username = admin_username(event, config)
-        if username is None:
-            return 'Tendie update requires an authenticated administrator.'
-        config['tendie_author'] = config.get('tendie_author') or os.environ.get(
-            'TENDIE_AUTHOR'
-        )
-        config['x_bearer_token'] = config.get('x_bearer_token') or os.environ.get(
-            'X_BEARER_TOKEN'
-        )
-        nick = nick or event.source.nick
-        channel = channel or (nick if event.type == 'privmsg' else event.target)
-        return _start_update(username, config, channel, nick)
+        message = 'Administrators must use the website to update tendies.'
+        url = administrator_url(pmxbot.config)
+        return message + (' ' + url if url else '')
     return _response(action, pmxbot.config)
 
 
 def _response(action, config):
     try:
-        if action == 'update' and not config.get('tendie_author'):
-            raise SyncError(
-                'Configure tendie_author or TENDIE_AUTHOR with the source X username.'
-            )
         with contextlib.closing(
             Collection(
                 config.get('database', 'sqlite:pmxbot.sqlite'),
@@ -445,18 +398,6 @@ def _response(action, config):
         ) as store:
             if action == 'status':
                 return f'Tendie: {store.size()} posts; last successful synchronization: {store.meta("last_success") or "never"}.'
-            if action == 'update':
-                token = config.get('x_bearer_token')
-                if not token:
-                    return 'Configure x_bearer_token or X_BEARER_TOKEN to synchronize tendies.'
-                count = store.sync(
-                    XProvider(token, store.author),
-                    live=True,
-                    cooldown=float(config.get('tendie_sync_cooldown', 300)),
-                    include_replies=config.get('tendie_include_replies', False),
-                    include_quotes=config.get('tendie_include_quotes', True),
-                )
-                return f'Tendie: imported {count} posts.'
             post = store.select(latest=bool(action))
             if post is None:
                 return 'No tendies stored. Ask an administrator to synchronize or import posts.'

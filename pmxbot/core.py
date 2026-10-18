@@ -482,7 +482,7 @@ class Bot(metaclass=abc.ABCMeta):
         for message in augmented:
             self.out(message.channel, message, not message.secret)
 
-    def handle_action(self, channel, nick, msg, event=None):
+    def handle_action(self, channel, nick, msg):
         "Core message parser and dispatcher"
 
         if self._handle_silent_control(msg):
@@ -494,7 +494,7 @@ class Bot(metaclass=abc.ABCMeta):
                 self._handle_exception, handler=handler
             )
             rest = handler.process(msg)
-            client = connection = None
+            client = connection = event = None
             # for regexp handlers
             match = rest
             f = handler.attach(locals())
