@@ -78,6 +78,9 @@ images_quality: low
 # !tendie: uses the primary SQLite database above; X synchronization is optional.
 # Source X username; set privately in the environment or replace with your account.
 tendie_author: !env TENDIE_AUTHOR
+# Map authenticated IRC services accounts to existing local administrator usernames.
+# The IRC server must support account-tag; nicknames alone never authorize updates.
+tendie_admin_accounts: {}
 x_bearer_token: !env X_BEARER_TOKEN
 tendie_sync_cooldown: 300 # seconds, including after failed attempts
 tendie_include_replies: false

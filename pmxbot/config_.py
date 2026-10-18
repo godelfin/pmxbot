@@ -15,6 +15,10 @@ def config(client, event, channel, nick, rest):
         return "Command not recognized"
     res = match.groupdict()
     key = res['key']
+    if key in ('tendie_admin_accounts', 'database'):
+        # These determine the administrator trust boundary. The public runtime
+        # config command must not let callers grant themselves update access.
+        return 'Change this setting in the bot configuration file and restart.'
     op = res['op']
     value = yaml.safe_load(res['value'])
     if op in ('+=', '-='):

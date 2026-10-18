@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import urllib.parse
 import uuid
+from collections.abc import Mapping
 
 import yaml
 
@@ -21,6 +22,7 @@ import pmxbot
 from .core import command
 from .dictlib import ConfigDict
 from .storage import SQLiteStorage
+from .users import UserStore
 
 
 UTC = datetime.timezone.utc
@@ -301,12 +303,49 @@ def days_since(post, current=None):
     return f'{days} complete {unit} since the latest tendie. ' + post['url']
 
 
+def authenticated_admin(event):
+    """Trust only a server account tag mapped to a currently active local admin.
+
+    IRC nicknames and client-only +account tags are not authentication. A
+    missing event (including other transports) or malformed mapping fails closed.
+    """
+    if getattr(event, 'type', None) not in ('pubmsg', 'privmsg'):
+        return False
+    try:
+        accounts = [tag['value'] for tag in event.tags if tag['key'] == 'account']
+        if (
+            len(accounts) != 1
+            or not isinstance(accounts[0], str)
+            or not accounts[0]
+            or accounts[0] == '*'
+        ):
+            return False
+        mapping = pmxbot.config.get('tendie_admin_accounts', {})
+        if not isinstance(mapping, Mapping):
+            return False
+        usernames = [
+            username
+            for account, username in mapping.items()
+            if isinstance(account, str) and account.casefold() == accounts[0].casefold()
+        ]
+        if len(usernames) != 1 or not isinstance(usernames[0], str):
+            return False
+        with contextlib.closing(
+            UserStore(pmxbot.config.get('database', 'sqlite:pmxbot.sqlite'))
+        ) as store:
+            return store.get_by_username(usernames[0]).is_admin
+    except (ValueError, sqlite3.Error, OSError, KeyError, TypeError, AttributeError):
+        return False
+
+
 @command()
-def tendie(rest):
-    """Random stored tendie; subcommands: latest, days, update, status."""
+def tendie(rest, event=None):
+    """Random stored tendie; latest, days, status; update requires an authenticated administrator."""
     action = rest.strip().lower()
     if action not in ('', 'latest', 'days', 'update', 'status'):
         return 'Usage: !tendie [latest|days|update|status]'
+    if action == 'update' and not authenticated_admin(event):
+        return 'Tendie update requires an authenticated administrator.'
     try:
         with contextlib.closing(Collection()) as store:
             if action == 'status':
@@ -326,9 +365,7 @@ def tendie(rest):
                 return f'Tendie: imported {count} posts.'
             post = store.select(latest=bool(action))
             if post is None:
-                return (
-                    'No tendies stored. Use !tendie update or import a JSON/CSV file.'
-                )
+                return 'No tendies stored. Ask an administrator to synchronize or import posts.'
             return days_since(post) if action == 'days' else format_post(post)
     except SyncError as exc:
         return str(exc)

@@ -2,7 +2,8 @@ Stored tendies
 ==============
 
 ``!tendie`` returns a random locally stored post from the configured X account,
-including its original X.com URL. All IRC users can use these subcommands:
+including its original X.com URL. Random, latest, days, and status are available
+to all IRC users:
 
 * ``!tendie latest`` returns the newest post by original creation time.
 * ``!tendie days`` reports complete elapsed days since that post was created,
@@ -11,8 +12,10 @@ including its original X.com URL. All IRC users can use these subcommands:
   an explanatory response. Future creation times report zero days.
 * ``!tendie status`` reports the number stored and the last successful import
   or live synchronization, in UTC (or ``never``).
-* ``!tendie update`` fetches newer posts through the official X API and reports
-  the number inserted. Existing IDs are never overwritten or counted twice.
+
+``!tendie update`` requires an authenticated administrator. It fetches newer
+posts through the official X API and reports the number inserted. Existing IDs
+are never overwritten or counted twice.
 
 Random, latest, days, and status requests make no network requests. Post text
 is HTML-unescaped, stripped of IRC control characters, collapsed to a single
@@ -26,6 +29,7 @@ The example ``config.yaml`` includes these settings::
 
     database: sqlite:pmxbot.sqlite
     tendie_author: !env TENDIE_AUTHOR
+    tendie_admin_accounts: {}
     x_bearer_token: !env X_BEARER_TOKEN
     tendie_sync_cooldown: 300
     tendie_include_replies: false
@@ -38,6 +42,33 @@ All account names below are placeholders. Reads, incremental IDs, counts,
 cooldowns, and synchronization metadata are scoped to the configured account,
 so changing it does not serve posts from a previous account. Stored history
 is retained if you switch back.
+
+Authorize updates by mapping an IRC services account to an existing local
+administrator username, for example::
+
+    tendie_admin_accounts:
+        services_account: local_admin
+
+The IRC server must support the
+`IRCv3 account-tag extension <https://ircv3.net/specs/extensions/account-tag>`_.
+The bot requests this capability when mappings are configured. The caller
+must identify to the mapped services account on that server. The server's
+``account`` tag authenticates the account; nicknames, hostmasks, client-only
+``+account`` tags, and text in a message do not grant access. Mapping keys are
+case insensitive; ambiguous mappings are denied. The mapped local user must
+currently be enabled, have role ``admin``, and not require a password change.
+The role is checked for every update, so demotion or disabling takes effect
+immediately. IRC account mappings must be provisioned in trusted configuration;
+there is no automatic mapping from IRC nicknames to local usernames. The
+public ``!config`` command cannot change ``tendie_admin_accounts`` or the
+primary ``database`` setting; edit the configuration file and restart instead.
+
+Updates are denied by default, including when the server supplies no account
+tag or the caller arrives through a transport without authenticated IRC event
+metadata. A denied request never opens the tendie collection, constructs an X
+provider, or changes synchronization metadata or cooldown. These restrictions
+apply only to live IRC updates; the local import utility remains a trusted
+operator tool. Public read commands need no account mapping or authentication.
 
 Tendie uses the existing primary ``database`` setting and pmxbot's
 ``SQLiteStorage`` connection and schema-initialization conventions. Opening

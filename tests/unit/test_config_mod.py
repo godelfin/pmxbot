@@ -12,3 +12,12 @@ def test_config_append():
     text = 'foo += {"a": 3, "b": foo}'
     pmxbot.config_.config(None, None, None, None, text)
     assert pmxbot.config['foo'][0] == {'a': 3, 'b': 'foo'}
+
+
+@mock.patch('pmxbot.config', {})
+def test_administrator_trust_settings_are_not_publicly_mutable():
+    for key in ('tendie_admin_accounts', 'database'):
+        pmxbot.config[key] = 'original'
+        result = pmxbot.config_.config(None, None, None, 'attacker', key + ' = changed')
+        assert 'configuration file' in result
+        assert pmxbot.config[key] == 'original'

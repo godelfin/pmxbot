@@ -119,6 +119,10 @@ class LoggingCommandBot(core.Bot, irc.bot.SingleServerIRCBot):
     def on_welcome(self, connection, event):
         # save the connection object so .out has something to call
         self._conn = connection
+        if pmxbot.config.get('tendie_admin_accounts'):
+            # Post-registration CAP REQ needs no registration hold or CAP END.
+            # Unsupported servers leave administrative updates disabled.
+            connection.cap('REQ', 'account-tag')
         if pmxbot.config.get('nickserv_password'):
             msg = 'identify %s' % pmxbot.config.nickserv_password
             connection.privmsg('NickServ', msg)
@@ -178,7 +182,7 @@ class LoggingCommandBot(core.Bot, irc.bot.SingleServerIRCBot):
             return
         nick = event.source.nick
         channel = event.target
-        self.handle_action(channel, nick, msg)
+        self.handle_action(channel, nick, msg, event=event)
 
     def on_privmsg(self, connection, event):
         msg = ''.join(event.arguments)
@@ -186,7 +190,7 @@ class LoggingCommandBot(core.Bot, irc.bot.SingleServerIRCBot):
             return
         nick = event.source.nick
         channel = nick
-        self.handle_action(channel, nick, msg)
+        self.handle_action(channel, nick, msg, event=event)
 
     def on_invite(self, connection, event):
         nick = event.source.nick

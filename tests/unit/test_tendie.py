@@ -7,13 +7,29 @@ from unittest.mock import Mock
 
 import pytest
 import requests
+import irc.client
 
 import pmxbot
 from pmxbot import core, tendie
+from pmxbot.irc import LoggingCommandBot
+from pmxbot.users import UserStore
 
 
 UTC = datetime.timezone.utc
 NOW = datetime.datetime(2026, 10, 18, 12, tzinfo=UTC)
+
+
+def irc_event(
+    account='services-admin', command='!tendie update', kind='pubmsg', nick='any-nick'
+):
+    tags = [] if account is None else [{'key': 'account', 'value': account}]
+    return irc.client.Event(
+        kind, irc.client.NickMask(nick + '!user@host'), '#test', [command], tags
+    )
+
+
+def admin_update():
+    return tendie.tendie('update', event=irc_event())
 
 
 def post(post_id='1', created_at='2026-10-17T12:00:00Z', **kwargs):
@@ -41,6 +57,10 @@ def collection(tmp_path, monkeypatch):
             tendie_author='ExampleAccount',
             log_channels=[],
             other_channels=[],
+            tendie_admin_accounts={
+                'services-admin': 'local-admin',
+                'services-user': 'local-user',
+            },
         ),
     )
     monkeypatch.setattr(tendie, 'now', lambda: NOW)
@@ -50,6 +70,10 @@ def collection(tmp_path, monkeypatch):
     monkeypatch.setattr(
         tendie.requests, 'get', Mock(side_effect=AssertionError('Network'))
     )
+    with contextlib.closing(UserStore(pmxbot.config['database'])) as users:
+        admin = users.create('local-admin')
+        users.update(admin.id, role='admin')
+        users.create('local-user')
     with contextlib.closing(tendie.Collection(filename)) as store:
         yield store
 
@@ -129,7 +153,7 @@ def test_empty(collection, action):
 
 
 def test_missing_credentials_status_and_usage(collection):
-    assert 'Configure' in tendie.tendie('update')
+    assert 'Configure' in admin_update()
     assert '0 posts' in tendie.tendie('status')
     assert 'never' in tendie.tendie('status')
     assert 'Usage:' in tendie.tendie('unknown')
@@ -178,7 +202,7 @@ def test_actual_concurrent_sync_keeps_reads_available(collection):
     try:
         assert started.wait(5)
         pmxbot.config['x_bearer_token'] = 'test-secret'
-        assert 'already running' in tendie.tendie('update')
+        assert 'already running' in admin_update()
         assert 'No tendies' in tendie.tendie('')
         assert collection.size() == 0
         with pytest.raises(tendie.SyncError, match='already running'):
@@ -212,7 +236,7 @@ def test_api_initial_and_pagination(api, collection):
         api_response([xpost('2')], meta={'next_token': 'next'}),
         api_response([xpost()], meta={}),
     ]
-    assert tendie.tendie('update') == 'Tendie: imported 2 posts.'
+    assert admin_update() == 'Tendie: imported 2 posts.'
     assert api.call_count == 3
     first = api.call_args_list[1]
     assert first.args[0] == 'https://api.x.com/2/users/42/tweets'
@@ -221,7 +245,7 @@ def test_api_initial_and_pagination(api, collection):
     assert first.kwargs['params']['exclude'] == 'retweets'
     assert 'since_id' not in first.kwargs['params']
     assert api.call_args.kwargs['params']['pagination_token'] == 'next'
-    assert 'cooling down' in tendie.tendie('update')
+    assert 'cooling down' in admin_update()
 
 
 def test_api_incremental_environment_key(api, collection, monkeypatch):
@@ -230,7 +254,7 @@ def test_api_incremental_environment_key(api, collection, monkeypatch):
     del pmxbot.config['x_bearer_token']
     monkeypatch.setenv('X_BEARER_TOKEN', 'env-secret')
     api.side_effect = [api_response({'id': '42'}), api_response([xpost('2')], meta={})]
-    assert 'imported 1' in tendie.tendie('update')
+    assert 'imported 1' in admin_update()
     assert api.call_args.kwargs['params']['since_id'] == '1'
     assert api.call_args.kwargs['headers']['Authorization'] == 'Bearer env-secret'
 
@@ -244,16 +268,16 @@ def test_partial_failure_atomic_and_retry(api, collection, failure):
         api_response([xpost('3')], meta={'next_token': 'next'}),
         failure,
     ]
-    assert 'no posts imported' in tendie.tendie('update')
+    assert 'no posts imported' in admin_update()
     assert collection.size() == 0
     assert collection.meta('last_success') is None
-    assert 'cooling down' in tendie.tendie('update')
+    assert 'cooling down' in admin_update()
     allow_sync(collection)
     api.side_effect = [
         api_response({'id': '42'}),
         api_response([xpost('3'), xpost('2')], meta={}),
     ]
-    assert 'imported 2' in tendie.tendie('update')
+    assert 'imported 2' in admin_update()
     assert 'since_id' not in api.call_args.kwargs['params']
 
 
@@ -263,7 +287,7 @@ def test_api_http_failure(api, collection, status):
     response.status_code = status
     response.raise_for_status.side_effect = requests.HTTPError('secret')
     api.return_value = response
-    result = tendie.tendie('update')
+    result = admin_update()
     assert ('rate limit' if status == 429 else 'failed') in result
     assert 'secret' not in result
     assert collection.meta('last_success') is None
@@ -285,7 +309,7 @@ def test_api_invalid_and_partial_data(api, collection, page):
         Mock(status_code=200, json=Mock(return_value=page)),
         Mock(status_code=200, json=Mock(return_value=page)),
     ]
-    assert 'no posts imported' in tendie.tendie('update')
+    assert 'no posts imported' in admin_update()
     assert collection.size() == 0
 
 
@@ -294,7 +318,7 @@ def test_api_empty_success(api, collection):
         api_response({'id': '42'}),
         api_response(meta={'result_count': 0}),
     ]
-    assert 'imported 0' in tendie.tendie('update')
+    assert 'imported 0' in admin_update()
     assert collection.meta('last_success')
 
 
@@ -359,13 +383,13 @@ def test_failed_incremental_preserves_existing_rows_and_success(api, collection)
         api_response([xpost('3')], meta={'next_token': 'next'}),
         requests.Timeout('secret'),
     ]
-    assert 'no posts imported' in tendie.tendie('update')
+    assert 'no posts imported' in admin_update()
     assert collection.size() == 1
     assert collection.select(True)['id'] == '1'
     assert collection.meta('last_success') == success
     allow_sync(collection)
     api.side_effect = [api_response({'id': '42'}), api_response([xpost('2')], meta={})]
-    assert 'imported 1' in tendie.tendie('update')
+    assert 'imported 1' in admin_update()
     assert api.call_args.kwargs['params']['since_id'] == '1'
 
 
@@ -400,7 +424,7 @@ def test_missing_page_data_is_not_success(api, collection):
         api_response({'id': '42'}),
         api_response(meta={'result_count': 2}),
     ]
-    assert 'no posts imported' in tendie.tendie('update')
+    assert 'no posts imported' in admin_update()
     assert collection.meta('last_success') is None
 
 
@@ -409,7 +433,7 @@ def test_pagination_bound_rolls_back(api, collection):
         api_response([xpost(str(index + 1))], meta={'next_token': str(index)})
         for index in range(100)
     ]
-    assert 'pagination limit' in tendie.tendie('update')
+    assert 'pagination limit' in admin_update()
     assert collection.size() == 0
     assert collection.meta('last_success') is None
 
@@ -417,7 +441,7 @@ def test_pagination_bound_rolls_back(api, collection):
 def test_configured_source_controls_api_and_urls(api, collection):
     pmxbot.config['tendie_author'] = '@AnotherAccount'
     api.side_effect = [api_response({'id': '42'}), api_response([xpost()], meta={})]
-    assert 'imported 1' in tendie.tendie('update')
+    assert 'imported 1' in admin_update()
     assert (
         api.call_args_list[0].args[0]
         == 'https://api.x.com/2/users/by/username/AnotherAccount'
@@ -442,7 +466,7 @@ def test_switching_accounts_isolates_history_and_sync_state(collection, monkeypa
     assert '1 posts' in tendie.tendie('status')
     assert tendie.tendie('latest').endswith('/99')
     pmxbot.config['x_bearer_token'] = 'test-secret'
-    assert 'cooling down' in tendie.tendie('update')
+    assert 'cooling down' in admin_update()
 
 
 def test_source_environment_fallback_and_configuration_precedence(
@@ -457,7 +481,7 @@ def test_source_environment_fallback_and_configuration_precedence(
 @pytest.mark.parametrize('author', [None, '', 'bad/name', 'a' * 16, 'bad name'])
 def test_missing_or_invalid_source_is_graceful(collection, author):
     pmxbot.config['tendie_author'] = author
-    result = tendie.tendie('update')
+    result = admin_update()
     assert (
         'Configure tendie_author'
         if not author
@@ -564,3 +588,186 @@ def test_unsupported_primary_database_does_not_create_fallback(
 ):
     monkeypatch.setitem(pmxbot.config, 'database', uri)
     assert 'persistent SQLite primary database' in tendie.tendie('')
+
+
+class DispatchBot(core.Bot):
+    _nickname = 'bot'
+
+    def __init__(self):
+        self.messages = []
+
+    def transmit(self, channel, message):
+        self.messages.append(str(message))
+        return message
+
+
+@pytest.fixture
+def dispatcher(collection, monkeypatch):
+    handler = next(h for h in core.Handler._registry if h.func is tendie.tendie)
+    monkeypatch.setattr(core.Handler, '_registry', [handler])
+    return DispatchBot()
+
+
+def sync_state(collection):
+    return [
+        tuple(row)
+        for row in collection.db.execute('SELECT * FROM tendie_sync ORDER BY key')
+    ]
+
+
+@pytest.mark.parametrize('kind', ['pubmsg', 'privmsg'])
+@pytest.mark.parametrize('account', [None, '*', 'services-user', 'unmapped'])
+def test_dispatch_denies_unauthorized_updates_without_provider_or_cooldown(
+    dispatcher, collection, monkeypatch, kind, account
+):
+    pmxbot.config['x_bearer_token'] = 'test-secret'
+    factory = Mock()
+    monkeypatch.setattr(tendie, 'XProvider', factory)
+    before = sync_state(collection)
+    # Even a nickname equal to the local admin name grants no authority.
+    event = irc_event(account=account, kind=kind, nick='local-admin')
+    getattr(LoggingCommandBot, 'on_' + kind)(dispatcher, None, event)
+    assert dispatcher.messages == [
+        'Tendie update requires an authenticated administrator.'
+    ]
+    factory.assert_not_called()
+    tendie.requests.get.assert_not_called()
+    assert sync_state(collection) == before
+    assert collection.meta('last_attempt') is None
+
+
+def test_missing_event_denies_before_opening_collection(
+    dispatcher, collection, monkeypatch
+):
+    opener = Mock()
+    monkeypatch.setattr(tendie, 'Collection', opener)
+    dispatcher.handle_action('#test', 'local-admin', '!tendie update')
+    assert 'authenticated administrator' in dispatcher.messages[0]
+    opener.assert_not_called()
+    tendie.requests.get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'tags',
+    [
+        [{'key': '+account', 'value': 'services-admin'}],
+        [
+            {'key': 'account', 'value': 'services-admin'},
+            {'key': 'account', 'value': 'services-user'},
+        ],
+        [{'key': 'account', 'value': None}],
+    ],
+)
+def test_client_only_and_ambiguous_tags_fail_closed(dispatcher, collection, tags):
+    event = irc_event()
+    event.tags = tags
+    LoggingCommandBot.on_pubmsg(dispatcher, None, event)
+    assert 'authenticated administrator' in dispatcher.messages[0]
+    assert collection.meta('last_attempt') is None
+    tendie.requests.get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'mapping',
+    [
+        {},
+        [],
+        {'services-admin': 'missing-user'},
+        {'services-admin': 'local-user'},
+        {'services-admin': 'local-admin', 'SERVICES-ADMIN': 'local-admin'},
+    ],
+)
+def test_missing_invalid_or_non_admin_mapping_denied(dispatcher, collection, mapping):
+    pmxbot.config['tendie_admin_accounts'] = mapping
+    LoggingCommandBot.on_pubmsg(dispatcher, None, irc_event())
+    assert 'authenticated administrator' in dispatcher.messages[0]
+    assert collection.meta('last_attempt') is None
+    tendie.requests.get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'change', ["role='user'", 'enabled=0', 'must_change_password=1']
+)
+def test_current_admin_state_is_rechecked_each_request(
+    api, dispatcher, collection, change
+):
+    api.side_effect = [api_response({'id': '42'}), api_response([xpost()], meta={})]
+    LoggingCommandBot.on_pubmsg(dispatcher, None, irc_event())
+    assert dispatcher.messages[-1] == 'Tendie: imported 1 posts.'
+    calls = api.call_count
+    # Simulate a trusted administrator changing this account after authorization.
+    with collection.db:
+        collection.db.execute(
+            "UPDATE users SET " + change + " WHERE username='local-admin'"
+        )
+    before = sync_state(collection)
+    LoggingCommandBot.on_pubmsg(dispatcher, None, irc_event())
+    assert 'authenticated administrator' in dispatcher.messages[-1]
+    assert api.call_count == calls
+    assert sync_state(collection) == before
+
+
+@pytest.mark.parametrize('kind', ['pubmsg', 'privmsg'])
+def test_denied_update_does_not_stop_authenticated_admin(
+    api, dispatcher, collection, kind
+):
+    event = irc_event(account='services-user', kind=kind)
+    deliver = getattr(LoggingCommandBot, 'on_' + kind)
+    deliver(dispatcher, None, event)
+    api.assert_not_called()
+    assert sync_state(collection) == []
+    api.side_effect = [api_response({'id': '42'}), api_response([xpost()], meta={})]
+    deliver(
+        dispatcher,
+        None,
+        irc_event(account='SERVICES-ADMIN', kind=kind, nick='different-nick'),
+    )
+    assert dispatcher.messages[-1] == 'Tendie: imported 1 posts.'
+    assert api.call_count == 2
+    assert collection.meta('last_attempt') == NOW.isoformat()
+
+
+@pytest.mark.parametrize('kind', ['pubmsg', 'privmsg'])
+@pytest.mark.parametrize('action', ['', 'latest', 'days', 'status'])
+def test_public_reads_available_through_dispatch_without_identity(
+    dispatcher, collection, kind, action
+):
+    collection.sync(provider(post()))
+    pmxbot.config.pop('tendie_admin_accounts')
+    before = sync_state(collection)
+    event = irc_event(account=None, command='!tendie ' + action, kind=kind)
+    getattr(LoggingCommandBot, 'on_' + kind)(dispatcher, None, event)
+    assert len(dispatcher.messages) == 1
+    assert 'authenticated administrator' not in dispatcher.messages[0]
+    assert ('1 posts' if action == 'status' else '/1') in dispatcher.messages[0]
+    tendie.requests.get.assert_not_called()
+    assert sync_state(collection) == before
+
+
+def test_capability_requested_for_admin_mapping(collection):
+    bot = Mock(_channels=[])
+    connection = Mock()
+    LoggingCommandBot.on_welcome(bot, connection, None)
+    connection.cap.assert_called_once_with('REQ', 'account-tag')
+    pmxbot.config['tendie_admin_accounts'] = {}
+    connection.reset_mock()
+    LoggingCommandBot.on_welcome(bot, connection, None)
+    connection.cap.assert_not_called()
+
+
+def test_public_config_cannot_grant_update_access(dispatcher, collection):
+    from pmxbot import config_
+
+    core.command(name='config')(config_.config)
+    before = dict(pmxbot.config['tendie_admin_accounts'])
+    dispatcher.handle_action(
+        '#test',
+        'local-admin',
+        '!config tendie_admin_accounts = {services-user: local-admin}',
+    )
+    assert 'configuration file' in dispatcher.messages[-1]
+    assert pmxbot.config['tendie_admin_accounts'] == before
+    LoggingCommandBot.on_pubmsg(dispatcher, None, irc_event(account='services-user'))
+    assert 'authenticated administrator' in dispatcher.messages[-1]
+    assert collection.meta('last_attempt') is None
+    tendie.requests.get.assert_not_called()
