@@ -33,7 +33,13 @@ def provider(*posts):
 @pytest.fixture
 def collection(tmp_path, monkeypatch):
     filename = tmp_path / 'tendie.sqlite'
-    monkeypatch.setattr(pmxbot, 'config', {'tendie_database': str(filename)})
+    monkeypatch.setattr(
+        pmxbot,
+        'config',
+        core.ConfigDict(
+            tendie_database=str(filename), log_channels=[], other_channels=[]
+        ),
+    )
     monkeypatch.setattr(tendie, 'now', lambda: NOW)
     monkeypatch.delenv('X_BEARER_TOKEN', raising=False)
     # Every unexpected network request fails the test, including database reads.
@@ -50,7 +56,7 @@ def allow_sync(store):
 
 
 def test_registration_and_public_days(collection):
-    handler = next(core.Handler.find_matching('!tendie days', '#test'))
+    handler = next(core.CommandHandler.find_matching('!tendie days', '#test'))
     assert handler.func is tendie.tendie
     assert 'No tendies' in handler.func('days')
 
