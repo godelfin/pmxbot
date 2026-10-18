@@ -10,11 +10,17 @@ import os
 import re
 import sqlite3
 import threading
+import urllib.parse
+import uuid
+
+import yaml
 
 import requests
 
 import pmxbot
 from .core import command
+from .dictlib import ConfigDict
+from .storage import SQLiteStorage
 
 
 UTC = datetime.timezone.utc
@@ -53,12 +59,23 @@ def configured_author(value=None):
     return author
 
 
-class Collection:
-    def __init__(self, filename, author=None):
+class Collection(SQLiteStorage):
+    def __init__(self, uri=None, author=None):
         self.author = configured_author(author)
-        self.db = sqlite3.connect(str(filename), timeout=0)
+        uri = str(uri or pmxbot.config.get('database', 'sqlite:pmxbot.sqlite'))
+        if self.uri_matches(uri) and not uri.startswith('sqlite:'):
+            uri = 'sqlite:' + uri
+        parsed = urllib.parse.urlparse(uri)
+        if (
+            parsed.scheme not in ('', 'sqlite')
+            or not parsed.path
+            or parsed.path == ':memory:'
+        ):
+            raise SyncError('Tendie requires a persistent SQLite primary database.')
+        super().__init__(uri)
+
+    def init_tables(self):
         self.db.row_factory = sqlite3.Row
-        self.db.execute('PRAGMA journal_mode=WAL')
         self.db.executescript(
             '''
             CREATE TABLE IF NOT EXISTS tendie_posts (
@@ -71,9 +88,6 @@ class Collection:
             );
             '''
         )
-
-    def close(self):
-        self.db.close()
 
     def meta(self, key):
         row = self.db.execute(
@@ -120,52 +134,73 @@ class Collection:
             _sync_lock.release()
 
     def _sync(self, provider, cooldown, include_replies, include_quotes):
-        # A committed attempt timestamp protects against rapid retries, including
-        # failed requests and restarts. SQLite serializes writers across processes.
+        # Claim synchronization in a short transaction. No primary-database
+        # write lock is held while requesting pages from a provider.
+        owner = uuid.uuid4().hex
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
+            started = self.meta('sync_started')
+            if started and (now() - timestamp(started)).total_seconds() < 1800:
+                raise SyncError('Tendie synchronization is already running.')
             attempted = self.meta('last_attempt')
             if attempted and (now() - timestamp(attempted)).total_seconds() < cooldown:
                 raise SyncError(
                     'Tendie synchronization is cooling down. Try again later.'
                 )
             self.set_meta('last_attempt', now().isoformat())
-        with self.db:
-            self.db.execute('BEGIN IMMEDIATE')
+            self.set_meta('sync_started', now().isoformat())
+            self.set_meta('sync_owner', owner)
             row = self.db.execute(
                 'SELECT id FROM tendie_posts WHERE author=? COLLATE NOCASE ORDER BY length(id) DESC, id DESC LIMIT 1',
                 (self.author,),
             ).fetchone()
             since_id = row[0] if row else None
-            count = 0
-            for post in provider.posts(since_id):
-                post_id = str(post['id'])
-                if not re.fullmatch(r'[1-9][0-9]{0,29}', post_id):
-                    raise ValueError('Invalid post ID')
-                if post['author'].lstrip('@').lower() != self.author.lower():
-                    raise ValueError('Unexpected author')
-                created = timestamp(post['created_at']).isoformat()
-                if not isinstance(post['text'], str):
-                    raise ValueError('Invalid text')
-                kinds = {ref['type'] for ref in post.get('referenced_tweets', [])}
-                if (
-                    'retweeted' in kinds
-                    or (not include_replies and 'replied_to' in kinds)
-                    or (not include_quotes and 'quoted' in kinds)
-                ):
-                    continue
-                count += self.db.execute(
-                    'INSERT OR IGNORE INTO tendie_posts VALUES (?, ?, ?, ?, ?, ?)',
-                    (
-                        post_id,
-                        post['text'],
-                        self.author,
-                        created,
-                        now().isoformat(),
-                        f'https://x.com/{self.author}/status/{post_id}',
-                    ),
-                ).rowcount
-            self.set_meta('last_success', now().isoformat())
+        try:
+            posts = list(provider.posts(since_id))
+            with self.db:
+                self.db.execute('BEGIN IMMEDIATE')
+                if self.meta('sync_owner') != owner:
+                    raise SyncError(
+                        'Tendie synchronization lease expired; try again later.'
+                    )
+                return self._import_posts(posts, include_replies, include_quotes)
+        finally:
+            with self.db:
+                self.db.execute('BEGIN IMMEDIATE')
+                if self.meta('sync_owner') == owner:
+                    self.set_meta('sync_started', '')
+                    self.set_meta('sync_owner', '')
+
+    def _import_posts(self, posts, include_replies, include_quotes):
+        count = 0
+        for post in posts:
+            post_id = str(post['id'])
+            if not re.fullmatch(r'[1-9][0-9]{0,29}', post_id):
+                raise ValueError('Invalid post ID')
+            if post['author'].lstrip('@').lower() != self.author.lower():
+                raise ValueError('Unexpected author')
+            created = timestamp(post['created_at']).isoformat()
+            if not isinstance(post['text'], str):
+                raise ValueError('Invalid text')
+            kinds = {ref['type'] for ref in post.get('referenced_tweets', [])}
+            if (
+                'retweeted' in kinds
+                or (not include_replies and 'replied_to' in kinds)
+                or (not include_quotes and 'quoted' in kinds)
+            ):
+                continue
+            count += self.db.execute(
+                'INSERT OR IGNORE INTO tendie_posts VALUES (?, ?, ?, ?, ?, ?)',
+                (
+                    post_id,
+                    post['text'],
+                    self.author,
+                    created,
+                    now().isoformat(),
+                    f'https://x.com/{self.author}/status/{post_id}',
+                ),
+            ).rowcount
+        self.set_meta('last_success', now().isoformat())
         return count
 
 
@@ -273,9 +308,7 @@ def tendie(rest):
     if action not in ('', 'latest', 'days', 'update', 'status'):
         return 'Usage: !tendie [latest|days|update|status]'
     try:
-        with contextlib.closing(
-            Collection(pmxbot.config.get('tendie_database', 'tendie.sqlite'))
-        ) as store:
+        with contextlib.closing(Collection()) as store:
             if action == 'status':
                 return f'Tendie: {store.size()} posts; last successful synchronization: {store.meta("last_success") or "never"}.'
             if action == 'update':
@@ -310,20 +343,44 @@ def tendie(rest):
 def main():
     parser = argparse.ArgumentParser(description='Import local tendie JSON/CSV posts')
     parser.add_argument('filename')
-    parser.add_argument('--database', default='tendie.sqlite')
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        '--config', help='Bot configuration YAML (uses its primary database)'
+    )
+    source.add_argument('--database', help='Primary SQLite URI or filename')
     parser.add_argument('--author', help='Source X username (or set TENDIE_AUTHOR)')
-    parser.add_argument('--include-replies', action='store_true')
-    parser.add_argument('--exclude-quotes', action='store_true')
+    parser.add_argument('--include-replies', action='store_true', default=None)
+    parser.add_argument('--exclude-quotes', action='store_true', default=None)
     args = parser.parse_args()
     try:
-        with contextlib.closing(Collection(args.database, args.author)) as store:
+        config = ConfigDict.from_yaml(args.config) if args.config else {}
+        uri = args.database or config.get('database', 'sqlite:pmxbot.sqlite')
+        author = args.author or config.get('tendie_author')
+        with contextlib.closing(Collection(uri, author)) as store:
             count = store.sync(
                 FileProvider(args.filename),
-                include_replies=args.include_replies,
-                include_quotes=not args.exclude_quotes,
+                cooldown=float(config.get('tendie_sync_cooldown', 300)),
+                include_replies=(
+                    args.include_replies
+                    if args.include_replies is not None
+                    else config.get('tendie_include_replies', False)
+                ),
+                include_quotes=(
+                    not args.exclude_quotes
+                    if args.exclude_quotes is not None
+                    else config.get('tendie_include_quotes', True)
+                ),
             )
         print(f'Imported {count} posts.')
-    except (SyncError, ValueError, KeyError, TypeError, OSError, sqlite3.Error) as exc:
+    except (
+        SyncError,
+        ValueError,
+        KeyError,
+        TypeError,
+        OSError,
+        sqlite3.Error,
+        yaml.YAMLError,
+    ) as exc:
         parser.exit(1, f'Import failed ({type(exc).__name__}); no posts imported.\n')
 
 

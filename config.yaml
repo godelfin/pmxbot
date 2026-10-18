@@ -75,8 +75,7 @@ images_model: gpt-image-1
 images_size: 1024x1024
 images_quality: low
 
-# !tendie: local SQLite collection; live X synchronization is optional.
-tendie_database: tendie.sqlite
+# !tendie: uses the primary SQLite database above; X synchronization is optional.
 # Source X username; set privately in the environment or replace with your account.
 tendie_author: !env TENDIE_AUTHOR
 x_bearer_token: !env X_BEARER_TOKEN

@@ -32,12 +32,12 @@ def provider(*posts):
 
 @pytest.fixture
 def collection(tmp_path, monkeypatch):
-    filename = tmp_path / 'tendie.sqlite'
+    filename = tmp_path / 'pmxbot.sqlite'
     monkeypatch.setattr(
         pmxbot,
         'config',
         core.ConfigDict(
-            tendie_database=str(filename),
+            database='sqlite:' + str(filename),
             tendie_author='ExampleAccount',
             log_channels=[],
             other_channels=[],
@@ -77,9 +77,7 @@ def test_initial_incremental_duplicates_and_persistence(collection):
     assert collection.sync(second) == 1
     second.posts.assert_called_once_with('2')
     assert collection.size() == 3
-    with contextlib.closing(
-        tendie.Collection(pmxbot.config['tendie_database'])
-    ) as other:
+    with contextlib.closing(tendie.Collection(pmxbot.config['database'])) as other:
         assert other.size() == 3
         assert other.meta('last_success') == NOW.isoformat()
         assert other.meta('last_attempt') == NOW.isoformat()
@@ -145,8 +143,9 @@ def test_cooldown_and_concurrent_writer(collection):
     with tendie._sync_lock:
         with pytest.raises(tendie.SyncError, match='already running'):
             collection.sync(provider())
-    other = tendie.Collection(pmxbot.config['tendie_database'])
+    other = tendie.Collection(pmxbot.config['database'])
     try:
+        other.db.execute('PRAGMA busy_timeout=0')
         collection.db.execute('BEGIN IMMEDIATE')
         with pytest.raises(sqlite3.OperationalError, match='locked'):
             other.sync(provider())
@@ -171,9 +170,7 @@ def test_actual_concurrent_sync_keeps_reads_available(collection):
         yield post()
 
     def update():
-        with contextlib.closing(
-            tendie.Collection(pmxbot.config['tendie_database'])
-        ) as store:
+        with contextlib.closing(tendie.Collection(pmxbot.config['database'])) as store:
             results.append(store.sync(Mock(posts=posts)))
 
     thread = threading.Thread(target=update)
@@ -381,7 +378,7 @@ def test_cli_import(collection, tmp_path, monkeypatch, capsys):
             'tendie',
             str(filename),
             '--database',
-            pmxbot.config['tendie_database'],
+            pmxbot.config['database'],
             '--author',
             'ExampleAccount',
         ],
@@ -435,9 +432,7 @@ def test_switching_accounts_isolates_history_and_sync_state(collection, monkeypa
     assert 'No tendies' in tendie.tendie('days')
     assert '0 posts' in tendie.tendie('status')
     assert 'never' in tendie.tendie('status')
-    with contextlib.closing(
-        tendie.Collection(pmxbot.config['tendie_database'])
-    ) as other:
+    with contextlib.closing(tendie.Collection(pmxbot.config['database'])) as other:
         source = provider(dict(post('1'), author='@anotheraccount'))
         assert other.sync(source) == 1
         source.posts.assert_called_once_with(None)
@@ -469,3 +464,103 @@ def test_missing_or_invalid_source_is_graceful(collection, author):
         else 'Invalid tendie data or configuration'
     ) in result
     tendie.requests.get.assert_not_called()
+
+
+def test_primary_database_storage_and_additive_schema(tmp_path, monkeypatch):
+    from pmxbot.storage import SQLiteStorage
+
+    filename = tmp_path / 'primary.sqlite'
+    with contextlib.closing(sqlite3.connect(str(filename))) as db:
+        db.execute('CREATE TABLE unrelated (value TEXT)')
+        db.execute("INSERT INTO unrelated VALUES ('preserved')")
+        db.commit()
+    monkeypatch.setattr(
+        pmxbot,
+        'config',
+        {'database': 'sqlite:' + str(filename), 'tendie_author': 'ExampleAccount'},
+    )
+    with contextlib.closing(tendie.Collection()) as store:
+        assert isinstance(store, SQLiteStorage)
+        assert store.filename == str(filename)
+        assert store.db.isolation_level is None
+        assert store.db.execute('PRAGMA busy_timeout').fetchone()[0] == 20000
+        store.sync(provider(post()))
+    with contextlib.closing(tendie.Collection()) as store:
+        assert store.size() == 1
+        assert (
+            store.db.execute('SELECT value FROM unrelated').fetchone()[0] == 'preserved'
+        )
+        assert {
+            row[0]
+            for row in store.db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        } == {'unrelated', 'tendie_posts', 'tendie_sync'}
+    assert {path.name for path in tmp_path.iterdir()} == {'primary.sqlite'}
+
+
+def test_cli_and_command_share_configured_primary_database(
+    collection, tmp_path, monkeypatch, capsys
+):
+    config = tmp_path / 'bot.yaml'
+    config.write_text(
+        'database: '
+        + pmxbot.config['database']
+        + '\ntendie_author: !env TENDIE_AUTHOR\ntendie_include_replies: true\n',
+        encoding='utf-8',
+    )
+    monkeypatch.setenv('TENDIE_AUTHOR', 'ExampleAccount')
+    filename = tmp_path / 'posts.json'
+    filename.write_text(
+        json.dumps([post(referenced_tweets=[{'type': 'replied_to'}])]), encoding='utf-8'
+    )
+    monkeypatch.setattr('sys.argv', ['tendie', str(filename), '--config', str(config)])
+    tendie.main()
+    assert 'Imported 1 posts.' in capsys.readouterr().out
+    assert tendie.tendie('latest').endswith('/1')
+    assert '1 posts' in tendie.tendie('status')
+    assert collection.meta('last_success')
+    allow_sync(collection)
+    tendie.main()
+    assert 'Imported 0 posts.' in capsys.readouterr().out
+
+
+def test_provider_fetch_does_not_lock_primary_database(collection):
+    with collection.db:
+        collection.db.execute('CREATE TABLE unrelated (value TEXT)')
+
+    def posts(since_id):
+        with contextlib.closing(sqlite3.connect(collection.filename, timeout=0)) as db:
+            db.execute("INSERT INTO unrelated VALUES ('during fetch')")
+            db.commit()
+        yield post()
+
+    assert collection.sync(Mock(posts=posts)) == 1
+    assert (
+        collection.db.execute('SELECT value FROM unrelated').fetchone()[0]
+        == 'during fetch'
+    )
+    assert collection.meta('sync_owner') == ''
+    assert collection.meta('sync_started') == ''
+
+
+def test_durable_lease_blocks_other_process_and_recovers(collection, monkeypatch):
+    # Model a different process, which has its own Python synchronization lock.
+    monkeypatch.setattr(tendie, '_sync_lock', threading.Lock())
+    with collection.db:
+        collection.db.execute('BEGIN IMMEDIATE')
+        collection.set_meta('sync_started', NOW.isoformat())
+        collection.set_meta('sync_owner', 'another-process')
+    with pytest.raises(tendie.SyncError, match='already running'):
+        collection.sync(provider(post()))
+    monkeypatch.setattr(tendie, 'now', lambda: NOW + datetime.timedelta(minutes=30))
+    assert collection.sync(provider(post())) == 1
+    assert collection.meta('sync_owner') == ''
+
+
+@pytest.mark.parametrize('uri', ['mongodb://localhost/pmxbot', 'sqlite::memory:'])
+def test_unsupported_primary_database_does_not_create_fallback(
+    collection, monkeypatch, uri
+):
+    monkeypatch.setitem(pmxbot.config, 'database', uri)
+    assert 'persistent SQLite primary database' in tendie.tendie('')

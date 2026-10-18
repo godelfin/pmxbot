@@ -24,7 +24,7 @@ Configuration
 
 The example ``config.yaml`` includes these settings::
 
-    tendie_database: tendie.sqlite
+    database: sqlite:pmxbot.sqlite
     tendie_author: !env TENDIE_AUTHOR
     x_bearer_token: !env X_BEARER_TOKEN
     tendie_sync_cooldown: 300
@@ -39,10 +39,14 @@ cooldowns, and synchronization metadata are scoped to the configured account,
 so changing it does not serve posts from a previous account. Stored history
 is retained if you switch back.
 
-Use a writable local SQLite file, independent of the main pmxbot database
-(including when pmxbot uses MongoDB). Relative paths resolve from the process
-working directory. Back up this database with SQLite's backup facilities;
-WAL mode may also create ``-wal`` and ``-shm`` files while it is open.
+Tendie uses the existing primary ``database`` setting and pmxbot's
+``SQLiteStorage`` connection and schema-initialization conventions. Opening
+the collection additively creates only ``tendie_posts``, ``tendie_sync``, and
+its dedicated index in that database; unrelated tables are left untouched.
+There is no separate tendie database setting or fallback file. MongoDB and
+in-memory databases are unsupported for this feature and produce an
+explanatory response. Relative SQLite paths resolve from the process working
+directory, just as for the bot's other storage classes.
 
 Set ``X_BEARER_TOKEN`` in the bot's environment, or supply ``x_bearer_token``
 through private configuration. Never commit credentials. The configuration
@@ -66,17 +70,30 @@ and partial responses abort the whole import, leaving stored posts and the
 last-success timestamp unchanged. No automatic retries are made. Retry after
 the local cooldown and any provider rate limit has expired. The attempt time
 is persisted even on failure. The cooldown defaults to 300 seconds (minimum
-one second). A process lock and SQLite's writer lock reject concurrent
-synchronizations, including file imports, while WAL permits collection reads.
-No database transaction or synchronization lock remains after a failed import.
+one second). A process lock and persisted 30-minute synchronization lease reject
+concurrent synchronizations, including file imports. A lease abandoned by a
+crashed process expires automatically. Provider pages are fetched before the
+short import transaction, so network requests hold no primary-database write
+lock. Imports still commit atomically; failures release their lease. Other bot
+features can read and write their own tables during provider requests.
 
 Offline JSON and CSV imports
 ----------------------------
 
-Run from the same environment as pmxbot, using the same database path::
+Pass the same configuration YAML used by the bot::
 
-    python -m pmxbot.tendie posts.json --author ExampleAccount --database /path/to/tendie.sqlite
-    python -m pmxbot.tendie posts.csv --author ExampleAccount --database /path/to/tendie.sqlite
+    python -m pmxbot.tendie posts.json --config /path/to/config.yaml
+    python -m pmxbot.tendie posts.csv --config /path/to/config.yaml
+
+The importer uses the same ``database``, ``tendie_author``, cooldown, and filtering
+settings as the command, including ``!env`` references. Run it with the same
+working directory for relative database paths. Alternatively, explicitly pass
+the primary database URI and source account::
+
+    python -m pmxbot.tendie posts.json --database sqlite:/path/to/pmxbot.sqlite --author ExampleAccount
+
+Exactly one of ``--config`` and ``--database`` is required. Neither path creates
+a separate default collection database.
 
 JSON is an array of post objects::
 
@@ -96,8 +113,8 @@ CSV uses these same column names::
 
 Both formats use UTF-8. IDs must be decimal strings (up to 30 digits).
 The author must match the configured source account (case insensitive, optional
-``@``). For the CLI, pass ``--author`` or set ``TENDIE_AUTHOR``; the standalone
-CLI does not load ``config.yaml``.
+``@``). ``--author`` overrides the source in the configuration;
+``TENDIE_AUTHOR`` provides the environment fallback.
 Creation timestamps must be ISO 8601 with an explicit timezone. URLs are
 constructed from the validated post ID and author; supplied URLs and import
 timestamps are ignored. Use normal CSV quoting for commas and newlines.
@@ -123,4 +140,6 @@ should honor the exclusive ``since_id`` lower bound; archival providers may
 ignore it. Raise an exception on any incomplete result, including errors
 received alongside usable posts. The collection validates and filters rows,
 constructs URLs, inserts unique IDs, and commits data and success metadata
-only when the iterator finishes successfully.
+only when the iterator finishes successfully. Provider iteration runs outside
+the database write transaction; collected posts are validated and inserted
+inside one short transaction.

@@ -2,12 +2,10 @@
 .eggs/
 dist/
 build/
+_build/
 *.egg-info/
 *.pyc
 pmxbot.sqlite
-tendie.sqlite
-tendie.sqlite-wal
-tendie.sqlite-shm
 .tox/
 .cache/
 .pytest_cache/
