@@ -105,7 +105,14 @@ The token needs access to the official X v2 user lookup and user posts endpoints
 provider history limits determine how much history can be fetched.
 
 The first update imports available timeline history. Later updates use the
-largest stored post ID as ``since_id`` and follow pagination tokens. Reposts
+account-specific ``live_since_id`` checkpoint as ``since_id`` and follow
+pagination tokens. The checkpoint covers every validated fetched post, including
+filtered-out replies and quotes. It advances atomically with the import and
+last-success timestamp only after every page and post succeeds. Failures leave
+it unchanged, and successful empty responses preserve its previous value.
+Without a checkpoint, a live update requests available history even if offline
+imports or an earlier version have populated stored posts; idempotent insertion
+prevents duplicates. Offline backfills never advance the live checkpoint. Reposts
 are always excluded. Replies are excluded by default and quotes included;
 change the options above to filter future imports. Filtering does not remove
 already stored posts. To backfill posts previously excluded by filtering,
@@ -174,7 +181,9 @@ is omitted, the row is treated as an original post. Prepare files accordingly.
 Use ``--include-replies`` and/or ``--exclude-quotes`` to change import filtering.
 
 File imports can backfill older IDs and are idempotent; they share the durable
-cooldown and success metadata with live updates. Invalid files roll back the
+cooldown and success metadata with live updates, but never change the live
+checkpoint, even when their post IDs are newer than stored live posts. Invalid
+files roll back the
 entire import and exit unsuccessfully. IRC users cannot supply file paths.
 
 Adding a provider
@@ -183,8 +192,10 @@ Adding a provider
 ``Collection.sync(provider, ...)`` accepts any object implementing
 ``posts(since_id)``. It must yield dictionaries with ``id``, ``text``, ``author``
 (username), ``created_at``, and optional ``referenced_tweets``. Live providers
-should honor the exclusive ``since_id`` lower bound; archival providers may
-ignore it. Raise an exception on any incomplete result, including errors
+must be imported with ``Collection.sync(provider, live=True, ...)`` and should
+honor the exclusive ``since_id`` lower bound. The default ``live=False`` is
+for offline backfills; archival providers may ignore ``since_id`` and must not
+opt into live checkpoint advancement. Raise an exception on any incomplete result, including errors
 received alongside usable posts. The collection validates and filters rows,
 constructs URLs, inserts unique IDs, and commits data and success metadata
 only when the iterator finishes successfully. Provider iteration runs outside

@@ -125,23 +125,33 @@ class Collection(SQLiteStorage):
             (self.author,),
         ).fetchone()[0]
 
-    def sync(self, provider, cooldown=300, include_replies=False, include_quotes=True):
+    def sync(
+        self,
+        provider,
+        cooldown=300,
+        include_replies=False,
+        include_quotes=True,
+        *,
+        live=False,
+    ):
         """Import provider.posts(since_id) atomically; retain cooldown on failure.
 
         Providers yield dictionaries with id, text, created_at, author (username),
         and optional referenced_tweets as in X v2. Offline providers may ignore
         since_id to backfill history. Duplicate IDs are never overwritten.
+        Only live=True advances the checkpoint, including validated posts that
+        filtering excludes. Offline backfills must leave this flag unset.
         """
         if not _sync_lock.acquire(blocking=False):
             raise SyncError('Tendie synchronization is already running.')
         try:
             return self._sync(
-                provider, max(1, cooldown), include_replies, include_quotes
+                provider, max(1, cooldown), include_replies, include_quotes, live
             )
         finally:
             _sync_lock.release()
 
-    def _sync(self, provider, cooldown, include_replies, include_quotes):
+    def _sync(self, provider, cooldown, include_replies, include_quotes, live):
         # Claim synchronization in a short transaction. No primary-database
         # write lock is held while requesting pages from a provider.
         owner = uuid.uuid4().hex
@@ -158,11 +168,7 @@ class Collection(SQLiteStorage):
             self.set_meta('last_attempt', now().isoformat())
             self.set_meta('sync_started', now().isoformat())
             self.set_meta('sync_owner', owner)
-            row = self.db.execute(
-                'SELECT id FROM tendie_posts WHERE author=? COLLATE NOCASE ORDER BY length(id) DESC, id DESC LIMIT 1',
-                (self.author,),
-            ).fetchone()
-            since_id = row[0] if row else None
+            since_id = self.meta('live_since_id') if live else None
         try:
             posts = list(provider.posts(since_id))
             with self.db:
@@ -171,7 +177,7 @@ class Collection(SQLiteStorage):
                     raise SyncError(
                         'Tendie synchronization lease expired; try again later.'
                     )
-                return self._import_posts(posts, include_replies, include_quotes)
+                return self._import_posts(posts, include_replies, include_quotes, live)
         finally:
             with self.db:
                 self.db.execute('BEGIN IMMEDIATE')
@@ -179,8 +185,9 @@ class Collection(SQLiteStorage):
                     self.set_meta('sync_started', '')
                     self.set_meta('sync_owner', '')
 
-    def _import_posts(self, posts, include_replies, include_quotes):
+    def _import_posts(self, posts, include_replies, include_quotes, live):
         count = 0
+        checkpoint = self.meta('live_since_id') if live else None
         for post in posts:
             post_id = str(post['id'])
             if not re.fullmatch(r'[1-9][0-9]{0,29}', post_id):
@@ -191,6 +198,8 @@ class Collection(SQLiteStorage):
             if not isinstance(post['text'], str):
                 raise ValueError('Invalid text')
             kinds = {ref['type'] for ref in post.get('referenced_tweets', [])}
+            if live and (checkpoint is None or int(post_id) > int(checkpoint)):
+                checkpoint = post_id
             if (
                 'retweeted' in kinds
                 or (not include_replies and 'replied_to' in kinds)
@@ -208,6 +217,8 @@ class Collection(SQLiteStorage):
                     f'https://x.com/{self.author}/status/{post_id}',
                 ),
             ).rowcount
+        if live and checkpoint is not None:
+            self.set_meta('live_since_id', checkpoint)
         self.set_meta('last_success', now().isoformat())
         return count
 
@@ -440,6 +451,7 @@ def _response(action, config):
                     return 'Configure x_bearer_token or X_BEARER_TOKEN to synchronize tendies.'
                 count = store.sync(
                     XProvider(token, store.author),
+                    live=True,
                     cooldown=float(config.get('tendie_sync_cooldown', 300)),
                     include_replies=config.get('tendie_include_replies', False),
                     include_quotes=config.get('tendie_include_quotes', True),

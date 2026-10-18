@@ -118,11 +118,11 @@ def test_registration_and_public_days(collection):
 
 def test_initial_incremental_duplicates_and_persistence(collection):
     first = provider(post(), post('2'))
-    assert collection.sync(first) == 2
+    assert collection.sync(first, live=True) == 2
     first.posts.assert_called_once_with(None)
     allow_sync(collection)
     second = provider(post('2'), post('3'))
-    assert collection.sync(second) == 1
+    assert collection.sync(second, live=True) == 1
     second.posts.assert_called_once_with('2')
     assert collection.size() == 3
     with contextlib.closing(tendie.Collection(pmxbot.config['database'])) as other:
@@ -273,7 +273,7 @@ def test_api_initial_and_pagination(api, collection):
 
 
 def test_api_incremental_environment_key(api, collection, monkeypatch):
-    collection.sync(provider(post()))
+    collection.sync(provider(post()), live=True)
     allow_sync(collection)
     del pmxbot.config['x_bearer_token']
     monkeypatch.setenv('X_BEARER_TOKEN', 'env-secret')
@@ -399,7 +399,7 @@ def test_irc_formatting(collection):
 
 
 def test_failed_incremental_preserves_existing_rows_and_success(api, collection):
-    collection.sync(provider(post()))
+    collection.sync(provider(post()), live=True)
     success = collection.meta('last_success')
     allow_sync(collection)
     api.side_effect = [
@@ -804,7 +804,7 @@ def test_public_config_cannot_grant_update_access(dispatcher, collection):
 def test_blocked_provider_keeps_irc_responsive_and_opens_database_in_worker(
     dispatcher, collection, monkeypatch, kind
 ):
-    collection.sync(provider(post()))
+    collection.sync(provider(post()), live=True)
     allow_sync(collection)
     pmxbot.config['x_bearer_token'] = 'test-secret'
     entered, finish = threading.Event(), threading.Event()
@@ -973,3 +973,134 @@ def test_authorization_database_wait_is_off_loop_and_configuration_is_snapshotte
     assert dispatcher.messages[-1].endswith('Tendie: imported 1 posts.')
     factory.assert_called_once_with('original-token', 'ExampleAccount')
     assert collection.size() == 1
+
+
+@pytest.mark.parametrize('kind', ['replied_to', 'quoted'])
+@pytest.mark.parametrize('bootstrap', [False, True])
+def test_live_checkpoint_includes_filtered_posts(api, collection, kind, bootstrap):
+    if not bootstrap:
+        collection.sync(provider(post()), live=True)
+        allow_sync(collection)
+    if kind == 'quoted':
+        pmxbot.config['tendie_include_quotes'] = False
+    filtered = dict(xpost('2'), referenced_tweets=[{'type': kind}])
+    api.side_effect = [api_response({'id': '42'}), api_response([filtered], meta={})]
+    assert admin_update() == 'Tendie: imported 0 posts.'
+    assert collection.meta('live_since_id') == '2'
+    assert collection.size() == (0 if bootstrap else 1)
+    assert api.call_args.kwargs['params'].get('since_id') == (
+        None if bootstrap else '1'
+    )
+    allow_sync(collection)
+    api.side_effect = [
+        api_response({'id': '42'}),
+        api_response(meta={'result_count': 0}),
+    ]
+    assert admin_update() == 'Tendie: imported 0 posts.'
+    assert api.call_args.kwargs['params']['since_id'] == '2'
+    assert collection.meta('live_since_id') == '2'
+    with contextlib.closing(tendie.Collection()) as reopened:
+        assert reopened.meta('live_since_id') == '2'
+
+
+@pytest.mark.parametrize('failure', ['timeout', 'invalid_post', 'partial_response'])
+def test_failed_live_update_preserves_checkpoint_and_rows(api, collection, failure):
+    collection.sync(provider(post()), live=True)
+    before = collection.meta('last_success')
+    allow_sync(collection)
+    first_page = api_response(
+        [dict(xpost('10'), referenced_tweets=[{'type': 'replied_to'}])],
+        meta={'next_token': 'next'},
+    )
+    last_page = {
+        'timeout': requests.Timeout('secret'),
+        'invalid_post': api_response(
+            [dict(xpost('11'), created_at='invalid')], meta={}
+        ),
+        'partial_response': api_response(
+            [xpost('11')], errors=[{'detail': 'secret'}], meta={}
+        ),
+    }[failure]
+    api.side_effect = [api_response({'id': '42'}), first_page, last_page]
+    assert 'no posts imported' in admin_update()
+    assert collection.meta('live_since_id') == '1'
+    assert collection.meta('last_success') == before
+    assert collection.size() == 1
+    allow_sync(collection)
+    api.side_effect = [api_response({'id': '42'}), api_response([xpost('2')], meta={})]
+    assert 'imported 1' in admin_update()
+    assert api.call_args.kwargs['params']['since_id'] == '1'
+    assert collection.meta('live_since_id') == '2'
+
+
+def test_checkpoint_uses_numeric_maximum_and_never_regresses(collection):
+    posts = [
+        post('100000000000000000000', referenced_tweets=[{'type': 'replied_to'}]),
+        post('99999999999999999999'),
+    ]
+    assert collection.sync(provider(*posts), live=True) == 1
+    assert collection.meta('live_since_id') == '100000000000000000000'
+    allow_sync(collection)
+    older = provider(post('2'))
+    assert collection.sync(older, live=True) == 1
+    older.posts.assert_called_once_with('100000000000000000000')
+    assert collection.meta('live_since_id') == '100000000000000000000'
+
+
+@pytest.mark.parametrize('extension', ['json', 'csv'])
+@pytest.mark.parametrize('existing_checkpoint', [False, True])
+def test_offline_backfill_does_not_advance_live_checkpoint(
+    collection, tmp_path, extension, existing_checkpoint
+):
+    if existing_checkpoint:
+        collection.sync(provider(post()), live=True)
+        allow_sync(collection)
+    filename = tmp_path / ('backfill.' + extension)
+    if extension == 'json':
+        filename.write_text(json.dumps([post('100')]), encoding='utf-8')
+    else:
+        filename.write_text(
+            'id,text,author,created_at\n100,backfill,ExampleAccount,2026-10-17T12:00:00Z\n',
+            encoding='utf-8',
+        )
+    backfill = tendie.FileProvider(filename)
+    backfill.posts = Mock(wraps=backfill.posts)
+    assert collection.sync(backfill) == 1
+    backfill.posts.assert_called_once_with(None)
+    assert collection.meta('live_since_id') == ('1' if existing_checkpoint else None)
+    allow_sync(collection)
+    live = provider(post('2'))
+    assert collection.sync(live, live=True) == 1
+    live.posts.assert_called_once_with('1' if existing_checkpoint else None)
+    assert collection.meta('live_since_id') == '2'
+    assert collection.size() == (3 if existing_checkpoint else 2)
+
+
+def test_live_checkpoint_is_account_specific(collection):
+    collection.sync(provider(post()), live=True)
+    with contextlib.closing(tendie.Collection(author='AnotherAccount')) as other:
+        source = provider(
+            dict(
+                post('9', referenced_tweets=[{'type': 'replied_to'}]),
+                author='AnotherAccount',
+            )
+        )
+        assert other.sync(source, live=True) == 0
+        source.posts.assert_called_once_with(None)
+        assert other.meta('live_since_id') == '9'
+    assert collection.meta('live_since_id') == '1'
+
+
+def test_checkpoint_and_import_commit_atomically(collection):
+    collection.sync(provider(post()), live=True)
+    before = collection.meta('last_success')
+    allow_sync(collection)
+    collection.db.execute(
+        "CREATE TRIGGER fail_checkpoint BEFORE INSERT ON tendie_sync WHEN NEW.key LIKE '%:live_since_id' BEGIN SELECT RAISE(ABORT, 'checkpoint write failed'); END"
+    )
+    with pytest.raises(sqlite3.IntegrityError, match='checkpoint write failed'):
+        collection.sync(provider(post('2')), live=True)
+    assert collection.size() == 1
+    assert collection.meta('live_since_id') == '1'
+    assert collection.meta('last_success') == before
+    assert collection.meta('sync_owner') == ''
