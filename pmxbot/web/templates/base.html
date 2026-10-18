@@ -3,7 +3,7 @@
 
 <html xmlns="http://www.w3.org/1999/xhtml">
 	<head>
-		<title>{{ name }} IRC Log Viewer</title>
+		<title>{{ name }} Admin</title>
 		<style>
 			body {
 				font-family: Verdana, Arial, Helvetica, sans-serif;
@@ -25,54 +25,17 @@
 		<meta http-equiv="Content-Type" content="text/html;charset=utf-8" />
 		{{ headerExtras }}
 		<script src="/Autolinker.js"></script>
-		<script type="text/javascript">
-			function add_links() {
-				[].slice.call(
-					document.querySelectorAll('.logline')
-				).forEach(function (node) {
-					node.innerHTML = Autolinker.link(node.innerHTML);
-				})
-			}
-
-			animation_speed = 200;
-
-			function animate_logs() {
-				base = '2014-01-01T';
-				[].slice.call(
-					document.querySelectorAll('.logline')
-				).forEach(function (node) {
-					node.style.display = 'none';
-					logtime_str = node.querySelector('.comment-link').innerHTML;
-					logtime = Date.parse(base + logtime_str);
-					diff = logtime - Date.parse(base + '00:00:00');
-					// replay logs at animation_speed x real time
-					delay = diff / animation_speed;
-					setTimeout(function() {
-						node.style.display = 'block';
-						window.scrollTo(0, document.body.scrollHeight);
-					}, delay);
-				});
-			}
-		</script>
+		
 	</head>
-	<body onload="add_links();">
+	<body>
 {% include "auth_nav.html" %}
 	<div id="header">
-		<h1>
-		<a href="{{ base }}/">Log file Viewer</a></h1>
+
 
 		{% if byline is defined %}
 		<div class="byline">{{ byline }}</div>
 		{% endif %}
 
-		<form action="{{ base }}/search" method="GET">
-		<h3>
-		    <a href="{{ base }}/help">Help</a> |
-		    <a href="{{ base }}/karma">Karma</a> |
-				Search: <input type="text" name="term" />
-				<input type="submit" value="Search" />
-		</h3>
-		</form>
 
     {% block body %}
     {% endblock %}
