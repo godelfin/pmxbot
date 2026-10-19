@@ -291,7 +291,6 @@ def test_persistent_hydration_failure_preserves_posts_and_checkpoint(
     api, collection, retry_sleep
 ):
     collection.sync(provider(post()), live=True)
-    before = [tuple(row) for row in collection.db.execute('SELECT * FROM tendie_posts')]
     success = collection.meta('last_success')
     allow_sync(collection)
     api.side_effect = (
@@ -299,12 +298,12 @@ def test_persistent_hydration_failure_preserves_posts_and_checkpoint(
         + first_nine_pages()
         + [hydration_failure() for _ in range(4)]
     )
-    assert live_update() == (
-        'X could not resolve referenced_tweets after retries; no posts imported.'
-    )
-    assert [
-        tuple(row) for row in collection.db.execute('SELECT * FROM tendie_posts')
-    ] == before
+    result = live_update()
+    assert 'could not resolve referenced_tweets after retries' in result
+    assert '9 posts imported in this run' in result
+    assert 'no posts imported' not in result
+    assert collection.size() == 10
+    assert collection.progress()['saved_responses'] == 13
     assert collection.meta('live_since_id') == '1'
     assert collection.meta('last_success') == success
     assert collection.meta('sync_owner') == ''
@@ -334,7 +333,7 @@ def test_other_or_mixed_errors_abort_without_further_retries(
         + ([hydration_failure()] if after_retry else [])
         + [api_response([xpost()], errors=errors, meta={})]
     )
-    assert live_update() == 'X returned an incomplete response; no posts imported.'
+    assert 'X returned an incomplete response.' in live_update()
     assert collection.size() == 0
     assert collection.meta('live_since_id') is None
     assert collection.meta('last_success') is None
@@ -374,23 +373,24 @@ def test_api_incremental_environment_key(api, collection, monkeypatch):
 @pytest.mark.parametrize(
     'failure', [requests.Timeout('secret'), requests.ConnectionError('secret')]
 )
-def test_partial_failure_atomic_and_retry(api, collection, failure):
+def test_partial_failure_keeps_clean_page_and_resumes(api, collection, failure):
     api.side_effect = [
         api_response({'id': '42'}),
         api_response([xpost('3')], meta={'next_token': 'next'}),
         failure,
     ]
-    assert 'no posts imported' in live_update()
-    assert collection.size() == 0
+    assert '1 posts imported in this run' in live_update()
+    assert collection.size() == 1
     assert collection.meta('last_success') is None
     assert 'cooling down' in live_update()
     allow_sync(collection)
     api.side_effect = [
-        api_response({'id': '42'}),
-        api_response([xpost('3'), xpost('2')], meta={}),
+        api_response([xpost('2')], meta={}),
     ]
-    assert 'imported 2' in live_update()
+    assert 'imported 1' in live_update()
     assert 'since_id' not in api.call_args.kwargs['params']
+    assert api.call_args.kwargs['params']['pagination_token'] == 'next'
+    assert collection.size() == 2
 
 
 @pytest.mark.parametrize('status', [401, 403, 429, 500])
@@ -421,8 +421,8 @@ def test_api_invalid_and_partial_data(api, collection, page):
         Mock(status_code=200, json=Mock(return_value=page)),
         Mock(status_code=200, json=Mock(return_value=page)),
     ]
-    assert 'no posts imported' in live_update()
-    assert collection.size() == 0
+    assert 'Incomplete run' in live_update()
+    assert collection.size() == (1 if page['meta'].get('next_token') else 0)
 
 
 def test_api_empty_success(api, collection):
@@ -495,12 +495,12 @@ def test_failed_incremental_preserves_existing_rows_and_success(api, collection)
         api_response([xpost('3')], meta={'next_token': 'next'}),
         requests.Timeout('secret'),
     ]
-    assert 'no posts imported' in live_update()
-    assert collection.size() == 1
-    assert collection.select(True)['id'] == '1'
+    assert '1 posts imported in this run' in live_update()
+    assert collection.size() == 2
+    assert collection.select(True)['id'] == '3'
     assert collection.meta('last_success') == success
     allow_sync(collection)
-    api.side_effect = [api_response({'id': '42'}), api_response([xpost('2')], meta={})]
+    api.side_effect = [api_response([xpost('2')], meta={})]
     assert 'imported 1' in live_update()
     assert api.call_args.kwargs['params']['since_id'] == '1'
 
@@ -536,18 +536,24 @@ def test_missing_page_data_is_not_success(api, collection):
         api_response({'id': '42'}),
         api_response(meta={'result_count': 2}),
     ]
-    assert 'no posts imported' in live_update()
+    assert 'Incomplete run' in live_update()
     assert collection.meta('last_success') is None
 
 
-def test_pagination_bound_rolls_back(api, collection):
+def test_pagination_bound_preserves_batches_for_next_update(api, collection):
     api.side_effect = [api_response({'id': '42'})] + [
         api_response([xpost(str(index + 1))], meta={'next_token': str(index)})
         for index in range(100)
     ]
-    assert 'pagination limit' in live_update()
-    assert collection.size() == 0
+    assert 'Page limit' in live_update()
+    assert collection.size() == 100
     assert collection.meta('last_success') is None
+    assert collection.meta('live_since_id') is None
+    allow_sync(collection)
+    api.side_effect = [api_response([], meta={})]
+    assert 'imported 0' in live_update()
+    assert api.call_args.kwargs['params']['pagination_token'] == '99'
+    assert collection.meta('live_since_id') == '100'
 
 
 def test_configured_source_controls_api_and_urls(api, collection):
@@ -631,7 +637,7 @@ def test_primary_database_storage_and_additive_schema(tmp_path, monkeypatch):
             for row in store.db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
-        } == {'unrelated', 'tendie_posts', 'tendie_sync'}
+        } == {'unrelated', 'tendie_posts', 'tendie_sync', 'tendie_runs', 'tendie_pages'}
     assert {path.name for path in tmp_path.iterdir()} == {'primary.sqlite'}
 
 
@@ -749,15 +755,15 @@ def test_failed_live_update_preserves_checkpoint_and_rows(api, collection, failu
         ),
     }[failure]
     api.side_effect = [api_response({'id': '42'}), first_page, last_page]
-    assert 'no posts imported' in live_update()
+    assert '0 posts imported in this run' in live_update()
     assert collection.meta('live_since_id') == '1'
     assert collection.meta('last_success') == before
     assert collection.size() == 1
     allow_sync(collection)
-    api.side_effect = [api_response({'id': '42'}), api_response([xpost('2')], meta={})]
+    api.side_effect = [api_response([xpost('2')], meta={})]
     assert 'imported 1' in live_update()
     assert api.call_args.kwargs['params']['since_id'] == '1'
-    assert collection.meta('live_since_id') == '2'
+    assert collection.meta('live_since_id') == '10'
 
 
 def test_checkpoint_uses_numeric_maximum_and_never_regresses(collection):
