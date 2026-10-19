@@ -78,6 +78,8 @@ def redact_auth_query():
             '/register',
             '/change_password',
             '/admin/users',
+            '/admin/tendies',
+            '/admin/tendie_status',
             '/favorites',
             '/torta_mode',
         )

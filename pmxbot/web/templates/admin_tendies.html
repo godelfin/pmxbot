@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Administration → Tendies</title>
+<style>
+body { margin: 0; font: .95rem/1.6 Verdana, sans-serif; color: #252b34; background: #f4f6f8; }
+main { max-width: 55rem; margin: auto; padding: 1.5rem; }
+h1 { font-size: 1.5rem; } dt { font-weight: bold; } dd { margin: 0 0 1rem; }
+.feedback { padding: 1rem; border: 1px solid #b8c2ce; border-radius: .5rem; background: white; overflow-wrap: anywhere; }
+.error { color: #842626; } button { padding: .75rem 1rem; font: inherit; cursor: pointer; }
+button:disabled { cursor: wait; } a { color: #135ba1; }
+</style>
+</head>
+<body>
+{% include 'auth_nav.html' %}
+<main id="tendie-admin" data-status-url="{{ base }}/admin/tendie_status">
+<h1>Administration → Tendies</h1>
+<dl>
+<dt>Source account</dt><dd>@{{ state.source }}</dd>
+<dt>Stored posts</dt><dd id="tendie-count">{{ state.count }}</dd>
+<dt>Last successful synchronization</dt><dd id="tendie-success">{{ state.last_success or 'Never' }}</dd>
+</dl>
+{% if error %}<p class="feedback error" role="alert">{{ error }}</p>{% endif %}
+<p class="feedback" id="tendie-result" role="status" aria-live="polite">{{ state.job.message }}</p>
+<form method="post" action="{{ base }}/admin/tendies">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+<button id="tendie-update" type="submit"{% if state.job.status in ('queued', 'running') %} disabled{% endif %}>Update tendies</button>
+</form>
+<p>Updates run in the background. Reload this page to check the latest result.</p>
+</main>
+<script>
+(function () {
+    const root = document.getElementById('tendie-admin');
+    const button = document.getElementById('tendie-update');
+    if (!button.disabled) return;
+    async function poll() {
+        try {
+            const response = await fetch(root.dataset.statusUrl, {headers: {'Accept': 'application/json'}, cache: 'no-store'});
+            if (!response.ok || !response.headers.get('Content-Type').includes('application/json')) throw new Error();
+            const state = await response.json();
+            document.getElementById('tendie-count').textContent = state.count;
+            document.getElementById('tendie-success').textContent = state.last_success || 'Never';
+            document.getElementById('tendie-result').textContent = state.job.message;
+            button.disabled = ['queued', 'running'].includes(state.job.status);
+            if (button.disabled) window.setTimeout(poll, 1000);
+        } catch (_) {
+            document.getElementById('tendie-result').textContent = 'Unable to read status. Sign in as an administrator and reload.';
+        }
+    }
+    window.setTimeout(poll, 1000);
+})();
+</script>
+</body>
+</html>
