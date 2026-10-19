@@ -29,19 +29,28 @@ def active(job):
     )
 
 
+def leased(store):
+    started = store.meta('sync_started')
+    return bool(
+        started and (tendie.now() - tendie.timestamp(started)).total_seconds() < 1800
+    )
+
+
 def status(config):
     """Only return public administration fields, never saved settings or tokens."""
     with contextlib.closing(open_store(config)) as store:
         job = json.loads(store.meta('web_job') or '{}')
-        if job.get('status') in ACTIVE and not active(job):
+        if job.get('status') in ACTIVE and not active(job) and not leased(store):
             job = dict(
                 status='failed',
-                message='Previous update did not complete. Please try again.',
+                message='Previous job stopped reporting progress. Replay saved pages locally before authorizing more X requests.',
             )
         return dict(
             source=store.author,
             count=store.size(),
             last_success=store.meta('last_success'),
+            last_live_success=store.meta('last_live_success'),
+            progress=store.progress(),
             job=dict(
                 status=job.get('status', 'idle'),
                 message=job.get('message', 'No update requested.'),
@@ -71,7 +80,9 @@ class TendieExecutor(SimplePlugin):
         if pool:
             pool.shutdown(wait=True)
 
-    def enqueue(self, config):
+    def enqueue(self, config, operation='update'):
+        if operation not in ('update', 'recover', 'recover_range'):
+            raise ValueError('Invalid tendie operation')
         config = tendie.settings_snapshot(config)
         with self._lock:
             if self._pool is None:
@@ -83,12 +94,7 @@ class TendieExecutor(SimplePlugin):
                 with store.db:
                     store.db.execute('BEGIN IMMEDIATE')
                     job = json.loads(store.meta('web_job') or '{}')
-                    started = store.meta('sync_started')
-                    if active(job) or (
-                        started
-                        and (tendie.now() - tendie.timestamp(started)).total_seconds()
-                        < 1800
-                    ):
+                    if active(job) or leased(store):
                         return False
                     store.set_meta(
                         'web_job',
@@ -96,14 +102,18 @@ class TendieExecutor(SimplePlugin):
                             dict(
                                 id=identifier,
                                 status='queued',
-                                message='Update queued.',
+                                message=(
+                                    'Local replay queued (no X requests).'
+                                    if operation == 'recover'
+                                    else 'Update queued.'
+                                ),
                                 submitted_at=tendie.now().isoformat(),
                             )
                         ),
                     )
             self._active = True
             try:
-                self._pool.submit(self._run, config, identifier)
+                self._pool.submit(self._run, config, identifier, operation)
             except Exception:
                 self._active = False
                 self._record(
@@ -129,17 +139,32 @@ class TendieExecutor(SimplePlugin):
                 store.set_meta('web_job', json.dumps(job))
                 return True
 
-    def _run(self, config, identifier):
+    def _run(self, config, identifier, operation):
         try:
-            if not self._record(config, identifier, 'running', 'Updating tendies…'):
+            message = (
+                'Replaying saved pages locally (no X requests)…'
+                if operation == 'recover'
+                else 'Updating tendies…'
+            )
+            if not self._record(config, identifier, 'running', message):
                 return
             try:
-                count = tendie.synchronize(config)
+                count = tendie.synchronize(config, operation=operation)
             except Exception as exc:
                 state, message = 'failed', tendie.synchronization_error(exc)
                 log.error('Tendie synchronization failed (%s)', type(exc).__name__)
             else:
-                state, message = 'succeeded', f'Imported {count} posts.'
+                with contextlib.closing(open_store(config)) as store:
+                    progress = store.progress()
+                incomplete = progress and progress['status'] != 'complete'
+                state = 'incomplete' if incomplete else 'succeeded'
+                message = f'Imported {count} posts.'
+                if incomplete:
+                    message += f' Run incomplete; {progress["saved_responses"]} responses saved and {progress["imported"]} posts imported in this run.'
+                if operation == 'recover':
+                    message += ' Local replay made no X requests.'
+                    if incomplete:
+                        message += ' Unresolved pages need an error-free API response.'
             self._record(config, identifier, state, message)
         except Exception as exc:
             log.error('Could not record tendie update (%s)', type(exc).__name__)

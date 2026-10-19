@@ -15,26 +15,32 @@ button:disabled { cursor: wait; } a { color: #135ba1; }
 </head>
 <body>
 {% include 'auth_nav.html' %}
-<main id="tendie-admin" data-status-url="{{ base }}/admin/tendie_status">
+<main id="tendie-admin" data-status-url="{{ base }}/admin/tendie_status" data-running="{{ 'true' if state.job.status in ('queued', 'running') else 'false' }}">
 <h1>Administration → Tendies</h1>
 <dl>
 <dt>Source account</dt><dd>@{{ state.source }}</dd>
 <dt>Stored posts</dt><dd id="tendie-count">{{ state.count }}</dd>
-<dt>Last successful synchronization</dt><dd id="tendie-success">{{ state.last_success or 'Never' }}</dd>
+<dt>Last successful import or synchronization</dt><dd id="tendie-success">{{ state.last_success or 'Never' }}</dd>
+<dt>Last complete live synchronization</dt><dd id="tendie-live-success">{{ state.last_live_success or 'Not recorded' }}</dd>
 </dl>
+<p class="feedback" id="tendie-progress">{% if state.progress %}{{ state.progress.status }}: {{ state.progress.saved_responses }} responses saved, {{ state.progress.saved_posts }} staged post copies (including retries), {{ state.progress.imported }} posts imported in this run; {{ state.progress.processed_pages }} pages processed, {{ state.progress.unresolved_pages }} unresolved page positions. Last progress: {{ state.progress.last_progress }}. {{ state.progress.message }}{% else %}No saved X synchronization run.{% endif %}</p>
 {% if error %}<p class="feedback error" role="alert">{{ error }}</p>{% endif %}
 <p class="feedback" id="tendie-result" role="status" aria-live="polite">{{ state.job.message }}</p>
 <form method="post" action="{{ base }}/admin/tendies">
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-<button id="tendie-update" type="submit"{% if state.job.status in ('queued', 'running') %} disabled{% endif %}>Update tendies</button>
+<button id="tendie-update" name="operation" value="update" type="submit"{% if state.job.status in ('queued', 'running') or (state.progress and state.progress.status == 'token_rejected') %} disabled{% endif %}>Update tendies (X API)</button>
+<button id="tendie-recover" name="operation" value="recover" type="submit"{% if state.job.status in ('queued', 'running') %} disabled{% endif %}>Replay saved pages locally (no X requests)</button>
+<button id="tendie-range" name="operation" value="recover_range" type="submit"{% if state.job.status in ('queued', 'running') %} disabled{% endif %}{% if not state.progress or not state.progress.can_recover_range %} hidden{% endif %}>Recover older unfinished range (X API)</button>
 </form>
-<p>Updates run in the background. Reload this page to check the latest result.</p>
+<p>Update resumes saved work before making paid X requests for unresolved or unfetched pages. Local replay imports only saved clean pages; partial-error pages remain quarantined until complete reference metadata is available. Filtering uses the options saved when the run began.</p>
+<p>If X rejects a pagination token, explicit range recovery requests posts below the oldest fully processed ID, retaining the original lower bound. It does not restart the entire timeline. Completion covers the history X exposes; deleted or inaccessible posts cannot be recovered from X.</p>
+<p>All actions run in the background. Reload this page to check the latest result.</p>
 </main>
 <script>
 (function () {
     const root = document.getElementById('tendie-admin');
     const button = document.getElementById('tendie-update');
-    if (!button.disabled) return;
+    if (root.dataset.running !== 'true') return;
     async function poll() {
         try {
             const response = await fetch(root.dataset.statusUrl, {headers: {'Accept': 'application/json'}, cache: 'no-store'});
@@ -42,9 +48,16 @@ button:disabled { cursor: wait; } a { color: #135ba1; }
             const state = await response.json();
             document.getElementById('tendie-count').textContent = state.count;
             document.getElementById('tendie-success').textContent = state.last_success || 'Never';
+            document.getElementById('tendie-live-success').textContent = state.last_live_success || 'Not recorded';
             document.getElementById('tendie-result').textContent = state.job.message;
-            button.disabled = ['queued', 'running'].includes(state.job.status);
-            if (button.disabled) window.setTimeout(poll, 1000);
+            const running = ['queued', 'running'].includes(state.job.status);
+            const progress = state.progress;
+            button.disabled = running || (progress && progress.status === 'token_rejected');
+            document.getElementById('tendie-recover').disabled = running;
+            document.getElementById('tendie-range').disabled = running;
+            document.getElementById('tendie-range').hidden = !progress || !progress.can_recover_range;
+            if (progress) document.getElementById('tendie-progress').textContent = `${progress.status}: ${progress.saved_responses} responses saved, ${progress.saved_posts} staged post copies (including retries), ${progress.imported} posts imported in this run; ${progress.processed_pages} pages processed, ${progress.unresolved_pages} unresolved page positions. Last progress: ${progress.last_progress}. ${progress.message}`;
+            if (running) window.setTimeout(poll, 1000);
         } catch (_) {
             document.getElementById('tendie-result').textContent = 'Unable to read status. Sign in as an administrator and reload.';
         }

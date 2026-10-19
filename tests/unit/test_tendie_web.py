@@ -65,12 +65,15 @@ def metadata():
     ],
 )
 @pytest.mark.parametrize('identity', ['anonymous', 'regular'])
-def test_administrator_required_for_every_endpoint(site, path, method, identity):
+@pytest.mark.parametrize('operation', ['update', 'recover', 'recover_range'])
+def test_administrator_required_for_every_endpoint(
+    site, path, method, identity, operation
+):
     web, executor = site
     if identity == 'regular':
         web.login()
     before = metadata()
-    response = web.request(path, method, {'csrf_token': 'bad'})
+    response = web.request(path, method, {'csrf_token': 'bad', 'operation': operation})
     assert response['status'] == (401 if identity == 'anonymous' else 403)
     assert 'ExampleAccount' not in response['body']
     assert metadata() == before
@@ -90,8 +93,9 @@ def test_administrator_required_for_every_endpoint(site, path, method, identity)
     'change,expected',
     [('enabled=0', 401), ('must_change_password=1', 303), ("role='user'", 403)],
 )
+@pytest.mark.parametrize('operation', ['update', 'recover', 'recover_range'])
 def test_admin_revocation_and_password_change_block_every_endpoint(
-    site, path, method, change, expected
+    site, path, method, change, expected, operation
 ):
     web, executor = site
     administrator(web)
@@ -99,7 +103,7 @@ def test_admin_revocation_and_password_change_block_every_endpoint(
     with closing(UserStore(pmxbot.config.database)) as store:
         store.db.execute('UPDATE users SET ' + change + ' WHERE id=?', (web.user_id,))
     before = metadata()
-    response = web.request(path, method, {'csrf_token': token})
+    response = web.request(path, method, {'csrf_token': token, 'operation': operation})
     assert response['status'] == expected
     assert metadata() == before
     tendie.requests.get.assert_not_called()
@@ -120,6 +124,8 @@ def test_page_status_and_get_requests_never_start_updates(site, monkeypatch):
         source='ExampleAccount',
         count=0,
         last_success=None,
+        last_live_success=None,
+        progress=None,
         job=dict(status='idle', message='No update requested.'),
     )
     assert web.request('/admin/tendies?operation=update')['status'] == 400
@@ -132,11 +138,12 @@ def test_page_status_and_get_requests_never_start_updates(site, monkeypatch):
 
 
 @pytest.mark.parametrize('token', ['', 'wrong'])
-def test_csrf_rejection_leaves_state_unchanged(site, token):
+@pytest.mark.parametrize('operation', ['update', 'recover', 'recover_range'])
+def test_csrf_rejection_leaves_state_unchanged(site, token, operation):
     web, executor = site
     administrator(web)
     before = metadata()
-    assert submit(web, csrf_token=token)['status'] == 403
+    assert submit(web, csrf_token=token, operation=operation)['status'] == 403
     assert metadata() == before
     assert not executor._active
     tendie.requests.get.assert_not_called()
@@ -295,4 +302,135 @@ def test_summary_and_job_status_are_account_scoped(site):
     assert summary['source'] == 'AnotherAccount'
     assert summary['count'] == 0 and summary['last_success'] is None
     assert summary['job']['status'] == 'idle'
+    tendie.requests.get.assert_not_called()
+
+
+def test_partial_counts_and_local_replay_are_accurate_and_private(site, monkeypatch):
+    from tests.unit.test_tendie import api_response, first_nine_pages, hydration_failure
+
+    web, executor = site
+    administrator(web)
+    monkeypatch.setattr(tendie, 'sleep', Mock())
+    tendie.requests.get.side_effect = (
+        [api_response({'id': '42'})]
+        + first_nine_pages()
+        + [hydration_failure() for _ in range(4)]
+    )
+    assert submit(web)['status'] == 303
+    executor.stop()
+    result = state(web)
+    assert result['count'] == 9
+    assert result['last_success'] is None and result['last_live_success'] is None
+    progress = result['progress']
+    assert progress['saved_responses'] == 13
+    assert progress['saved_posts'] == 13
+    assert progress['imported'] == 9 and progress['processed_pages'] == 9
+    assert progress['unresolved_pages'] == 1 and progress['status'] == 'incomplete'
+    assert progress['completed_at'] is None and progress['last_progress']
+    assert 'no posts imported' not in result['job']['message']
+    assert '9 posts imported in this run' in result['job']['message']
+    page = web.request('/admin/tendies')['body']
+    assert '13 responses saved' in page and '9 posts imported in this run' in page
+    for private in (
+        'private-token',
+        'private provider details',
+        'must-not-advance',
+        'pagination_token',
+        'Bearer',
+    ):
+        assert private not in json.dumps(result) + page
+    tendie.requests.get.reset_mock()
+    pmxbot.config.pop('x_bearer_token')
+    executor.start()
+    assert submit(web, operation='recover')['status'] == 303
+    executor.stop()
+    tendie.requests.get.assert_not_called()
+    replay = state(web)
+    assert replay['count'] == 9
+    assert replay['job']['status'] == 'incomplete'
+    assert 'no X requests' in replay['job']['message']
+    assert replay['progress']['saved_responses'] == 13
+    assert replay['last_live_success'] is None
+
+
+def test_local_replay_is_background_and_duplicate_protected(site, monkeypatch):
+    from pmxbot import tendie_staging
+    from tests.unit.test_tendie import api_response, xpost
+    from tests.unit.test_tendie_staging import Crash, stop_after_staging
+
+    web, executor = site
+    administrator(web)
+    tendie.requests.get.side_effect = [
+        api_response({'id': '42'}),
+        api_response([xpost('8')], meta={}),
+    ]
+    with monkeypatch.context() as patch:
+        stop_after_staging(patch)
+        with pytest.raises(Crash):
+            tendie.synchronize(tendie.settings_snapshot(pmxbot.config))
+    tendie.requests.get.reset_mock()
+    entered, release = threading.Event(), threading.Event()
+    original = tendie_staging.LiveRun.process
+    caller = threading.get_ident()
+
+    def process(run, page):
+        assert threading.get_ident() != caller
+        entered.set()
+        assert release.wait(5)
+        return original(run, page)
+
+    monkeypatch.setattr(tendie_staging.LiveRun, 'process', process)
+    other = tendie_jobs.TendieExecutor(cherrypy.engine)
+    other.start()
+    try:
+        assert submit(web, operation='recover')['status'] == 303
+        assert entered.wait(5)
+        assert state(web)['progress']['saved_responses'] == 1
+        assert web.request('/protected')['status'] == 200
+        assert submit(web, operation='recover')['status'] == 409
+        assert other.enqueue(pmxbot.config, operation='recover') is False
+    finally:
+        release.set()
+        executor.stop()
+        other.stop()
+    tendie.requests.get.assert_not_called()
+    result = state(web)
+    assert result['count'] == 1 and result['progress']['status'] == 'complete'
+    assert result['job']['status'] == 'succeeded'
+
+
+@pytest.mark.parametrize('operation', ['recover', 'recover_range', 'invalid'])
+def test_recovery_get_has_no_side_effects_and_invalid_post_rejected(site, operation):
+    web, executor = site
+    administrator(web)
+    before = metadata()
+    assert web.request('/admin/tendies?operation=' + operation)['status'] == 400
+    assert metadata() == before
+    if operation == 'invalid':
+        assert submit(web, operation=operation)['status'] == 400
+        assert metadata() == before
+    assert not executor._active
+    tendie.requests.get.assert_not_called()
+
+
+def test_long_running_job_keeps_polling_and_duplicate_protection_with_fresh_lease(site):
+    web, executor = site
+    administrator(web)
+    old = (tendie.now() - datetime.timedelta(minutes=31)).isoformat()
+    with closing(tendie.Collection()) as store:
+        store.set_meta(
+            'web_job',
+            json.dumps(
+                dict(
+                    id='long-job',
+                    status='running',
+                    message='Updating tendies…',
+                    submitted_at=old,
+                )
+            ),
+        )
+        store.set_meta('sync_started', tendie.now().isoformat())
+    assert state(web)['job']['status'] == 'running'
+    assert executor.enqueue(pmxbot.config, operation='recover') is False
+    assert 'data-running="true"' in web.request('/admin/tendies')['body']
     tendie.requests.get.assert_not_called()

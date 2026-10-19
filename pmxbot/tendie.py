@@ -45,6 +45,10 @@ class SyncError(Exception):
     """Safe, public synchronization failure message."""
 
 
+class CursorError(SyncError):
+    """The saved cursor was rejected; recovery needs explicit administrator intent."""
+
+
 def configured_author(value=None):
     value = (
         value or pmxbot.config.get('tendie_author') or os.environ.get('TENDIE_AUTHOR')
@@ -77,6 +81,8 @@ class Collection(SQLiteStorage):
         super().__init__(uri)
 
     def init_tables(self):
+        from .tendie_staging import SCHEMA
+
         self.db.row_factory = sqlite3.Row
         self.db.executescript(
             '''
@@ -90,6 +96,12 @@ class Collection(SQLiteStorage):
             );
             '''
         )
+        self.db.executescript(SCHEMA)
+
+    def progress(self):
+        from .tendie_staging import progress
+
+        return progress(self)
 
     def meta(self, key):
         row = self.db.execute(
@@ -127,25 +139,41 @@ class Collection(SQLiteStorage):
         include_quotes=True,
         *,
         live=False,
+        operation='update',
     ):
-        """Import provider.posts(since_id) atomically; retain cooldown on failure.
+        """Import iterator providers atomically; stage X pages and commit per page.
 
         Providers yield dictionaries with id, text, created_at, author (username),
         and optional referenced_tweets as in X v2. Offline providers may ignore
         since_id to backfill history. Duplicate IDs are never overwritten.
-        Only live=True advances the checkpoint, including validated posts that
+        Live runs advance the checkpoint only after their whole range completes.
+        Generic live=True iterators include validated posts that
         filtering excludes. Offline backfills must leave this flag unset.
         """
         if not _sync_lock.acquire(blocking=False):
             raise SyncError('Tendie synchronization is already running.')
         try:
             return self._sync(
-                provider, max(1, cooldown), include_replies, include_quotes, live
+                provider,
+                max(1, cooldown),
+                include_replies,
+                include_quotes,
+                live,
+                operation,
             )
         finally:
             _sync_lock.release()
 
-    def _sync(self, provider, cooldown, include_replies, include_quotes, live):
+    def _sync(
+        self, provider, cooldown, include_replies, include_quotes, live, operation
+    ):
+        if operation not in ('update', 'recover', 'recover_range'):
+            raise ValueError('Unknown synchronization operation')
+        if operation != 'update' and not live:
+            raise ValueError('Recovery requires a live synchronization run')
+        if operation == 'recover':
+            # Local recovery cannot accidentally invoke an iterator provider.
+            provider = None
         # Claim synchronization in a short transaction. No primary-database
         # write lock is held while requesting pages from a provider.
         owner = uuid.uuid4().hex
@@ -155,15 +183,26 @@ class Collection(SQLiteStorage):
             if started and (now() - timestamp(started)).total_seconds() < 1800:
                 raise SyncError('Tendie synchronization is already running.')
             attempted = self.meta('last_attempt')
-            if attempted and (now() - timestamp(attempted)).total_seconds() < cooldown:
+            if (
+                operation != 'recover'
+                and attempted
+                and (now() - timestamp(attempted)).total_seconds() < cooldown
+            ):
                 raise SyncError(
                     'Tendie synchronization is cooling down. Try again later.'
                 )
-            self.set_meta('last_attempt', now().isoformat())
+            if operation != 'recover':
+                self.set_meta('last_attempt', now().isoformat())
             self.set_meta('sync_started', now().isoformat())
             self.set_meta('sync_owner', owner)
             since_id = self.meta('live_since_id') if live else None
         try:
+            if isinstance(provider, XProvider) or (live and provider is None):
+                from .tendie_staging import LiveRun
+
+                return LiveRun(self, owner).run(
+                    provider, operation, include_replies, include_quotes
+                )
             posts = list(provider.posts(since_id))
             with self.db:
                 self.db.execute('BEGIN IMMEDIATE')
@@ -179,7 +218,9 @@ class Collection(SQLiteStorage):
                     self.set_meta('sync_started', '')
                     self.set_meta('sync_owner', '')
 
-    def _import_posts(self, posts, include_replies, include_quotes, live):
+    def _import_posts(
+        self, posts, include_replies, include_quotes, live, record_success=True
+    ):
         count = 0
         checkpoint = self.meta('live_since_id') if live else None
         for post in posts:
@@ -213,7 +254,8 @@ class Collection(SQLiteStorage):
             ).rowcount
         if live and checkpoint is not None:
             self.set_meta('live_since_id', checkpoint)
-        self.set_meta('last_success', now().isoformat())
+        if record_success:
+            self.set_meta('last_success', now().isoformat())
         return count
 
 
@@ -224,20 +266,32 @@ class XProvider:
         self.token = token
         self.author = configured_author(author)
 
-    def get(self, path, params=None):
+    def get(self, path, params=None, on_response=None, before_request=None):
+        if not self.token:
+            raise SyncError(
+                'Configure x_bearer_token or X_BEARER_TOKEN to synchronize tendies.'
+            )
         for delay in (0, 1, 2, 4):
             if delay:
                 sleep(delay)
+            if before_request:
+                before_request()
             response = requests.get(
                 'https://api.x.com/2/' + path,
                 headers={'Authorization': 'Bearer ' + self.token},
                 params=params,
                 timeout=15,
             )
-            if response.status_code == 429:
-                raise SyncError('X rate limit reached. Try updating later.')
+            try:
+                result = response.json()
+            except ValueError:
+                self.check_status(response, params)
+                response.raise_for_status()
+                raise
+            if on_response:
+                on_response(result, response.status_code)
+            self.check_status(response, params)
             response.raise_for_status()
-            result = response.json()
             errors = result.get('errors')
             if not errors:
                 return result
@@ -254,6 +308,23 @@ class XProvider:
         raise SyncError(
             'X could not resolve referenced_tweets after retries; no posts imported.'
         )
+
+    @staticmethod
+    def check_status(response, params):
+        if response.status_code == 429:
+            raise SyncError('X rate limit reached. Try updating later.')
+        if response.status_code == 402:
+            raise SyncError(
+                'X payment or credits prevented this request. Saved progress is retained.'
+            )
+        if (
+            response.status_code in (400, 410)
+            and params
+            and params.get('pagination_token')
+        ):
+            raise CursorError(
+                'X rejected the saved pagination token. Use explicit range recovery; saved pages will not be refetched.'
+            )
 
     def posts(self, since_id):
         user = self.get('users/by/username/' + self.author)['data']['id']
@@ -341,26 +412,27 @@ def settings_snapshot(config):
     return result
 
 
-def synchronize(config):
+def synchronize(config, operation='update'):
     """Trusted operator entry point; the web worker owns its SQLite connection."""
     if not config.get('tendie_author'):
         raise SyncError(
             'Configure tendie_author or TENDIE_AUTHOR with the source X username.'
         )
     author = configured_author(config['tendie_author'])
-    if not config.get('x_bearer_token'):
-        raise SyncError(
-            'Configure x_bearer_token or X_BEARER_TOKEN to synchronize tendies.'
-        )
     with contextlib.closing(
         Collection(config.get('database', 'sqlite:pmxbot.sqlite'), author)
     ) as store:
         return store.sync(
-            XProvider(config['x_bearer_token'], store.author),
+            (
+                None
+                if operation == 'recover'
+                else XProvider(config.get('x_bearer_token'), store.author)
+            ),
             live=True,
             cooldown=float(config.get('tendie_sync_cooldown', 300)),
             include_replies=config.get('tendie_include_replies', False),
             include_quotes=config.get('tendie_include_quotes', True),
+            operation=operation,
         )
 
 
@@ -418,8 +490,15 @@ def _response(action, config):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Import local tendie JSON/CSV posts')
-    parser.add_argument('filename')
+    parser = argparse.ArgumentParser(
+        description='Import local tendie JSON/CSV posts or replay staged X pages without network access'
+    )
+    parser.add_argument('filename', nargs='?')
+    parser.add_argument(
+        '--recover',
+        action='store_true',
+        help='Replay saved clean pages locally; makes zero X requests',
+    )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument(
         '--config', help='Bot configuration YAML (uses its primary database)'
@@ -429,13 +508,15 @@ def main():
     parser.add_argument('--include-replies', action='store_true', default=None)
     parser.add_argument('--exclude-quotes', action='store_true', default=None)
     args = parser.parse_args()
+    if bool(args.filename) == args.recover:
+        parser.error('Supply a filename or --recover, exclusively.')
     try:
         config = ConfigDict.from_yaml(args.config) if args.config else {}
         uri = args.database or config.get('database', 'sqlite:pmxbot.sqlite')
         author = args.author or config.get('tendie_author')
         with contextlib.closing(Collection(uri, author)) as store:
             count = store.sync(
-                FileProvider(args.filename),
+                None if args.recover else FileProvider(args.filename),
                 cooldown=float(config.get('tendie_sync_cooldown', 300)),
                 include_replies=(
                     args.include_replies
@@ -447,8 +528,17 @@ def main():
                     if args.exclude_quotes is not None
                     else config.get('tendie_include_quotes', True)
                 ),
+                live=args.recover,
+                operation='recover' if args.recover else 'update',
             )
+            progress = store.progress() if args.recover else None
         print(f'Imported {count} posts.')
+        if progress:
+            print(
+                f'Local replay: {progress["status"]}; {progress["unresolved_pages"]} unresolved page positions. No X requests made.'
+            )
+        elif args.recover:
+            print('Local replay: no unfinished run. No X requests made.')
     except (
         SyncError,
         ValueError,
@@ -458,7 +548,12 @@ def main():
         sqlite3.Error,
         yaml.YAMLError,
     ) as exc:
-        parser.exit(1, f'Import failed ({type(exc).__name__}); no posts imported.\n')
+        message = (
+            synchronization_error(exc)
+            if args.recover
+            else f'Import failed ({type(exc).__name__}); no posts imported.'
+        )
+        parser.exit(1, message + '\n')
 
 
 if __name__ == '__main__':
