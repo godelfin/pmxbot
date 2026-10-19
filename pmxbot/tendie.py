@@ -304,10 +304,8 @@ class XProvider:
                     for error in errors
                 )
             ):
-                raise SyncError('X returned an incomplete response; no posts imported.')
-        raise SyncError(
-            'X could not resolve referenced_tweets after retries; no posts imported.'
-        )
+                raise SyncError('X returned an incomplete response.')
+        raise SyncError('X could not resolve referenced_tweets after retries.')
 
     @staticmethod
     def check_status(response, params):
@@ -357,7 +355,7 @@ class XProvider:
                 raise ValueError('Invalid pagination token')
             seen.add(cursor)
             params['pagination_token'] = cursor
-        raise SyncError('X pagination limit reached; no posts imported.')
+        raise SyncError('X pagination limit reached.')
 
 
 class FileProvider:
@@ -440,11 +438,11 @@ def synchronization_error(exc):
     if isinstance(exc, SyncError):
         return str(exc)
     if isinstance(exc, requests.RequestException):
-        return 'Tendie synchronization failed; no posts imported. Try again later.'
+        return 'Tendie synchronization failed. Try again later.'
     if isinstance(exc, sqlite3.Error):
         return 'Tendie storage is unavailable; please try again later.'
     if isinstance(exc, (ValueError, KeyError, TypeError, AttributeError)):
-        return 'Invalid tendie data or configuration; no posts imported.'
+        return 'Invalid tendie data or configuration.'
     return 'Tendie update failed; please try again later.'
 
 
@@ -482,11 +480,11 @@ def _response(action, config):
     except SyncError as exc:
         return str(exc)
     except requests.RequestException:
-        return 'Tendie synchronization failed; no posts imported. Try again later.'
+        return 'Tendie synchronization failed. Try again later.'
     except sqlite3.OperationalError:
         return 'Tendie storage is unavailable or synchronization is already running.'
     except (ValueError, KeyError, TypeError, AttributeError):
-        return 'Invalid tendie data or configuration; no posts imported.'
+        return 'Invalid tendie data or configuration.'
 
 
 def main():

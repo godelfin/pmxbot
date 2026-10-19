@@ -348,9 +348,7 @@ class LiveRun:
             )
         except Exception as exc:
             self.reload()
-            reason = tendie.synchronization_error(exc).replace(
-                '; no posts imported', ''
-            )
+            reason = tendie.synchronization_error(exc)
             with self.db:
                 self.db.execute('BEGIN IMMEDIATE')
                 self.owned()

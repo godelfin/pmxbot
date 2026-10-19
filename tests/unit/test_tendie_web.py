@@ -351,6 +351,18 @@ def test_partial_counts_and_local_replay_are_accurate_and_private(site, monkeypa
     assert 'no X requests' in replay['job']['message']
     assert replay['progress']['saved_responses'] == 13
     assert replay['last_live_success'] is None
+    # Even a configuration error before entering the run must not imply rollback
+    # of the paid batches committed by an earlier attempt.
+    pmxbot.config['tendie_sync_cooldown'] = 'invalid'
+    executor.start()
+    assert submit(web)['status'] == 303
+    executor.stop()
+    failed = state(web)
+    assert failed['count'] == 9 and failed['progress']['imported'] == 9
+    assert failed['job']['status'] == 'failed'
+    assert 'Invalid tendie data or configuration' in failed['job']['message']
+    assert 'no posts imported' not in failed['job']['message']
+    tendie.requests.get.assert_not_called()
 
 
 def test_local_replay_is_background_and_duplicate_protected(site, monkeypatch):
