@@ -31,7 +31,7 @@ from pmxbot.users import InvalidCredentials, UserError, UserStore, UsernameTaken
 from pmxbot.web import auth
 from pmxbot.music import GenerationInputs
 from pmxbot.jobs import GenerationExecutor, JobStore
-from pmxbot import tendie, tendie_jobs
+from pmxbot import creations, tendie, tendie_jobs
 
 jenv = jinja2.Environment(loader=jinja2.loaders.PackageLoader('pmxbot.web'))
 TIMEOUT = 10.0
@@ -769,13 +769,11 @@ class AlbumPage:
             ],
             image_history=describe_artwork_history(image_history),
             failures=failures,
-            formats=sorted(pmxbot.albums.formats),
+            formats=creations.generation_choices()['format'],
             artwork_styles=pmxbot.styles.ALBUM_ART_STYLES,
             artwork_style_groups=pmxbot.styles.ALBUM_ART_STYLE_GROUPS,
-            format_descriptions=sorted(pmxbot.albums.format_desc),
-            genres=sorted(
-                set(pmxbot.albums.genres).union(*pmxbot.albums.genres.values())
-            ),
+            format_descriptions=creations.generation_choices()['format_description'],
+            genres=creations.generation_choices()['genre'],
             image_url=safe_image_url(image['hosted_url']) if image else None,
         )
         draft = GenerationInputs.from_source(album, image)
@@ -898,6 +896,111 @@ class PmxbotPages:
     albums = AlbumPage()
 
     @cherrypy.expose
+    def create_album(self, **params):
+        try:
+            return self._create_album(**params)
+        except (sqlite3.Error, OSError, ImageError):
+            raise cherrypy.HTTPError(
+                503, 'Album creation storage is unavailable'
+            ) from None
+
+    def _create_album(self, **params):
+        cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
+        user = auth.require_permission('generate_images')
+        context = get_context()
+        cache = ImageCache(pmxbot.config)
+        library = creations.MusicLibrary(cache.database)
+        errors = {}
+        token = params.pop(
+            'submission_token',
+            None if cherrypy.request.method == 'POST' else uuid.uuid4().hex,
+        )
+        csrf = params.pop('csrf_token', None)
+        retry = params.pop('retry', None)
+        if cherrypy.request.method == 'POST':
+            auth.require_csrf(csrf)
+            if not pmxbot.config.get('images_enabled', False):
+                raise cherrypy.HTTPError(409, 'Image generation is disabled.')
+            if not creations.public_application_url(
+                pmxbot.config.get('albums_url'), 'albums/1'
+            ):
+                raise cherrypy.HTTPError(
+                    503, 'Configure albums_url before creating albums.'
+                )
+            channel = pmxbot.config.get('album_creation_channel') or pmxbot.config.get(
+                'inane_channel'
+            )
+            if not isinstance(channel, str) or not re.fullmatch(
+                r'[#&][^\s,\x00-\x1f\x7f]{1,100}', channel
+            ):
+                raise cherrypy.HTTPError(
+                    503, 'Configure an album creation IRC channel.'
+                )
+            store = JobStore(cache.database)
+            if retry:
+                try:
+                    store.retry_creation(retry, user)
+                except LookupError:
+                    raise cherrypy.HTTPError(404, 'Unknown creation job') from None
+                except (ValueError, sqlite3.IntegrityError):
+                    raise cherrypy.HTTPError(
+                        409, 'This album already exists or is being created.'
+                    ) from None
+                auth.redirect(f"{context['base']}/jobs/{retry}")
+            if not isinstance(token, str) or not re.fullmatch('[0-9a-f]{32}', token):
+                raise cherrypy.HTTPError(400, 'Invalid submission token')
+            draft, errors = creations.prepare(params)
+            if not errors:
+                try:
+                    with contextlib.closing(library.connect()):
+                        pass
+                    identifier = store.enqueue(
+                        draft,
+                        cache,
+                        user,
+                        operation='create_album',
+                        submission_token=token,
+                        channel=channel,
+                    )
+                except ValueError as exc:
+                    errors['title'] = str(exc)
+                else:
+                    status_url = f"{context['base']}/jobs/{identifier}"
+                    if wants_json():
+                        return json_response(
+                            dict(id=identifier, status_url=status_url), 202
+                        )
+                    auth.redirect(status_url)
+            cherrypy.response.status = 400
+            if wants_json():
+                return json_response(dict(errors=errors), 400)
+        elif params or retry:
+            raise cherrypy.HTTPError(400, 'Unexpected creation fields')
+        with contextlib.closing(library.connect()) as db:
+            suggestions = [
+                dict(row)
+                for row in db.execute(
+                    'SELECT artists.name AS artist, albums.title FROM artists '
+                    'LEFT JOIN albums ON artists.id = albums.artist_id ORDER BY artists.normalized_name'
+                )
+            ]
+        return (
+            jenv.overlay(autoescape=True)
+            .get_template('create_album.html')
+            .render(
+                **context,
+                values=params,
+                errors=errors,
+                suggestions=suggestions,
+                choices=creations.generation_choices(),
+                submission_token=token,
+                artwork_styles=pmxbot.styles.ALBUM_ART_STYLES,
+                artwork_style_groups=pmxbot.styles.ALBUM_ART_STYLE_GROUPS,
+            )
+            .encode('utf-8')
+        )
+
+    @cherrypy.expose
     def jobs(self, identifier=None, **params):
         if cherrypy.request.method not in ('GET', 'HEAD'):
             cherrypy.response.headers['Allow'] = 'GET, HEAD'
@@ -931,6 +1034,10 @@ class PmxbotPages:
             raise cherrypy.HTTPError(
                 503, 'Generation job storage is unavailable'
             ) from None
+        if identifier is not None and job['operation'] == 'create_album':
+            if job['status'] == 'succeeded' and not wants_json():
+                auth.redirect(f"{context['base']}/albums/{job['album_id']}")
+            context['creation_inputs'] = json.loads(job['inputs_json'])
         cherrypy.response.headers['Cache-Control'] = 'no-store'
         cherrypy.response.headers['Referrer-Policy'] = 'no-referrer'
         if identifier is not None and wants_json():

@@ -44,3 +44,5 @@
 <a href="{{ collection_url(q='', artist='', album_title='', page=1) }}">Clear filters</a>
 </div>
 </section>
+
+{% if current_user and current_user.has_permission("generate_images") %}<p><a class="create-album" href="{{ base }}/create_album">Create Album</a></p>{% endif %}

@@ -320,6 +320,14 @@ class ImageCache:
             )
         return True, 'Images variation available using the saved source PNG.'
 
+    def stage_album_image(self, prompt, key, inputs, nick='', channel=''):
+        """Save recoverable artwork before a new album is published by its job.
+
+        The durable job supplies a stable key so persistence/hosting retries reuse
+        the saved original. Album association is committed with album creation.
+        """
+        return self._get(prompt, nick, channel, key, inputs=inputs)
+
     def create_image(self, prompt, nick='', channel='', *, inputs):
         """Explicit standalone request: fresh key, no source or Responses context."""
         key = uuid.uuid4().hex
@@ -1449,7 +1457,11 @@ def durable_music_results():
         job = store.take_irc_result()
         if not job:
             return
-        if job['status'] == 'failed':
+        if job['operation'] == 'create_album':
+            from .creations import announcement
+
+            result = announcement(job, pmxbot.config)
+        elif job['status'] == 'failed':
             result = job['error']
         else:
             image = cache.get_image(job['result_image_id'])

@@ -119,6 +119,9 @@ def main():
                     (key, f'https://art.example/gallery-{number}'),
                 )
             library.record_image(album['id'], key)
+        output.joinpath('create-album.html').write_text(
+            request('/create_album')['body'], encoding='utf-8'
+        )
         query = '?q=%3CAlbum%3E&artist=%3CBand%3E&sort=album&order=asc&page=1'
         output.joinpath('gallery.html').write_text(
             request('/gallery' + query)['body'], encoding='utf-8'

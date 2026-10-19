@@ -18,14 +18,24 @@
 {% elif job.status == 'succeeded' %}Artwork is ready.
 <a href="{{ base }}/albums/{{ job.album_id }}?source_image_id={{ job.result_image_id }}">View generated artwork</a>
 {% else %}Generation failed. {{ job.error }}{% endif %}</p>
-<p>Operation: {{ 'Create New' if job.operation == 'create_new' else 'Edit' }}</p>
+{% if job.operation == 'create_album' %}
+<p>{{ creation_inputs.artist_name }} — {{ creation_inputs.title }}</p>
+{% if job.status == 'failed' and current_user and current_user.has_permission('generate_images') %}
+<form method="post" action="{{ base }}/create_album">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<input type="hidden" name="retry" value="{{ job.id }}">
+<button>Retry album creation</button>
+</form>
+{% endif %}
+{% endif %}
+<p>Operation: {{ 'Create Album' if job.operation == 'create_album' else ('Create New' if job.operation == 'create_new' else 'Edit') }}</p>
 <p>Created: {{ job.created_at }} UTC</p>
 <p>You can continue browsing and return to this URL later. Bookmark it to keep track of this job.</p>
-<a href="{{ base }}/albums/{{ job.album_id }}{% if job.source_image_id %}?source_image_id={{ job.source_image_id }}{% endif %}">Return to album</a>
+{% if job.album_id %}<a href="{{ base }}/albums/{{ job.album_id }}{% if job.source_image_id %}?source_image_id={{ job.source_image_id }}{% endif %}">Return to album</a>{% endif %}
 {% else %}
 <ul>
 {% for item in jobs %}
-<li><a href="{{ base }}/jobs/{{ item.id }}">Album #{{ item.album_id }} — {{ item.status }} — {{ item.created_at }} UTC</a></li>
+<li><a href="{{ base }}/jobs/{{ item.id }}">{% if item.operation == 'create_album' and not item.album_id %}New album{% else %}Album #{{ item.album_id }}{% endif %} — {{ item.status }} — {{ item.created_at }} UTC</a></li>
 {% else %}<li>No generation jobs in this account or browser session.</li>{% endfor %}
 </ul>
 {% endif %}
