@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import urllib.parse
 import uuid
+from time import sleep
 
 import yaml
 
@@ -224,19 +225,35 @@ class XProvider:
         self.author = configured_author(author)
 
     def get(self, path, params=None):
-        response = requests.get(
-            'https://api.x.com/2/' + path,
-            headers={'Authorization': 'Bearer ' + self.token},
-            params=params,
-            timeout=15,
+        for delay in (0, 1, 2, 4):
+            if delay:
+                sleep(delay)
+            response = requests.get(
+                'https://api.x.com/2/' + path,
+                headers={'Authorization': 'Bearer ' + self.token},
+                params=params,
+                timeout=15,
+            )
+            if response.status_code == 429:
+                raise SyncError('X rate limit reached. Try updating later.')
+            response.raise_for_status()
+            result = response.json()
+            errors = result.get('errors')
+            if not errors:
+                return result
+            if not (
+                isinstance(errors, list)
+                and all(
+                    isinstance(error, dict)
+                    and error.get('type')
+                    == 'https://api.x.com/2/problems/field-hydration-failure'
+                    for error in errors
+                )
+            ):
+                raise SyncError('X returned an incomplete response; no posts imported.')
+        raise SyncError(
+            'X could not resolve referenced_tweets after retries; no posts imported.'
         )
-        if response.status_code == 429:
-            raise SyncError('X rate limit reached. Try updating later.')
-        response.raise_for_status()
-        result = response.json()
-        if result.get('errors'):
-            raise SyncError('X returned an incomplete response; no posts imported.')
-        return result
 
     def posts(self, since_id):
         user = self.get('users/by/username/' + self.author)['data']['id']

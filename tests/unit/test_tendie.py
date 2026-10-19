@@ -4,7 +4,7 @@ import datetime
 import json
 import sqlite3
 import threading
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 import requests
@@ -213,6 +213,133 @@ def api(collection):
 
 def xpost(post_id='1'):
     return dict(post(post_id), author_id='42')
+
+
+HYDRATION_ERROR = {
+    'type': 'https://api.x.com/2/problems/field-hydration-failure',
+    'detail': 'private provider details',
+}
+
+
+@pytest.fixture
+def retry_sleep(monkeypatch):
+    pause = Mock()
+    monkeypatch.setattr(tendie, 'sleep', pause)
+    return pause
+
+
+def first_nine_pages():
+    return [
+        api_response([xpost(str(index + 1))], meta={'next_token': f'page-{index + 1}'})
+        for index in range(1, 10)
+    ]
+
+
+def hydration_failure():
+    return api_response(
+        [xpost('999')],
+        errors=[HYDRATION_ERROR],
+        meta={'next_token': 'must-not-advance'},
+    )
+
+
+@pytest.mark.parametrize('failures', [1, 2, 3])
+def test_hydration_recovers_same_page_without_refetching_history(
+    api, collection, retry_sleep, failures
+):
+    collection.sync(provider(post()), live=True)
+    allow_sync(collection)
+    pmxbot.config['tendie_include_quotes'] = False
+    api.side_effect = (
+        [api_response({'id': '42'})]
+        + first_nine_pages()
+        + [hydration_failure() for _ in range(failures)]
+        + [
+            api_response(
+                [
+                    dict(xpost('100'), referenced_tweets=[{'type': 'replied_to'}]),
+                    dict(xpost('101'), referenced_tweets=[{'type': 'quoted'}]),
+                    xpost('11'),
+                ],
+                meta={'next_token': 'page-11'},
+                errors=[],
+            ),
+            api_response([xpost('12')], meta={}),
+        ]
+    )
+    assert live_update() == 'Tendie: imported 11 posts.'
+    assert collection.size() == 12
+    assert collection.meta('live_since_id') == '101'
+    assert not collection.db.execute(
+        "SELECT id FROM tendie_posts WHERE id IN ('100', '101', '999')"
+    ).fetchall()
+    assert retry_sleep.call_args_list == [call(delay) for delay in (1, 2, 4)[:failures]]
+    assert api.call_count == 12 + failures
+    retried = api.call_args_list[10 : 11 + failures]
+    assert all(request == retried[0] for request in retried)
+    assert retried[0].kwargs['params'] == {
+        'max_results': 100,
+        'exclude': 'retweets',
+        'tweet.fields': 'created_at,author_id,referenced_tweets',
+        'since_id': '1',
+        'pagination_token': 'page-10',
+    }
+    assert api.call_args.kwargs['params']['pagination_token'] == 'page-11'
+
+
+def test_persistent_hydration_failure_preserves_posts_and_checkpoint(
+    api, collection, retry_sleep
+):
+    collection.sync(provider(post()), live=True)
+    before = [tuple(row) for row in collection.db.execute('SELECT * FROM tendie_posts')]
+    success = collection.meta('last_success')
+    allow_sync(collection)
+    api.side_effect = (
+        [api_response({'id': '42'})]
+        + first_nine_pages()
+        + [hydration_failure() for _ in range(4)]
+    )
+    assert live_update() == (
+        'X could not resolve referenced_tweets after retries; no posts imported.'
+    )
+    assert [
+        tuple(row) for row in collection.db.execute('SELECT * FROM tendie_posts')
+    ] == before
+    assert collection.meta('live_since_id') == '1'
+    assert collection.meta('last_success') == success
+    assert collection.meta('sync_owner') == ''
+    assert collection.meta('last_attempt')
+    assert retry_sleep.call_args_list == [call(1), call(2), call(4)]
+    assert api.call_count == 14
+    assert all(request == api.call_args_list[10] for request in api.call_args_list[10:])
+    assert 'cooling down' in live_update()
+
+
+@pytest.mark.parametrize('after_retry', [False, True])
+@pytest.mark.parametrize(
+    'errors',
+    [
+        [HYDRATION_ERROR, {'type': 'another-error', 'detail': 'secret'}],
+        [{'type': 'another-error'}, HYDRATION_ERROR],
+        [{'detail': 'secret'}],
+        [HYDRATION_ERROR, 'malformed'],
+        {'type': HYDRATION_ERROR['type']},
+    ],
+)
+def test_other_or_mixed_errors_abort_without_further_retries(
+    api, collection, retry_sleep, errors, after_retry
+):
+    api.side_effect = (
+        [api_response({'id': '42'})]
+        + ([hydration_failure()] if after_retry else [])
+        + [api_response([xpost()], errors=errors, meta={})]
+    )
+    assert live_update() == 'X returned an incomplete response; no posts imported.'
+    assert collection.size() == 0
+    assert collection.meta('live_since_id') is None
+    assert collection.meta('last_success') is None
+    assert api.call_count == 2 + after_retry
+    assert retry_sleep.call_args_list == ([call(1)] if after_retry else [])
 
 
 def test_api_initial_and_pagination(api, collection):

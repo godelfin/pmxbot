@@ -120,8 +120,13 @@ use a local file import.
 Updates have a 15-second timeout per request and a maximum of 100 timeline
 pages per attempt. HTTP errors, rate limits, malformed data, repeated cursors,
 and partial responses abort the whole import, leaving stored posts and the
-last-success timestamp unchanged. No automatic retries are made. Retry after
-the local cooldown and any provider rate limit has expired. The attempt time
+last-success timestamp unchanged. Responses containing only X's
+``field-hydration-failure`` errors retry the same request and pagination token
+after 1, 2, and 4 seconds. Only an error-free response is accepted; exhausted
+retries abort the entire import and preserve the existing posts and checkpoint.
+Mixed or other errors follow their normal failure paths without retries.
+Retry failed updates after the local cooldown and any provider rate limit has
+expired. The attempt time
 is persisted even on failure. The cooldown defaults to 300 seconds (minimum
 one second). A process lock and persisted 30-minute synchronization lease reject
 concurrent synchronizations, including file imports. A lease abandoned by a
