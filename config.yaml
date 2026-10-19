@@ -25,14 +25,14 @@ feeds:
 librarypaste: http://a.libpa.st/
 
 web_base: /
-# Optional public application root, including web_base; used in IRC administrator links.
-web_public_url: !env PMXBOT_WEB_PUBLIC_URL
 # Keep true for HTTPS, including TLS termination at the trusted reverse proxy.
 # Set false explicitly for isolated local HTTP development only.
 web_session_secure: true
 web_port: 8080
 web_host: 0.0.0.0
-# Public URL of the album list; generated images link to their album beneath it.
+# Application root for album links; use an absolute HTTP(S) URL, including the
+# web_base mount path (e.g. https://bot.example/bot), for IRC administrator links.
+# Change configuration in this file and restart; there is no !config command.
 albums_url: /
 #logo: /pmxbot.png
 

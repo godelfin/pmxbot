@@ -14,9 +14,11 @@ to all IRC users:
   or live synchronization, in UTC (or ``never``).
 
 ``!tendie update`` directs administrators to the authenticated website. It never
-starts synchronization from IRC. When ``web_public_url`` is configured (or
-``albums_url`` is an absolute public application URL), the response links to
-``/admin/tendies``. No IRC services account or account-tag support is required.
+starts synchronization from IRC. When ``albums_url`` is an absolute HTTP(S)
+public application URL, the response links to ``/admin/tendies`` beneath it.
+Otherwise, the response explains that administrators must use the website
+without guessing a hostname. No IRC services account or account-tag support is
+required.
 
 Random, latest, days, and status requests make no network requests. Post text
 is HTML-unescaped, stripped of IRC control characters, collapsed to a single
@@ -30,7 +32,8 @@ The example ``config.yaml`` includes these settings::
 
     database: sqlite:pmxbot.sqlite
     tendie_author: !env TENDIE_AUTHOR
-    web_public_url: !env PMXBOT_WEB_PUBLIC_URL
+    web_base: /bot
+    albums_url: https://bot.example/bot
     x_bearer_token: !env X_BEARER_TOKEN
     tendie_sync_cooldown: 300
     tendie_include_replies: false
@@ -61,11 +64,15 @@ which displays completion or a safe error and polls while the job is active.
 JavaScript is optional: reload the page to check results. Tokens and provider
 response details are never included in the page, status JSON, or error messages.
 
-Set ``web_public_url`` to the public application root, including its mount path,
-for example ``https://bot.example/bot``. This is used only to link IRC users to
-the administration page; it grants no access. The public ``!config`` command
-cannot change the primary ``database`` setting; edit trusted configuration and
-restart to change the identity store.
+Set ``albums_url`` to the public application root, including its mount path,
+for example ``https://bot.example/bot``. It supplies both album links and the
+IRC link to the administration page; it grants no access. ``web_base`` is only
+the application mount path, such as ``/bot``, and cannot supply a public hostname
+or scheme. Administrator links reject URLs containing credentials, whitespace,
+query strings, or fragments. Existing album-link fallbacks are unchanged.
+The ``!config`` IRC command has been removed entirely. IRC users cannot mutate
+runtime configuration, including ``albums_url`` or the primary ``database``
+setting. Edit trusted configuration and restart to change settings.
 
 The viewer manages one bounded tendie executor using the same CherryPy plugin
 lifecycle and thread-pool conventions as generation jobs. Tendie jobs use the

@@ -131,6 +131,7 @@ def test_music_disabled(config, monkeypatch):
             {'albums_url': 'https://bot.example.com/bot/'},
             'https://bot.example.com/bot/albums/1',
         ),
+        ({'albums_url': '/bot/'}, '/bot/albums/1'),
         (
             {'logs URL': 'https://logs.example.com/bot/'},
             'https://logs.example.com/bot/albums/1',

@@ -1,23 +1,11 @@
-from unittest import mock
+"""Public IRC configuration mutation is no longer supported."""
 
-import pmxbot.config_
+import importlib_metadata
 
-
-@mock.patch('pmxbot.config', {})
-def test_config_append():
-    """
-    += should append an item to a list
-    """
-    pmxbot.config['foo'] = []
-    text = 'foo += {"a": 3, "b": foo}'
-    pmxbot.config_.config(None, None, None, None, text)
-    assert pmxbot.config['foo'][0] == {'a': 3, 'b': 'foo'}
+from pmxbot import core
 
 
-@mock.patch('pmxbot.config', {})
-def test_administrator_trust_settings_are_not_publicly_mutable():
-    for key in ('database',):
-        pmxbot.config[key] = 'original'
-        result = pmxbot.config_.config(None, None, None, 'attacker', key + ' = changed')
-        assert 'configuration file' in result
-        assert pmxbot.config[key] == 'original'
+def test_config_command_is_not_registered():
+    extensions = importlib_metadata.entry_points(group='pmxbot_handlers')
+    assert all(ep.value != 'pmxbot.config_' for ep in extensions)
+    assert not list(core.CommandHandler.find_matching('!config foo=bar', '#test'))

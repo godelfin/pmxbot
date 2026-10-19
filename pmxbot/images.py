@@ -31,7 +31,7 @@ from PIL import Image, ImageOps
 
 import pmxbot
 
-from . import quotes
+from . import quotes, urls
 from .core import SwitchChannel, command, execdelay
 from .music import MusicLibrary, generate_album_image
 
@@ -1299,7 +1299,7 @@ def _album_url(album_id):
     if not url:
         base = pmxbot.config.get('web_base', '/').strip('/')
         url = f'http://{socket.getfqdn()}/{base}'
-    return f'{url.rstrip("/")}/albums/{album_id}'
+    return urls.append_path(url, f'albums/{album_id}')
 
 
 @command()

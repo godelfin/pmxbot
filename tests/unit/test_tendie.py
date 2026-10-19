@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import datetime
 import json
 import sqlite3
@@ -710,26 +711,80 @@ def test_checkpoint_and_import_commit_atomically(collection):
     [
         (None, None),
         ('https://bot.example/bot', 'https://bot.example/bot/admin/tendies'),
+        ('https://bot.example/bot/', 'https://bot.example/bot/admin/tendies'),
+        ('http://bot.example:8080/bot', 'http://bot.example:8080/bot/admin/tendies'),
+        ('https://bot.example', 'https://bot.example/admin/tendies'),
+        ('', None),
         ('/relative', None),
+        ('//bot.example/bot', None),
+        ('ftp://bot.example/bot', None),
+        ('https:///bot', None),
+        ('https://[invalid', None),
+        ('https://bot.example:invalid', None),
+        ('https://bot.example:65536', None),
         ('https://user:secret@bot.example', None),
+        ('https://user@bot.example', None),
+        ('https://@bot.example', None),
+        (' https://bot.example', None),
+        ('https://bot.example/a b', None),
+        ('https://bot.\nexample', None),
+        ('https://bot.example/\x00', None),
+        ('https://bot.example/?redirect=attacker', None),
+        ('https://bot.example/?', None),
+        ('https://bot.example/#fragment', None),
+        ('https://bot.example/#', None),
+        ('https://bot.example\\@attacker.example', None),
+        (['https://bot.example'], None),
     ],
 )
 def test_irc_update_only_links_to_website(collection, monkeypatch, url, expected):
-    pmxbot.config['web_public_url'] = url
+    pmxbot.config.update(
+        albums_url=url, web_base='/bot', **{'logs URL': 'https://logs.example/bot'}
+    )
     sync = Mock()
     monkeypatch.setattr(tendie, 'synchronize', sync)
     before = [tuple(row) for row in collection.db.execute('SELECT * FROM tendie_sync')]
     result = tendie.tendie('update')
-    assert 'Administrators must use the website' in result
-    if expected:
-        assert result.endswith(expected)
-    else:
-        assert 'https://' not in result
+    message = 'Administrators must use the website to update tendies.'
+    assert result == message + (' ' + expected if expected else '')
     sync.assert_not_called()
     tendie.requests.get.assert_not_called()
     assert [
         tuple(row) for row in collection.db.execute('SELECT * FROM tendie_sync')
     ] == before
+
+
+@pytest.mark.parametrize('operator', ['=', '+=', '-='])
+@pytest.mark.parametrize('url', [None, 'https://bot.example/bot'])
+@pytest.mark.parametrize('key', ['albums_url', 'database', 'ordinary_setting'])
+def test_public_config_cannot_redirect_administrator_link(
+    collection, monkeypatch, operator, url, key
+):
+    pmxbot.config['albums_url'] = url
+    pmxbot.config['ordinary_setting'] = ['original']
+    before = copy.deepcopy(pmxbot.config)
+    message = f'!config {key} {operator} https://attacker.example'
+    assert not list(core.CommandHandler.find_matching(message, '#test'))
+    handler = next(h for h in core.Handler._registry if h.func is tendie.tendie)
+    monkeypatch.setattr(core.Handler, '_registry', [handler])
+
+    class Bot(core.Bot):
+        _nickname = 'bot'
+        result = None
+
+        def transmit(self, channel, message):
+            self.result = str(message)
+            return message
+
+    bot = Bot()
+    bot.handle_action('#test', 'attacker', message)
+    assert bot.result is None
+    assert pmxbot.config == before
+    bot.handle_action('#test', 'anyone', '!tendie update')
+    assert 'attacker.example' not in bot.result
+    message = 'Administrators must use the website to update tendies.'
+    assert bot.result == message + (f' {url}/admin/tendies' if url else '')
+    tendie.requests.get.assert_not_called()
 
 
 @pytest.mark.parametrize('action', ['', 'latest', 'days', 'status'])

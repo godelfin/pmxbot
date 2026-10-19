@@ -18,6 +18,7 @@ import yaml
 import requests
 
 import pmxbot
+from . import urls
 from .core import command
 from .dictlib import ConfigDict
 from .storage import SQLiteStorage
@@ -359,20 +360,7 @@ def synchronization_error(exc):
 
 
 def administrator_url(config):
-    for value in (config.get('web_public_url'), config.get('albums_url')):
-        if not isinstance(value, str) or any(char.isspace() for char in value):
-            continue
-        try:
-            url = urllib.parse.urlsplit(value)
-            if (
-                url.scheme in ('http', 'https')
-                and url.netloc
-                and not (url.username or url.password or url.query or url.fragment)
-            ):
-                return value.rstrip('/') + '/admin/tendies'
-        except ValueError:
-            pass
-    return None
+    return urls.public_application_url(config.get('albums_url'), 'admin/tendies')
 
 
 @command()
