@@ -243,36 +243,7 @@ button:focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 <dt>Band</dt><dd id="album-band">{{ album.artist_name }}</dd>
 <dt>Title</dt><dd id="album-title">{{ album.title }}</dd>
 {% set properties = draft.album_properties() if draft else album %}
-<dt><label for="album-style">Style</label></dt><dd><select id="album-style" name="style">
-<option value=""{% if not properties.style %} selected{% endif %}>None</option>
-{% for label, ids in artwork_style_groups.items() %}
-<optgroup label="{{ label }}">
-{% for id in ids %}<option value="{{ id }}"{% if id == properties.style %} selected{% endif %}>{{ artwork_styles[id].name }}</option>{% endfor %}
-</optgroup>
-{% endfor %}
-</select></dd>
-{% for name, label, options in [('genre', 'Album genre', genres)] %}
-<dt><label for="album-{{ name }}">{{ label }}</label></dt><dd><select id="album-{{ name }}" name="{{ name }}">
-<option value=""{% if not properties[name] %} selected{% endif %}>None</option>
-{% if properties[name] and properties[name] not in options %}<option data-source-only value="{{ properties[name] }}" selected>{{ properties[name] }}</option>{% endif %}
-{% for option in options %}<option value="{{ option }}"{% if option == properties[name] %} selected{% endif %}>{{ option }}</option>{% endfor %}
-</select></dd>
-{% endfor %}
-<dt><label for="album-description">Album description</label></dt><dd class="music-description"><textarea id="album-description" name="description" rows="4" maxlength="10000">{{ properties.description or '' }}</textarea></dd>
-</dl>
-<details class="advanced-options" id="variation-advanced">
-<summary>Advanced options</summary>
-<dl class="image-details">
-{% for name, label, options in [('format', 'Format', formats), ('format_description', 'Format description', format_descriptions), ('artist_genre', 'Band genre', genres)] %}
-<dt><label for="album-{{ name }}">{{ label }}</label></dt><dd><select id="album-{{ name }}" name="{{ name }}">
-<option value=""{% if not properties[name] %} selected{% endif %}>None</option>
-{% if properties[name] and properties[name] not in options %}<option data-source-only value="{{ properties[name] }}" selected>{{ properties[name] }}</option>{% endif %}
-{% for option in options %}<option value="{{ option }}"{% if option == properties[name] %} selected{% endif %}>{{ option }}</option>{% endfor %}
-</select></dd>
-{% endfor %}
-<dt><label for="album-artist_description">Band description</label></dt><dd class="music-description"><textarea id="album-artist_description" name="artist_description" rows="4" maxlength="10000">{{ properties.artist_description or '' }}</textarea></dd>
-</dl>
-</details>
+{% include "generation_fields.html" %}
 {% if draft %}
 <button type="submit" name="operation" value="create_new"{% if not create_available or not current_user or not current_user.can_generate_images %} disabled{% endif %}>Create New</button>
 <button type="submit"{% if not variation_available or not current_user or not current_user.can_generate_images %} disabled{% endif %} name="operation" value="edit">Edit</button>

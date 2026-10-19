@@ -63,6 +63,7 @@ class JobStore:
                 ('delivered_at', 'TEXT'),
                 ('operation', "TEXT NOT NULL DEFAULT 'edit'"),
                 ('submission_token', 'TEXT'),
+                ('creation_identity', 'TEXT'),
             ):
                 if name not in columns:
                     db.execute(
@@ -71,6 +72,11 @@ class JobStore:
             db.execute(
                 'CREATE INDEX IF NOT EXISTS generation_jobs_submission '
                 'ON generation_jobs(submission_token) WHERE submission_token IS NOT NULL'
+            )
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS generation_jobs_creation "
+                "ON generation_jobs(creation_identity) WHERE creation_identity IS NOT NULL "
+                "AND status IN ('queued', 'running')"
             )
             db.execute('COMMIT')
         except Exception:
@@ -115,6 +121,14 @@ class JobStore:
 
         Snapshots contain generation settings only, never credentials or paths.
         """
+        if operation == 'create_album' and (
+            not user
+            or not user.has_permission('generate_images')
+            or not submission_token
+        ):
+            raise ValueError(
+                'Image generation permission and submission token are required.'
+            )
         settings = dict(
             image_api=cache.image_api,
             images_model=cache.settings['model'],
@@ -144,10 +158,13 @@ class JobStore:
                     ).fetchone()
                     if row and (
                         row['inputs_json'] != inputs_json
-                        or row['settings_json'] != settings_json
+                        or (
+                            operation != 'create_album'
+                            and row['settings_json'] != settings_json
+                        )
                         or row['operation'] != operation
                         or row['kind'] != kind
-                        or row['channel'] != channel
+                        or (operation != 'create_album' and row['channel'] != channel)
                     ):
                         raise ValueError(
                             'Submission token already used with different inputs.'
@@ -169,12 +186,27 @@ class JobStore:
                         ),
                     ).fetchone()
                 identifier = row['id'] if row else uuid.uuid4().hex
+                creation_identity = None
+                if not row and operation == 'create_album':
+                    from .creations import conflicting_album, release_key
+
+                    if conflicting_album(db, inputs):
+                        raise ValueError(
+                            'This artist already has an album with that title.'
+                        )
+                    creation_identity = release_key(inputs)
+                    if db.execute(
+                        "SELECT 1 FROM generation_jobs WHERE creation_identity = ? "
+                        "AND status IN ('queued', 'running')",
+                        (creation_identity,),
+                    ).fetchone():
+                        raise ValueError('This album is already being created.')
                 if not row:
                     db.execute(
                         '''INSERT INTO generation_jobs
                         (id, album_id, source_image_id, inputs_json, settings_json,
-                         user_id, requested_by, anonymous_owner, kind, channel, operation, submission_token)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                         user_id, requested_by, anonymous_owner, kind, channel, operation, submission_token, creation_identity)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                         (
                             identifier,
                             inputs.album_id if kind == 'variation' else inputs['id'],
@@ -188,6 +220,7 @@ class JobStore:
                             channel,
                             operation,
                             submission_token,
+                            creation_identity,
                         ),
                     )
                 db.execute('COMMIT')
@@ -195,6 +228,39 @@ class JobStore:
                 db.execute('ROLLBACK')
                 raise
         return identifier
+
+    def retry_creation(self, identifier, user):
+        if not user.has_permission('generate_images'):
+            raise ValueError('Image generation permission is required.')
+        from .creations import conflicting_album
+
+        with closing(self.connect()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                job = db.execute(
+                    'SELECT * FROM generation_jobs WHERE id = ?', (identifier,)
+                ).fetchone()
+                if (
+                    not job
+                    or job['user_id'] != user.id
+                    or job['operation'] != 'create_album'
+                ):
+                    raise LookupError('Unknown creation job')
+                if job['status'] == 'failed':
+                    inputs = GenerationInputs(**json.loads(job['inputs_json']))
+                    if conflicting_album(db, inputs):
+                        raise ValueError(
+                            'This artist already has an album with that title.'
+                        )
+                    db.execute(
+                        "UPDATE generation_jobs SET status = 'queued', error = NULL, "
+                        "started_at = NULL, completed_at = NULL WHERE id = ?",
+                        (identifier,),
+                    )
+                db.execute('COMMIT')
+            except Exception:
+                db.execute('ROLLBACK')
+                raise
 
     def read_connection(self):
         if not self.database.is_file():
@@ -285,7 +351,8 @@ class JobStore:
             db.execute('BEGIN IMMEDIATE')
             try:
                 row = db.execute(
-                    "SELECT * FROM generation_jobs WHERE kind = 'music' "
+                    "SELECT * FROM generation_jobs WHERE (kind = 'music' OR "
+                    "(operation = 'create_album' AND status = 'succeeded')) "
                     "AND status IN ('succeeded', 'failed') AND delivered_at IS NULL "
                     "ORDER BY created_at, id LIMIT 1"
                 ).fetchone()
@@ -305,6 +372,11 @@ def process_job(store, job, config):
     try:
         snapshot = dict(config, **json.loads(job['settings_json']))
         cache = ImageCache(snapshot)
+        if job.get('operation') == 'create_album':
+            from .creations import generate
+
+            generate(job, cache, config)
+            return
         if job['kind'] == 'music':
             from .music import generate_album_image
 

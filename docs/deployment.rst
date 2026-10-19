@@ -515,3 +515,44 @@ job page and returning to the album supplies a new token. The existing internal
 pending deduplication for older callers and IRC prompt caching remain unchanged.
 Explicit artwork operations bypass prompt caching and any future F34 equivalence
 lookup. F34 (#39) and legacy-to-Responses editing F35 (#40) are deferred.
+
+Manual album creation
+---------------------
+
+Users with the explicit ``can_generate_images`` grant can select **Create Album**
+from either collection view. Administrator status does not grant this permission.
+The form accepts an existing or new artist, a new album title, and the same
+format, genre, style and advanced controls as the album artwork page. Names and
+titles are limited to 255 characters. Existing normalized artist/title pairs
+are rejected rather than overwritten.
+
+Set ``albums_url`` to the public application URL (including its mount path),
+for example ``https://gallery.example/bot``. Announcements never use the HTTP
+Host header. Set ``album_creation_channel`` to the IRC channel for new albums;
+it defaults to ``inane_channel``. Both a valid public URL and a channel are
+required before accepting creation requests. The running IRC bot must share the
+same image/library database as the viewer and generation executor.
+
+Creation uses the existing web generation queue and follows
+``web_generation_standalone`` and ``generation_worker_concurrency``. The request
+returns immediately to a durable job URL, which refreshes while generation is
+queued/running and redirects to the normal album page on completion. Users can
+leave the page and find it again through **Your generation jobs**. Failed jobs
+retain their inputs and offer an authenticated, CSRF-protected retry.
+
+An additive migration adds ``creation_identity`` to ``generation_jobs`` and a
+partial unique index reserving normalized artist/title pairs during generation.
+Submission tokens reuse the original job, including after completion. The image
+uses a stable job-specific key in the normal image cache, allowing retries to
+reuse a saved original after hosting or album persistence failure. Artists,
+albums, image associations, final metadata and successful job status are
+committed together after generation/hosting; failed jobs never publish an empty
+album. No transaction is held during the provider request.
+
+Completed creations are announced by the existing bot-thread durable result
+poller. Notifications use its existing at-most-once claim-before-send policy:
+IRC delivery failure is logged and cannot undo an album or trigger regeneration.
+There is no automatic announcement retry because IRC has no delivery receipt;
+an interrupted send can lose a notification. Likewise, a provider response lost
+before the original can be saved cannot be recovered without a new generation.
+The executor marks interrupted jobs failed for explicit user retry.

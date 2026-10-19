@@ -600,3 +600,42 @@ test('Torta Mode is private to signed-in users and submits its CSRF-protected ch
   assert.equal(await noJS.getByRole('button', {name: 'Save Torta Mode', exact: true}).isVisible(), true);
   await noJS.close();
 });
+
+for (const width of [360, 1400]) test(`manual album form suggests titles, warns about duplicates and submits once at ${width}px`, {timeout: 10000}, async () => {
+  const page = await setup({width, fixture: 'create-album'});
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.getByLabel('Band', {exact: true}).fill('<band>');
+  assert.ok(await page.locator('#titles option').count() > 1);
+  await page.getByLabel('Album title', {exact: true}).fill('<Album> 00');
+  assert.match(await page.locator('#duplicate-warning').innerText(), /already has an album/);
+  await page.getByLabel('Band', {exact: true}).fill('Brand new artist');
+  assert.equal(await page.locator('#titles option').count(), 0);
+  await page.getByLabel('Album title', {exact: true}).fill('Brand new album');
+  assert.equal(await page.locator('#duplicate-warning').innerText(), '');
+  await page.getByLabel('Style', {exact: true}).selectOption('001');
+  await page.getByText('Advanced options', {exact: true}).click();
+  await page.getByLabel('Format', {exact: true}).selectOption('Vinyl');
+  if (process.env.BROWSER_SCREENSHOTS_DIR) {
+    fs.mkdirSync(process.env.BROWSER_SCREENSHOTS_DIR, {recursive: true});
+    await page.screenshot({path: path.join(process.env.BROWSER_SCREENSHOTS_DIR, `create-album-${width}.png`), fullPage: true});
+  }
+  await page.evaluate(() => {
+    window.creationSubmissions = [];
+    document.getElementById('creation-form').addEventListener('submit', event => {
+      event.preventDefault();
+      window.creationSubmissions.push(Object.fromEntries(new FormData(event.target)));
+    });
+  });
+  const button = page.getByRole('button', {name: 'Create Album & Generate Artwork', exact: true});
+  await button.click();
+  assert.equal(await button.isDisabled(), true);
+  assert.equal(await page.locator('#creation-progress').innerText(), 'Creating album…');
+  const submissions = await page.evaluate(() => window.creationSubmissions);
+  assert.equal(submissions.length, 1);
+  assert.equal(submissions[0].artist_name, 'Brand new artist');
+  assert.equal(submissions[0].title, 'Brand new album');
+  assert.equal(submissions[0].format, 'Vinyl');
+  assert.equal(submissions[0].style, '001');
+  assert.match(submissions[0].submission_token, /^[a-f0-9]{32}$/);
+  await page.close();
+});

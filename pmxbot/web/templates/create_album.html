@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create Album</title>
+<style>
+body { margin: 0; font: .875rem/1.6 Verdana, Arial, sans-serif; color: #252b34; background: #f4f6f8; }
+main { max-width: 48rem; margin: auto; padding: 1.25rem; }
+#creation-form { background: white; border: 1px solid #d4dbe2; border-radius: .5rem; padding: 1.25rem; }
+#creation-form input, #creation-form select, #creation-form textarea, #creation-form button { box-sizing: border-box; max-width: 100%; min-height: 44px; font: inherit; }
+#creation-form input, #creation-form select, #creation-form textarea { width: 100%; }
+dd { margin: 0 0 1rem; }
+a { color: #135ba1; }
+.error { color: #a01a25; }
+</style>
+</head>
+<body>
+{% include "auth_nav.html" %}
+<main>
+<a href="{{ base }}/">All albums</a>
+<h1>Create Album</h1>
+<p>Choose a band and title, then generate the album’s first artwork.</p>
+<form method="post" action="{{ base }}/create_album" id="creation-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<input type="hidden" name="submission_token" value="{{ submission_token }}">
+{% for field, error in errors.items() %}<p class="error" role="alert">{{ field }}: {{ error }}</p>{% endfor %}
+<dl>
+<dt><label for="artist">Band</label></dt>
+<dd><input id="artist" name="artist_name" list="artists" required maxlength="255" value="{{ values.get('artist_name', '') }}" autocomplete="off">
+<datalist id="artists">{% for artist in suggestions|map(attribute='artist')|unique %}<option value="{{ artist }}">{% endfor %}</datalist></dd>
+<dt><label for="title">Album title</label></dt>
+<dd><input id="title" name="title" list="titles" required maxlength="255" value="{{ values.get('title', '') }}" autocomplete="off"><datalist id="titles"></datalist><p id="duplicate-warning" role="status"></p></dd>
+{% set properties = values %}
+{% set genres = choices.genre %}
+{% set formats = choices.format %}
+{% set format_descriptions = choices.format_description %}
+{% include "generation_fields.html" %}
+<button type="submit">Create Album &amp; Generate Artwork</button>
+<p id="creation-progress" role="status"></p>
+</form>
+<p><a href="{{ base }}/jobs">Your generation jobs</a></p>
+</main>
+<script>
+(() => {
+  const suggestions = {{ suggestions|tojson }};
+  const artist = document.getElementById('artist');
+  const title = document.getElementById('title');
+  const normalize = text => text.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  function update() {
+    const matches = suggestions.filter(row => !artist.value || normalize(row.artist) === normalize(artist.value));
+    document.getElementById('titles').replaceChildren(...matches.filter(row => row.title).map(row => {
+      const option = document.createElement('option'); option.value = row.title; return option;
+    }));
+    document.getElementById('duplicate-warning').textContent = matches.some(row => row.title && normalize(row.title) === normalize(title.value)) ? 'This band already has an album with this title.' : '';
+  }
+  artist.addEventListener('input', update); title.addEventListener('input', update); update();
+  document.getElementById('creation-form').addEventListener('submit', () => {
+    document.querySelector('#creation-form button[type=submit]').disabled = true;
+    document.getElementById('creation-progress').textContent = 'Creating album…';
+  });
+})();
+</script>
+</body>
+</html>
