@@ -50,6 +50,7 @@ def status(config):
             count=store.size(),
             last_success=store.meta('last_success'),
             last_live_success=store.meta('last_live_success'),
+            page_limit=job.get('page_limit', 1),
             progress=store.progress(),
             job=dict(
                 status=job.get('status', 'idle'),
@@ -80,7 +81,8 @@ class TendieExecutor(SimplePlugin):
         if pool:
             pool.shutdown(wait=True)
 
-    def enqueue(self, config, operation='update'):
+    def enqueue(self, config, operation='update', page_limit=1):
+        page_limit = tendie.validated_page_limit(page_limit)
         if operation not in ('update', 'recover', 'recover_range'):
             raise ValueError('Invalid tendie operation')
         config = tendie.settings_snapshot(config)
@@ -101,6 +103,7 @@ class TendieExecutor(SimplePlugin):
                         json.dumps(
                             dict(
                                 id=identifier,
+                                page_limit=page_limit,
                                 status='queued',
                                 message=(
                                     'Local replay queued (no X requests).'
@@ -113,7 +116,7 @@ class TendieExecutor(SimplePlugin):
                     )
             self._active = True
             try:
-                self._pool.submit(self._run, config, identifier, operation)
+                self._pool.submit(self._run, config, identifier, operation, page_limit)
             except Exception:
                 self._active = False
                 self._record(
@@ -139,7 +142,7 @@ class TendieExecutor(SimplePlugin):
                 store.set_meta('web_job', json.dumps(job))
                 return True
 
-    def _run(self, config, identifier, operation):
+    def _run(self, config, identifier, operation, page_limit):
         try:
             message = (
                 'Replaying saved pages locally (no X requests)…'
@@ -149,7 +152,9 @@ class TendieExecutor(SimplePlugin):
             if not self._record(config, identifier, 'running', message):
                 return
             try:
-                count = tendie.synchronize(config, operation=operation)
+                count = tendie.synchronize(
+                    config, operation=operation, page_limit=page_limit
+                )
             except Exception as exc:
                 state, message = 'failed', tendie.synchronization_error(exc)
                 log.error('Tendie synchronization failed (%s)', type(exc).__name__)
@@ -161,6 +166,8 @@ class TendieExecutor(SimplePlugin):
                 message = f'Imported {count} posts.'
                 if incomplete:
                     message += f' Run incomplete; {progress["saved_responses"]} responses saved and {progress["imported"]} posts imported in this run.'
+                    if operation != 'recover':
+                        message += ' ' + progress['message']
                 if operation == 'recover':
                     message += ' Local replay made no X requests.'
                     if incomplete:

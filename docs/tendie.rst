@@ -116,6 +116,21 @@ policy, numeric high/low IDs, and completion state are durable. The first run
 has no lower bound and bootstraps available history; subsequent runs use the
 last completed ``live_since_id``. Offline posts never substitute for this bound.
 
+Use **New pages to request per update** to start with just **1 page** (the website
+default). Check the saved/imported counts and result, then choose a larger limit
+for the next update, up to **100**. The website remembers the last submitted
+choice. Each submission gets its own budget; it does not change the saved run's
+source, filters, bounds, or pagination parameters. Explicit range recovery uses
+the same selected limit.
+
+Reaching the limit pauses normally with progress saved, rather than reporting
+an API failure. The run stays incomplete and its live checkpoint does not advance
+until the remaining range finishes. Update again after the configured cooldown
+to resume at the next position. Saved-page replay does not use the new-page
+budget and local replay remains independent of it. A page contains up to 100
+posts; this is not an HTTP-request budget. Hydration retries can make up to four
+requests for the same page, and the initial account lookup is separate.
+
 Each successfully decoded timeline response is committed to ``tendie_pages``
 before validating it, retrying it, or requesting another page. This includes
 HTTP-error bodies and HTTP 200 partial-error responses, with their usable data,
@@ -175,7 +190,10 @@ deleted posts or data outside provider history/access limits. Provider errors
 leave the range incomplete rather than advancing its checkpoint.
 
 Requests time out after 15 seconds; an action processes at most 100 page
-positions before stopping with resumable progress. Only responses whose errors
+positions, requesting at most the selected number of new pages before pausing
+with resumable progress. Trusted Python callers can pass ``page_limit`` to
+``synchronize`` or ``Collection.sync`` (default 100); the website defaults to 1.
+Only responses whose errors
 are exclusively ``field-hydration-failure`` retry the same parameters/token,
 after 1, 2, and 4 seconds (at most four requests per position per action).
 Every decoded retry response is saved first. Other errors, credit failures,

@@ -28,6 +28,9 @@ button:disabled { cursor: wait; } a { color: #135ba1; }
 <p class="feedback" id="tendie-result" role="status" aria-live="polite">{{ state.job.message }}</p>
 <form method="post" action="{{ base }}/admin/tendies">
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+<p><label for="tendie-page-limit">New pages to request per update (1–100)</label>
+<input id="tendie-page-limit" name="page_limit" type="number" min="1" max="100" step="1" required value="{{ state.page_limit }}" aria-describedby="tendie-page-help"{% if state.job.status in ('queued', 'running') %} disabled{% endif %} /></p>
+<p id="tendie-page-help">Start with 1 page, check the saved/imported counts, then choose more pages for the next update. Reaching the limit pauses safely; it does not finish the timeline. Each page contains up to 100 posts and may make up to 4 X requests if hydration retries are needed. The account lookup is separate. Saved-page replay does not spend this budget. The synchronization cooldown still applies between paid updates.</p>
 <button id="tendie-update" name="operation" value="update" type="submit"{% if state.job.status in ('queued', 'running') or (state.progress and state.progress.status == 'token_rejected') %} disabled{% endif %}>Update tendies (X API)</button>
 <button id="tendie-recover" name="operation" value="recover" type="submit"{% if state.job.status in ('queued', 'running') %} disabled{% endif %}>Replay saved pages locally (no X requests)</button>
 <button id="tendie-range" name="operation" value="recover_range" type="submit"{% if state.job.status in ('queued', 'running') %} disabled{% endif %}{% if not state.progress or not state.progress.can_recover_range %} hidden{% endif %}>Recover older unfinished range (X API)</button>
@@ -54,6 +57,7 @@ button:disabled { cursor: wait; } a { color: #135ba1; }
             const progress = state.progress;
             button.disabled = running || (progress && progress.status === 'token_rejected');
             document.getElementById('tendie-recover').disabled = running;
+            document.getElementById('tendie-page-limit').disabled = running;
             document.getElementById('tendie-range').disabled = running;
             document.getElementById('tendie-range').hidden = !progress || !progress.can_recover_range;
             if (progress) document.getElementById('tendie-progress').textContent = `${progress.status}: ${progress.saved_responses} responses saved, ${progress.saved_posts} staged post copies (including retries), ${progress.imported} posts imported in this run; ${progress.processed_pages} pages processed, ${progress.unresolved_pages} unresolved page positions. Last progress: ${progress.last_progress}. ${progress.message}`;

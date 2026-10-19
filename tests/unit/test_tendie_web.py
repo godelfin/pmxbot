@@ -125,6 +125,7 @@ def test_page_status_and_get_requests_never_start_updates(site, monkeypatch):
         count=0,
         last_success=None,
         last_live_success=None,
+        page_limit=1,
         progress=None,
         job=dict(status='idle', message='No update requested.'),
     )
@@ -316,7 +317,7 @@ def test_partial_counts_and_local_replay_are_accurate_and_private(site, monkeypa
         + first_nine_pages()
         + [hydration_failure() for _ in range(4)]
     )
-    assert submit(web)['status'] == 303
+    assert submit(web, page_limit='100')['status'] == 303
     executor.stop()
     result = state(web)
     assert result['count'] == 9

@@ -529,7 +529,7 @@ def image_metadata(image):
 
 class AdminPages:
     @cherrypy.expose
-    def tendies(self, csrf_token='', operation='update', **params):
+    def tendies(self, csrf_token='', operation='update', page_limit='1', **params):
         cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
         auth.require_admin()
         if cherrypy.request.query_string or params:
@@ -540,7 +540,15 @@ class AdminPages:
             if operation not in ('update', 'recover', 'recover_range'):
                 raise cherrypy.HTTPError(400, 'Invalid tendie operation.')
             try:
-                accepted = tendie_executor.enqueue(pmxbot.config, operation=operation)
+                page_limit = tendie.validated_page_limit(page_limit)
+            except ValueError:
+                raise cherrypy.HTTPError(
+                    400, 'Choose a page limit from 1 to 100.'
+                ) from None
+            try:
+                accepted = tendie_executor.enqueue(
+                    pmxbot.config, operation=operation, page_limit=page_limit
+                )
             except Exception:
                 raise cherrypy.HTTPError(
                     503,

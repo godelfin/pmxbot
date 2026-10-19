@@ -49,6 +49,20 @@ class CursorError(SyncError):
     """The saved cursor was rejected; recovery needs explicit administrator intent."""
 
 
+def validated_page_limit(value):
+    """Accept a bounded page budget from a form or trusted Python caller."""
+    if (
+        isinstance(value, str)
+        and value.isascii()
+        and value.isdecimal()
+        and len(value) <= 3
+    ):
+        value = int(value)
+    if type(value) is not int or not 1 <= value <= 100:
+        raise ValueError('Choose a page limit from 1 to 100.')
+    return value
+
+
 def configured_author(value=None):
     value = (
         value or pmxbot.config.get('tendie_author') or os.environ.get('TENDIE_AUTHOR')
@@ -140,6 +154,7 @@ class Collection(SQLiteStorage):
         *,
         live=False,
         operation='update',
+        page_limit=100,
     ):
         """Import iterator providers atomically; stage X pages and commit per page.
 
@@ -160,12 +175,20 @@ class Collection(SQLiteStorage):
                 include_quotes,
                 live,
                 operation,
+                validated_page_limit(page_limit),
             )
         finally:
             _sync_lock.release()
 
     def _sync(
-        self, provider, cooldown, include_replies, include_quotes, live, operation
+        self,
+        provider,
+        cooldown,
+        include_replies,
+        include_quotes,
+        live,
+        operation,
+        page_limit,
     ):
         if operation not in ('update', 'recover', 'recover_range'):
             raise ValueError('Unknown synchronization operation')
@@ -201,7 +224,7 @@ class Collection(SQLiteStorage):
                 from .tendie_staging import LiveRun
 
                 return LiveRun(self, owner).run(
-                    provider, operation, include_replies, include_quotes
+                    provider, operation, include_replies, include_quotes, page_limit
                 )
             posts = list(provider.posts(since_id))
             with self.db:
@@ -410,7 +433,7 @@ def settings_snapshot(config):
     return result
 
 
-def synchronize(config, operation='update'):
+def synchronize(config, operation='update', page_limit=100):
     """Trusted operator entry point; the web worker owns its SQLite connection."""
     if not config.get('tendie_author'):
         raise SyncError(
@@ -431,6 +454,7 @@ def synchronize(config, operation='update'):
             include_replies=config.get('tendie_include_replies', False),
             include_quotes=config.get('tendie_include_quotes', True),
             operation=operation,
+            page_limit=page_limit,
         )
 
 

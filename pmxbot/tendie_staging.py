@@ -238,7 +238,18 @@ class LiveRun:
             self.save()
         return count
 
-    def run(self, provider, operation, include_replies, include_quotes):
+    def pause(self, requested_pages):
+        unit = 'page' if requested_pages == 1 else 'pages'
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            self.owned()
+            self.state['message'] = (
+                f'Paused after requesting {requested_pages} new timeline {unit}. '
+                'Progress is saved. Update again with your chosen page limit to continue.'
+            )
+            self.save()
+
+    def run(self, provider, operation, include_replies, include_quotes, page_limit):
         local = operation == 'recover'
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
@@ -296,11 +307,15 @@ class LiveRun:
                 self.state['status'] = 'incomplete'
                 self.save()
         count = 0
+        requested_pages = 0
         try:
             for _ in range(100):
                 page = self.saved_clean(local)
                 if page is None:
                     if local:
+                        return count
+                    if requested_pages >= page_limit:
+                        self.pause(requested_pages)
                         return count
                     if self.state['status'] == 'token_rejected':
                         raise tendie.CursorError(
@@ -321,6 +336,7 @@ class LiveRun:
                             self.state['user_id'] = user
                             self.save()
                     params = dict(self.state['params'])
+                    requested_pages += 1
                     provider.get(
                         f'users/{self.state["user_id"]}/tweets',
                         params=params,
@@ -343,9 +359,8 @@ class LiveRun:
                     raise
                 if self.state['status'] == 'complete':
                     return count
-            raise tendie.SyncError(
-                'Page limit reached. Resume this saved run with another update.'
-            )
+            self.pause(requested_pages)
+            return count
         except Exception as exc:
             self.reload()
             reason = tendie.synchronization_error(exc)

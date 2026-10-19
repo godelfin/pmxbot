@@ -545,7 +545,8 @@ def test_pagination_bound_preserves_batches_for_next_update(api, collection):
         api_response([xpost(str(index + 1))], meta={'next_token': str(index)})
         for index in range(100)
     ]
-    assert 'Page limit' in live_update()
+    assert 'imported 100' in live_update()
+    assert 'Paused after requesting 100' in collection.progress()['message']
     assert collection.size() == 100
     assert collection.meta('last_success') is None
     assert collection.meta('live_since_id') is None
