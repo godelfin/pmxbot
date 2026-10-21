@@ -97,16 +97,10 @@ def get_context():
 
 def not_found_page(status, message, traceback, version):
     context = get_context()
-    request = cherrypy.request
     login_url = None
-    if (
-        context['current_user'] is None
-        and (request.path_info == '/admin' or request.path_info.startswith('/admin/'))
-        and request.method in ('GET', 'HEAD')
-        and not wants_json()
-    ):
+    if context['current_user'] is None and auth.protected_browser_visit():
         # Return to the page after login, without replaying a stale form submission.
-        return_to = auth.safe_return_to(context['base'] + request.path_info)
+        return_to = auth.safe_return_to(context['base'] + cherrypy.request.path_info)
         login_url = (
             context['base']
             + '/login?'

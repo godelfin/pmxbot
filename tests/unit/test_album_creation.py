@@ -184,9 +184,13 @@ def test_permissions(creation, monkeypatch, state):
             data=dict(username='Alice', password='correct password'),
         )
     for method in ('GET', 'POST'):
-        assert request('/create_album', method=method, data=values)['status'] in (
-            401,
-            403,
+        expected = (
+            (404 if method == 'GET' else 401)
+            if state in ('anonymous', 'disabled')
+            else 403
+        )
+        assert (
+            request('/create_album', method=method, data=values)['status'] == expected
         )
     assert 'Create Album' not in request('/gallery')['body']
     provider.assert_not_called()

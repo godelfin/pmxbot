@@ -2,7 +2,7 @@ import datetime
 import io
 from contextlib import closing
 from http.cookies import SimpleCookie
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import cherrypy
 import pytest
@@ -465,3 +465,62 @@ def test_registration_respects_shared_throttle(web, monkeypatch):
     assert response['headers']['Retry-After'] == '60'
     with closing(UserStore(pmxbot.config.database)) as store:
         assert len(store.list_users()) == 3
+
+
+@pytest.mark.parametrize('path', ['/create_album', '/change_password'])
+@pytest.mark.parametrize('state', ['anonymous', 'logged_out', 'revoked'])
+def test_protected_browser_pages_have_branded_sign_in_recovery(web, path, state):
+    if state != 'anonymous':
+        web.login()
+        if state == 'logged_out':
+            token = web.token('/change_password')
+            assert (
+                web.request('/logout', 'POST', {'csrf_token': token})['status'] == 303
+            )
+        else:
+            with closing(UserStore(pmxbot.config.database)) as store:
+                store.set_password(web.user_id, 'new password')
+    response = web.request(path + '?return_to=https://evil.test')
+    assert response['status'] == 404
+    assert response['headers']['Cache-Control'] == 'no-store'
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    assert soup.select_one('h1').text == '404 — Page not found'
+    assert soup.select_one('.site-header .site-brand')
+    assert 'Hi, Alice.' not in response['body']
+    assert 'Traceback' not in response['body']
+    login_url = soup.select_one('main a')['href']
+    assert (
+        soup.select_one('meta[http-equiv="refresh"]')['content'] == '2;url=' + login_url
+    )
+    assert urlsplit(login_url).path == web.base + '/login'
+    assert parse_qs(urlsplit(login_url).query)['return_to'] == [web.base + path]
+    head = web.request(path, 'HEAD')
+    assert head['status'] == 404 and not head['body']
+
+
+@pytest.mark.parametrize('path', ['/create_album', '/change_password'])
+def test_protected_browser_json_and_post_keep_401_without_login_redirect(web, path):
+    for method, accept in [
+        ('GET', 'application/json'),
+        ('HEAD', 'application/json'),
+        ('POST', ''),
+        ('POST', 'application/json'),
+    ]:
+        response = web.request(path, method, accept=accept)
+        assert response['status'] == 401
+        assert 'http-equiv="refresh"' not in response['body']
+        assert 'Location' not in response['headers']
+    with closing(UserStore(pmxbot.config.database)) as store:
+        assert not store.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'generation_jobs'"
+        ).fetchone()
+
+
+@pytest.mark.parametrize(
+    'path,method',
+    [('/favorites', 'GET'), ('/favorites', 'POST'), ('/torta_mode', 'POST')],
+)
+def test_account_actions_keep_401_without_browser_recovery(web, path, method):
+    response = web.request(path, method)
+    assert response['status'] == 401
+    assert 'http-equiv="refresh"' not in response['body']

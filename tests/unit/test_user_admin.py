@@ -133,9 +133,16 @@ def test_admin_access_navigation_and_csrf(web):
 
 
 @pytest.mark.parametrize(
-    'path', ['/admin/users', '/admin/tendies', '/admin/prompt_rules']
+    'path',
+    [
+        '/admin/users',
+        '/admin/tendies',
+        '/admin/prompt_rules',
+        '/create_album',
+        '/change_password',
+    ],
 )
-def test_expired_admin_page_redirects_after_branded_404(web, path):
+def test_expired_protected_page_redirects_after_branded_404(web, path):
     promote(web)
     web.login()
     key = session_id(web.cookie)

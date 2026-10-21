@@ -148,16 +148,25 @@ def require_permission(permission):
     return user
 
 
+def protected_browser_visit():
+    """Protected HTML pages may show a branded 404 with a sign-in link."""
+    request = cherrypy.request
+    path = request.path_info.rstrip('/')
+    return (
+        (
+            path in ('/admin', '/create_album', '/change_password')
+            or path.startswith('/admin/')
+        )
+        and request.method in ('GET', 'HEAD')
+        and 'application/json' not in request.headers.get('Accept', '')
+    )
+
+
 def require_authenticated_user():
-    """Require identity; browser visits to signed-out admin pages show a 404."""
+    """Require identity; signed-out browser pages use the branded 404."""
     user = current_user()
     if user is None:
-        request = cherrypy.request
-        if (
-            request.path_info.startswith('/admin/')
-            and request.method in ('GET', 'HEAD')
-            and 'application/json' not in request.headers.get('Accept', '')
-        ):
+        if protected_browser_visit():
             raise cherrypy.HTTPError(404, 'Authentication required.')
         raise cherrypy.HTTPError(401, 'Authentication required.')
     return user
