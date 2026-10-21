@@ -27,6 +27,11 @@ async function setup(options = {}) {
       await route.fulfill({contentType: 'image/png', body: fs.readFileSync('pmxbot/web/templates/pmxbot.png')});
       return;
     }
+    if (pathname === '/bot/admin/prompt_rules' || pathname === '/bot/admin/users') {
+      const filename = pathname.endsWith('/users') ? 'users.html' : 'prompt_rules.html';
+      await route.fulfill({contentType: 'text/html', body: fs.readFileSync(path.join(fixtures, filename), 'utf8')});
+      return;
+    }
     if (pathname === '/bot/gallery' || pathname === '/bot/') {
       await route.fulfill({contentType: 'text/html', body: fs.readFileSync(path.join(fixtures, pathname === '/bot/gallery' ? 'gallery.html' : 'catalog.html'), 'utf8')});
       return;
@@ -637,5 +642,57 @@ for (const width of [360, 1400]) test(`manual album form suggests titles, warns 
   assert.equal(submissions[0].format, 'Vinyl');
   assert.equal(submissions[0].style, '001');
   assert.match(submissions[0].submission_token, /^[a-f0-9]{32}$/);
+  await page.close();
+});
+
+
+for (const width of [360, 1400]) test(`prompt rules and permission forms are usable at ${width}px`, async () => {
+  const page = await setup({width, signed: true});
+  await page.goto('http://album.test/bot/admin/prompt_rules');
+  assert.equal(await page.getByRole('heading', {name: 'Prompt rules', exact: true}).count(), 1);
+  assert.equal(await page.getByRole('heading', {name: /^Rule #/}).count(), 7);
+  assert.equal(await page.locator('body').evaluate(body => body.scrollWidth <= window.innerWidth), true);
+  const create = page.locator('section').filter({has: page.getByRole('heading', {name: 'Create rule', exact: true})});
+  assert.equal(await create.getByLabel('Match type').inputValue(), 'whole');
+  await create.getByLabel('Where to match').selectOption('either');
+  await create.getByLabel('Text to find').fill('Straße %_.*');
+  assert.equal(await page.locator('[name=artist_pattern], [name=album_pattern], [name=compatibility_json], [name=matching_json]').count(), 0);
+  assert.doesNotMatch(await page.locator('body').innerText(), /\\b|\(\?:|tortas\?/);
+  assert.match(await page.locator('body').innerText(), /plural/);
+  assert.match(await page.locator('body').innerText(), /Combined band and album/);
+  assert.match(await page.locator('body').innerText(), /Shared context/);
+  await create.getByLabel('Clarification').fill('A literal hint.');
+  await create.getByLabel('Priority').fill('-20');
+  await create.locator('form').evaluate(form => form.addEventListener('submit', event => {
+    event.preventDefault(); window.ruleSubmission = Object.fromEntries(new FormData(form));
+  }));
+  await create.getByRole('button', {name: 'Create rule', exact: true}).click();
+  assert.deepEqual(await page.evaluate(() => ({text: window.ruleSubmission.match_text, scope: window.ruleSubmission.scope, mode: window.ruleSubmission.match_type, operation: window.ruleSubmission.operation, priority: window.ruleSubmission.priority})), {text: 'Straße %_.*', scope: 'either', mode: 'whole', operation: 'create', priority: '-20'});
+  const legacy = page.locator('section').filter({has: page.getByRole('heading', {name: /^Rule #1 ·/})});
+  const edit = legacy.locator('form').first();
+  assert.equal(await edit.locator('[name=match_text], [name=scope], [name=match_type]').count(), 0);
+  await legacy.locator('summary').click();
+  const replacement = legacy.locator('details form');
+  await replacement.getByLabel('Where to match').selectOption('album');
+  await replacement.getByLabel('Text to find').fill('torta');
+  await replacement.getByLabel('Match type').selectOption('contains');
+  await replacement.evaluate(form => form.addEventListener('submit', event => {
+    event.preventDefault(); window.replacementSubmission = Object.fromEntries(new FormData(form));
+  }));
+  await replacement.getByRole('button', {name: 'Replace matching conditions', exact: true}).click();
+  assert.deepEqual(await page.evaluate(() => {
+    const {csrf_token, ...values} = window.replacementSubmission; return values;
+  }), {rule_id: '1', operation: 'replace', scope: 'album', match_text: 'torta', match_type: 'contains'});
+  assert.equal(await page.getByRole('button', {name: 'Preview', exact: true}).count(), 1);
+  if (process.env.BROWSER_SCREENSHOTS_DIR) {
+    fs.mkdirSync(process.env.BROWSER_SCREENSHOTS_DIR, {recursive: true});
+    await page.screenshot({path: path.join(process.env.BROWSER_SCREENSHOTS_DIR, `prompt-rules-${width}.png`), fullPage: true});
+  }
+  await page.goto('http://album.test/bot/admin/users');
+  const grant = page.locator('select[name=can_manage_prompt_rules]');
+  assert.equal(await grant.count(), 1);
+  await grant.selectOption('0');
+  assert.equal(await grant.inputValue(), '0');
+  assert.equal(await page.locator('body').evaluate(body => body.scrollWidth <= window.innerWidth), true);
   await page.close();
 });

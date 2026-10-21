@@ -7,7 +7,7 @@ from dataclasses import asdict, replace
 
 from . import albums
 from .images import ImageError
-from .music import GenerationInputs, MusicLibrary, artwork_prompt, normalize
+from .music import GenerationInputs, MusicLibrary, normalize
 from .users import UserStore
 from .urls import public_application_url
 
@@ -89,7 +89,9 @@ def generate(job, cache, config):
         raise ImageError('Image generation is disabled.')
     authorized(config, job['user_id'])
     inputs = GenerationInputs(**json.loads(job['inputs_json']))
-    prompt = artwork_prompt(inputs)
+    from .jobs import job_prompt
+
+    prompt = job_prompt(job, inputs)
     key = 'album-creation-' + job['id']
     cache.stage_album_image(
         prompt, key, asdict(inputs), job['requested_by'], job['channel']

@@ -2,7 +2,6 @@
 
 import json
 import logging
-import re
 import sqlite3
 import unicodedata
 from contextlib import closing
@@ -283,51 +282,6 @@ class MusicLibrary:
             )
 
 
-# Match complete words, including hyphenated names, without matching "bass" or
-# "classic". These are contextual hints, not an API moderation blocklist.
-_TITLE_CONTEXTS = (
-    (
-        r"ass|tits?|penis|cock|dick|pussy|cunt|boobs?|breasts?|strippers?|vagina|genitals?",
-        "Keep the artwork non-explicit, with no nudity or sexual anatomy.",
-    ),
-    (
-        r"anal|sex|sexual|sexy|fuck|fucking|blowjobs?|handjobs?|gangbangs?|orgy|"
-        r"orgies|porn|cum|semen|ejaculation|masturbation|incest|bestiality|goon(?:ers?)?|"
-        r"dick[-\s]+sucking|pussy[-\s]+licking|jizz",
-        "Do not depict sexual acts or explicit sexual content.",
-    ),
-    (
-        r"rape|raped|raping|molest|molestation|assault",
-        "Do not depict sexual violence or abuse.",
-    ),
-    (
-        r"fag|fags|fagged|homos|faggot|faggots|holocaust|nazi|nazis",
-        "Do not depict hateful imagery, extremist symbols, or atrocities.",
-    ),
-)
-
-
-def album_title_context(album):
-    """Clarify ambiguous names only for the relevant title contexts."""
-    names = normalize(f"{album['artist_name']} {album['title']}")
-    instructions = [
-        instruction
-        for words, instruction in _TITLE_CONTEXTS
-        if re.search(rf"\b(?:{words})\b", names)
-    ]
-    if not instructions:
-        return ''
-    # The first three contexts concern sexual anatomy, acts, or violence.
-    if any(instruction in instructions for _, instruction in _TITLE_CONTEXTS[:3]):
-        instructions.insert(
-            0, 'The album and band names are only metaphors or figures of speech.'
-        )
-    return (
-        ' The quoted band and album names are text labels for a music release. '
-        + ' '.join(instructions)
-    )
-
-
 _ALBUM_ARTWORK_FIELDS = ('format', 'format_description', 'genre', 'description')
 _ARTWORK_DETAIL_LABELS = {
     'format': 'format',
@@ -346,7 +300,7 @@ def artwork_detail_context(field):
     )
 
 
-def album_prompt(album):
+def album_prompt(album, *, database=None, rule_result=None):
     prompt = (
         f"an album cover for the band {json.dumps(album['artist_name'], ensure_ascii=False)}. "
         f"the name of the album is {json.dumps(album['title'], ensure_ascii=False)}."
@@ -363,19 +317,14 @@ def album_prompt(album):
     for field in _ALBUM_ARTWORK_FIELDS:
         if album.get(field):
             prompt += artwork_detail_context(field)
-    if re.search(r'\btortas?\b', normalize(album['title'])):
-        prompt += ' Torta is slang for "thicc Latina".'
-    if re.search(r'\btortas?\b', normalize(album['artist_name'])):
-        prompt += ' Torta is slang for "thicc Latina" and describes the band members.'
-    if any(
-        re.search(r'\bmedve\b', normalize(album[field]))
-        for field in ('artist_name', 'title')
-    ):
-        prompt += (
-            " Medve isn't a bear, he's a middle aged white man with glasses "
-            "and a beard and a lopsided grin."
-        )
-    return prompt + album_title_context(album)
+    from .prompt_rules import clarifications
+
+    result = (
+        rule_result
+        if rule_result is not None
+        else clarifications(album['artist_name'], album['title'], database)
+    )
+    return prompt + result[1]
 
 
 def generate_album_image(
@@ -395,7 +344,11 @@ def generate_album_image(
         album = dict(
             album, genre=None, description=None, format=None, format_description=None
         )
-    prompt = exact_prompt if exact_prompt is not None else album_prompt(album)
+    prompt = (
+        exact_prompt
+        if exact_prompt is not None
+        else album_prompt(album, database=library.database)
+    )
     try:
         # Snapshot only properties used by this initial prompt. Band annotations
         # are supported by variations, but not included in initial generation.
@@ -429,12 +382,18 @@ def generate_album_image(
     return url
 
 
-def generate_album_new(library, cache, inputs, nick='', channel=''):
+def generate_album_new(
+    library, cache, inputs, nick='', channel='', *, exact_prompt=None
+):
     """Create standalone artwork with a unique request identity, never a cache hit."""
     from dataclasses import replace
 
     inputs = replace(inputs, source_image_id=0)
-    prompt = artwork_prompt(inputs)
+    prompt = (
+        exact_prompt
+        if exact_prompt is not None
+        else artwork_prompt(inputs, database=library.database)
+    )
     try:
         return cache.create_image(prompt, nick, channel, inputs=asdict(inputs))
     except Exception as exc:
@@ -442,8 +401,10 @@ def generate_album_new(library, cache, inputs, nick='', channel=''):
         raise
 
 
-def artwork_prompt(inputs):
-    prompt = album_prompt(inputs.album_properties())
+def artwork_prompt(inputs, *, database=None, rule_result=None):
+    prompt = album_prompt(
+        inputs.album_properties(), database=database, rule_result=rule_result
+    )
     for field, label in (
         ('artist_genre', 'Band genre'),
         ('artist_description', 'Band description'),
@@ -465,16 +426,31 @@ def artwork_prompt(inputs):
 
 
 def generate_album_variation(
-    library, cache, source_image_id, inputs, nick='', channel=''
+    library, cache, source_image_id, inputs, nick='', channel='', *, exact_prompt=None
 ):
     """Generate an immutable child through the configured album image backend."""
     return continue_album_image(
-        library, cache, source_image_id, inputs, nick, channel, variation=True
+        library,
+        cache,
+        source_image_id,
+        inputs,
+        nick,
+        channel,
+        variation=True,
+        exact_prompt=exact_prompt,
     )
 
 
 def continue_album_image(
-    library, cache, source_image_id, inputs, nick='', channel='', *, variation=False
+    library,
+    cache,
+    source_image_id,
+    inputs,
+    nick='',
+    channel='',
+    *,
+    variation=False,
+    exact_prompt=None,
 ):
     """F13's backend contract: continue a selected image using an F12 draft.
 
@@ -515,8 +491,12 @@ def continue_album_image(
     except ValueError as exc:
         raise ImageError(str(exc)) from None
     prompt = (
-        'Continue the source artwork with this release interpretation: '
-        + artwork_prompt(inputs)
+        exact_prompt
+        if exact_prompt is not None
+        else (
+            'Continue the source artwork with this release interpretation: '
+            + artwork_prompt(inputs, database=library.database)
+        )
     )
     try:
         operation = cache.vary_image if variation else cache.continue_image

@@ -43,3 +43,9 @@ unknown state disables the control until reload. Favorites do not change an
 explicit selection or Back/Forward history. Browser checks cover these behaviors,
 including a save completing after selection changes. The screenshot artifact
 includes a filled favorite star with an unsaved generation draft.
+
+Prompt-rule checks cover mobile and desktop forms, whole-word/phrase defaults,
+plain-language scope and match choices, separate explicit replacement, detail
+edits without matching inputs, readable legacy summaries and absence of internal
+matching patterns from rendered content or submitted controls. HTTP rejection,
+preview evaluation and migration behavior are covered by the Python tests.

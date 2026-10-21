@@ -529,6 +529,106 @@ def image_metadata(image):
 
 class AdminPages:
     @cherrypy.expose
+    def prompt_rules(self, **params):
+        from pmxbot.prompt_rules import PromptRuleStore, describe, evaluate, text
+        from pmxbot.music import album_prompt
+
+        cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
+        actor = auth.require_permission('manage_prompt_rules')
+        if cherrypy.request.query_string:
+            raise cherrypy.HTTPError(400, 'Use a form body.')
+        error = preview = None
+        allowed = {
+            'operation',
+            'rule_id',
+            'scope',
+            'match_text',
+            'match_type',
+            'instruction',
+            'priority',
+            'enabled',
+            'artist',
+            'album',
+        }
+        # Never reflect unknown fields (especially old internal conditions), or
+        # repeated parameters, into error pages or form values.
+        values = {
+            key: value
+            for key, value in params.items()
+            if key in allowed and isinstance(value, str)
+        }
+        if cherrypy.request.method == 'POST':
+            auth.require_csrf(params.pop('csrf_token', ''))
+        elif params:
+            raise cherrypy.HTTPError(400, 'Use a form body.')
+        try:
+            with contextlib.closing(PromptRuleStore(pmxbot.config.database)) as store:
+                try:
+                    if cherrypy.request.method == 'POST':
+                        operation = params.pop('operation', '')
+                        if operation == 'preview':
+                            if set(params) != {'artist', 'album'}:
+                                raise UserError(
+                                    'Submit artist and album preview inputs only.'
+                                )
+                            artist = text(params['artist'], 1000, 'Artist preview')
+                            album = text(params['album'], 1000, 'Album preview')
+                            result = evaluate(store.list_rules(), artist, album)
+                            prompt = album_prompt(
+                                dict(
+                                    artist_name=artist,
+                                    title=album,
+                                    format=None,
+                                    format_description=None,
+                                    genre=None,
+                                    description=None,
+                                ),
+                                rule_result=result,
+                            )
+                            preview = dict(
+                                matches=[describe(rule) for rule in result[0]],
+                                text=result[1],
+                                prompt=prompt,
+                            )
+                        else:
+                            identifier = params.pop('rule_id', '')
+                            if operation in ('create', 'update'):
+                                enabled = params.get('enabled')
+                                if enabled not in ('0', '1'):
+                                    raise UserError('Choose an enabled state.')
+                                params['enabled'] = enabled == '1'
+                            store.mutate(actor, operation, identifier, **params)
+                            values = {}
+                except UserError as exc:
+                    cherrypy.response.status = 400
+                    error = str(exc)
+                rules = [describe(rule) for rule in store.list_rules()]
+        except (
+            sqlite3.Error,
+            OSError,
+            ImageError,
+            ValueError,
+            KeyError,
+            TypeError,
+            re.error,
+        ):
+            raise cherrypy.HTTPError(
+                503, 'Prompt rules are unavailable; check the configured database.'
+            ) from None
+        return (
+            jenv.overlay(autoescape=True)
+            .get_template('prompt_rules.html')
+            .render(
+                rules=rules,
+                values=values,
+                error=error,
+                preview=preview,
+                **get_context(),
+            )
+            .encode('utf-8')
+        )
+
+    @cherrypy.expose
     def tendies(self, csrf_token='', operation='update', page_limit='1', **params):
         cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
         auth.require_admin()
@@ -598,6 +698,7 @@ class AdminPages:
         role='',
         enabled='0',
         can_generate_images='0',
+        can_manage_prompt_rules=None,
         csrf_token='',
     ):
         cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
@@ -622,6 +723,7 @@ class AdminPages:
                         operation == 'update'
                         and enabled in ('0', '1')
                         and can_generate_images in ('0', '1')
+                        and can_manage_prompt_rules in (None, '0', '1')
                     ):
                         store.admin_update(
                             actor,
@@ -629,6 +731,11 @@ class AdminPages:
                             role=role,
                             enabled=enabled == '1',
                             can_generate_images=can_generate_images == '1',
+                            can_manage_prompt_rules=(
+                                None
+                                if can_manage_prompt_rules is None
+                                else can_manage_prompt_rules == '1'
+                            ),
                         )
                     else:
                         raise UserError('Invalid administration action.')
@@ -839,9 +946,9 @@ class AlbumPage:
                         )
                     except ValueError as exc:
                         raise cherrypy.HTTPError(409, str(exc)) from None
-                    except (sqlite3.Error, OSError):
+                    except (sqlite3.Error, OSError, ImageError):
                         raise cherrypy.HTTPError(
-                            503, 'Generation job storage is unavailable'
+                            503, 'Generation job or prompt-rule storage is unavailable'
                         ) from None
                     status_url = f"{context['base']}/jobs/{identifier}"
                     if wants_json():
