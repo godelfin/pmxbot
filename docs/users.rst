@@ -79,6 +79,12 @@ creation and editing remain disabled until an administrator explicitly grants
 image-generation permission. Administrators can reset passwords through the
 user-management page.
 
+Signed-out or expired browser visits to **Create Album**, **Change password**
+and administration pages show the branded 404 page, then link and redirect to
+sign-in with a safe return path. JSON requests and form actions retain HTTP 401
+when authentication is required. A signed-in account lacking the necessary
+permission receives HTTP 403; sign-in does not grant that permission.
+
 
 Administration and permissions
 ------------------------------
