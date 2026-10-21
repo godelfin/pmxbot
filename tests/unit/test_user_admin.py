@@ -43,6 +43,7 @@ def test_additive_migration(tmp_path, existing_permission):
         with closing(UserStore(str(database))) as store:
             user = store.authenticate('Alice', 'old password')
             assert user.id == 42 and user.can_pair_irc and user.enabled
+            assert not user.can_manage_prompt_rules
             assert user.role == 'user' and not user.must_change_password
             assert user.can_generate_images is (existing_permission is not False)
             assert store.db.execute(
@@ -282,7 +283,12 @@ def test_audit_failure_rolls_back_and_stale_actor_is_rejected(tmp_path):
         )
         with pytest.raises(sqlite3.IntegrityError, match='audit unavailable'):
             store.admin_update(
-                a, b.id, role='admin', enabled=False, can_generate_images=False
+                a,
+                b.id,
+                role='admin',
+                enabled=False,
+                can_generate_images=False,
+                can_manage_prompt_rules=True,
             )
         assert store.get_by_id(b.id) == b
         with pytest.raises(sqlite3.IntegrityError, match='audit unavailable'):

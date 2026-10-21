@@ -556,3 +556,51 @@ There is no automatic announcement retry because IRC has no delivery receipt;
 an interrupted send can lose a notification. Likewise, a provider response lost
 before the original can be saved cannot be recovered without a new generation.
 The executor marks interrupted jobs failed for explicit user retry.
+
+Prompt-rule persistence and request snapshots
+---------------------------------------------
+
+Prompt rules use the existing configured SQLite database, shared by the viewer,
+IRC bot and generation workers. No extra database or service is required. Ensure
+all processes use the same database and have write access for additive schema
+initialization. The ``users.can_manage_prompt_rules`` migration defaults to zero;
+existing administrators must explicitly grant it in user administration.
+
+``prompt_rules`` stores stable IDs, conditions, instructions, enabled flags,
+priorities, attribution and SQLite UTC creation/update timestamps. The
+``seed_key`` is independent of editable content. ``compatibility_json`` contains
+trusted migration-only matching/grouping metadata, never user-supplied regex.
+``prompt_rule_migrations`` records completion of ``legacy-v1`` atomically with
+its seven seeds and migration audits. Serialized initialization cannot duplicate
+seeds, overwrite edits or resurrect deletions. The system migration actor is
+represented by NULL ``created_by``, ``updated_by`` and audit ``actor_id``.
+
+``prompt_rule_audit`` records actor, timestamp, rule ID, action and complete
+before/after JSON. Deletion audits survive deletion of a rule. All successful
+create/update/delete/enable/disable/reorder actions and their audits commit in a
+single transaction; canonical permission and session version are rechecked after
+acquiring the write lock. A priority change updates one rule atomically; readers
+always see a committed ordering. Back up rules, migration bookkeeping, audits,
+users and generation jobs together with the main SQLite database. Restoring only
+rules without the completion marker is unsupported. Do not delete the marker
+to rerun seeding, or edit compatibility metadata manually.
+
+Every new prompt construction reads a fresh committed ordered rule set; there
+is no process-global rules cache. Changes become visible across processes
+without restart. Storage/evaluation failures stop requests before provider calls
+and report a safe error directing operators to check prompt-rule storage.
+
+IRC local queues freeze the effective prompt and album properties when accepting
+the request; durable IRC jobs retain the existing prompt snapshot. Web edits,
+variations, new artwork and manual album creation now freeze the full effective
+prompt at enqueue into ``generation_jobs.prompt``. Workers and explicit creation
+retries use that saved text despite subsequent rule edits or deletion. Submission
+token reuse retains the original job and prompt. Direct synchronous generation
+freezes at construction immediately before its provider call. Image cache/history
+records retain their existing prompt and metadata conventions.
+
+Existing artwork and historical job records are not rewritten. Pre-feature web
+jobs without a saved prompt use the original legacy clarification data through
+the shared evaluator; current managed rules are never retroactively applied to
+those jobs. No rule management operation triggers regeneration. Provider
+credentials are neither copied to rule audits nor included in rule error pages.

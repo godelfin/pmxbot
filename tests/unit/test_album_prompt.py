@@ -2,7 +2,14 @@ import json
 
 import pytest
 
+import pmxbot
+
 from pmxbot.music import GenerationInputs, album_prompt, artwork_prompt
+
+
+@pytest.fixture(autouse=True)
+def rule_database(tmp_path, monkeypatch):
+    monkeypatch.setitem(pmxbot.config, 'database', str(tmp_path / 'rules.sqlite'))
 
 
 def prompt(band, title):

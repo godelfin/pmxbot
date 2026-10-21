@@ -20,9 +20,8 @@ a:focus-visible, button:focus-visible, select:focus-visible { outline: 3px solid
 .users-table th, .users-table td { padding: .75rem; border-bottom: 1px solid #d4dbe2; text-align: left; vertical-align: top; }
 .users-table thead { background: #dfe6ed; }
 .users-table tbody tr:nth-child(even) { background: #edf1f5; }
-.users-table thead th:nth-child(1), .users-table thead th:nth-child(2), .users-table thead th:nth-child(3) { width: 18%; }
-.users-table thead th:nth-child(4) { width: 15%; }
-.users-table thead th:nth-child(5) { width: 31%; }
+.users-table thead th { width: 15%; }
+.users-table thead th:last-child { width: 25%; }
 .users-table select { box-sizing: border-box; width: 100%; min-width: 0; min-height: 44px; padding: .4rem .5rem; font: inherit; color: inherit; background: white; border: 1px solid #d4dbe2; border-radius: .25rem; }
 .user-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0; }
 .user-actions button { min-height: 44px; padding: .5rem .75rem; border: 1px solid #135ba1; border-radius: .25rem; background: #135ba1; color: white; font: inherit; cursor: pointer; }
@@ -60,7 +59,7 @@ a:focus-visible, button:focus-visible, select:focus-visible { outline: 3px solid
 {% endif %}
 <table class="users-table" role="table">
 <caption>Application users</caption>
-<thead><tr><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Image generation</th><th scope="col">Account status</th><th scope="col">Actions</th></tr></thead>
+<thead><tr><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Image generation</th><th scope="col">Prompt rules</th><th scope="col">Account status</th><th scope="col">Actions</th></tr></thead>
 <tbody>
 {% for user in users %}
 <tr>
@@ -74,6 +73,9 @@ a:focus-visible, button:focus-visible, select:focus-visible { outline: 3px solid
 <select id="images-{{ user.id }}" name="can_generate_images" form="user-{{ user.id }}"><option value="1"{% if user.can_generate_images %} selected{% endif %}>Allowed</option><option value="0"{% if not user.can_generate_images %} selected{% endif %}>Denied</option></select>
 </td>
 <td>
+<label class="field-label" for="rules-{{ user.id }}">Prompt rules<span class="sr-only"> for {{ user.username }}</span></label>
+<select id="rules-{{ user.id }}" name="can_manage_prompt_rules" form="user-{{ user.id }}"><option value="0"{% if not user.can_manage_prompt_rules %} selected{% endif %}>Denied</option><option value="1"{% if user.can_manage_prompt_rules %} selected{% endif %}>Allowed</option></select>
+</td><td>
 <label class="field-label" for="enabled-{{ user.id }}">Account status<span class="sr-only"> for {{ user.username }}</span></label>
 <select id="enabled-{{ user.id }}" name="enabled" form="user-{{ user.id }}"><option value="1"{% if user.enabled %} selected{% endif %}>Active</option><option value="0"{% if not user.enabled %} selected{% endif %}>Disabled</option></select>
 </td>

@@ -122,6 +122,21 @@ def main():
         output.joinpath('create-album.html').write_text(
             request('/create_album')['body'], encoding='utf-8'
         )
+        from contextlib import closing
+        from pmxbot.prompt_rules import PromptRuleStore
+
+        with closing(PromptRuleStore(str(cache.database))) as rules:
+            manager = rules.create('rule-manager')
+            manager = rules.update(
+                manager.id, role='admin', can_manage_prompt_rules=True
+            )
+        previous_user = auth.current_user
+        patch.setattr(auth, 'current_user', lambda: manager)
+        for name in ('prompt_rules', 'users'):
+            output.joinpath(name + '.html').write_text(
+                request('/admin/' + name)['body'], encoding='utf-8'
+            )
+        patch.setattr(auth, 'current_user', previous_user)
         query = '?q=%3CAlbum%3E&artist=%3CBand%3E&sort=album&order=asc&page=1'
         output.joinpath('gallery.html').write_text(
             request('/gallery' + query)['body'], encoding='utf-8'

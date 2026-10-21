@@ -71,10 +71,11 @@ def test_music_prompt_and_shared_worker(
         thread.return_value.start.assert_called_once_with()
         kwargs = thread.call_args.kwargs
         assert kwargs['target'] is images._generate
-        assert kwargs['kwargs'] == {'album_id': 1}
+        assert kwargs['kwargs']['album_id'] == 1
+        assert kwargs['kwargs']['snapshot']['title'] == 'First Album'
         cache, prompt, channel, nick = kwargs['args']
         assert isinstance(cache, images.ImageCache)
-        assert prompt is None
+        assert prompt == album_prompt(kwargs['kwargs']['snapshot'])
         album = MusicLibrary(cache.database).get_album(1)
         assert album['images'] == []
         assert album['genre'] == genre
@@ -347,7 +348,8 @@ def test_music_strips_metadata_before_album_prompt(config, post, monkeypatch):
     images._generate(cache, None, '#test', 'alice', album['id'])
     list(images.image_results())
     prompt.assert_called_once_with(
-        dict(album, genre=None, description=None, format=None, format_description=None)
+        dict(album, genre=None, description=None, format=None, format_description=None),
+        database=cache.database,
     )
     assert post.call_args.kwargs['json']['prompt'] == (
         'an album cover for the band "Band". the name of the album is "Album".'
@@ -1413,7 +1415,9 @@ def test_queued_music_keeps_album_metadata(config, monkeypatch):
         assert 'queued (1 waiting)' in result
         assert 'Band: Queued Band; Album: Queued Album' in result
         job = images._pending.get_nowait()
-        assert job['kwargs'] == {'album_id': 1}
+        assert job['kwargs']['album_id'] == 1
+        assert job['kwargs']['snapshot']['title'] == 'Queued Album'
+        assert job['args'][1] == album_prompt(job['kwargs']['snapshot'])
         assert job['args'][2:] == ('#music', 'bob')
         album = MusicLibrary(job['args'][0].database).get_album(1)
         assert album['created_by'] == 'bob'

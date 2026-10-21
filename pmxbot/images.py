@@ -1279,7 +1279,7 @@ class ImageCache:
             ) from None
 
 
-def _generate(cache, prompt, channel, nick, album_id=None):
+def _generate(cache, prompt, channel, nick, album_id=None, snapshot=None):
     try:
         if album_id is None:
             result = cache.get(prompt, nick, channel)
@@ -1291,6 +1291,8 @@ def _generate(cache, prompt, channel, nick, album_id=None):
                 nick,
                 channel,
                 include_metadata=False,
+                snapshot=snapshot,
+                exact_prompt=prompt,
             )
             result = f'#{album_id} {url}\n{_album_url(album_id)}'
     except ImageError as exc:
@@ -1377,18 +1379,29 @@ def _start_image(rest, channel, nick, acknowledgement, album_data=None):
     try:
         cache = ImageCache(pmxbot.config)
         album_id = None
+        snapshot = None
         if album_data is not None:
             album = MusicLibrary(cache.database).create_album(
                 **album_data, created_by=nick
             )
             album_id = album['id']
+            snapshot = dict(
+                album,
+                genre=None,
+                description=None,
+                format=None,
+                format_description=None,
+            )
+            from .music import album_prompt
+
+            rest = album_prompt(snapshot, database=cache.database)
             acknowledgement = (
                 f"Looking up or generating your album cover... {_album_details(album)}"
             )
         job = dict(
             target=_generate,
             args=(cache, rest, channel, nick),
-            kwargs={'album_id': album_id},
+            kwargs={'album_id': album_id, 'snapshot': snapshot},
             daemon=True,
         )
         if started:

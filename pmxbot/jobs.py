@@ -64,6 +64,7 @@ class JobStore:
                 ('operation', "TEXT NOT NULL DEFAULT 'edit'"),
                 ('submission_token', 'TEXT'),
                 ('creation_identity', 'TEXT'),
+                ('prompt', 'TEXT'),
             ):
                 if name not in columns:
                     db.execute(
@@ -100,7 +101,7 @@ class JobStore:
             anonymous_owner=f'irc:{channel}:{nick}',
             kind='music',
             channel=channel,
-            prompt=album_prompt(snapshot),
+            prompt=album_prompt(snapshot, database=self.database),
         )
 
     def enqueue(
@@ -137,6 +138,15 @@ class JobStore:
             responses_model=cache.responses_model,
             responses_store=cache.responses_store,
         )
+        if prompt is None and kind == 'variation':
+            from .music import artwork_prompt
+
+            prompt = artwork_prompt(inputs, database=self.database)
+            if operation not in ('create_new', 'create_album'):
+                prompt = (
+                    'Continue the source artwork with this release interpretation: '
+                    + prompt
+                )
         inputs_json = json.dumps(
             (
                 asdict(inputs)
@@ -205,8 +215,8 @@ class JobStore:
                     db.execute(
                         '''INSERT INTO generation_jobs
                         (id, album_id, source_image_id, inputs_json, settings_json,
-                         user_id, requested_by, anonymous_owner, kind, channel, operation, submission_token, creation_identity)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                         user_id, requested_by, anonymous_owner, kind, channel, operation, submission_token, creation_identity, prompt)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                         (
                             identifier,
                             inputs.album_id if kind == 'variation' else inputs['id'],
@@ -221,6 +231,7 @@ class JobStore:
                             operation,
                             submission_token,
                             creation_identity,
+                            prompt,
                         ),
                     )
                 db.execute('COMMIT')
@@ -368,6 +379,23 @@ class JobStore:
         return dict(row) if row else None
 
 
+def job_prompt(job, inputs):
+    """Old jobs retain legacy semantics; never apply current rules to them."""
+    if job.get('prompt') is not None:
+        return job['prompt']
+    from .music import artwork_prompt
+    from .prompt_rules import legacy_result
+
+    prompt = artwork_prompt(
+        inputs, rule_result=legacy_result(inputs.artist_name, inputs.title)
+    )
+    if job.get('operation') not in ('create_new', 'create_album'):
+        prompt = (
+            'Continue the source artwork with this release interpretation: ' + prompt
+        )
+    return prompt
+
+
 def process_job(store, job, config):
     try:
         snapshot = dict(config, **json.loads(job['settings_json']))
@@ -405,7 +433,11 @@ def process_job(store, job, config):
                 from .music import generate_album_new
 
                 result = generate_album_new(
-                    MusicLibrary(cache.database), cache, inputs, job['requested_by']
+                    MusicLibrary(cache.database),
+                    cache,
+                    inputs,
+                    job['requested_by'],
+                    exact_prompt=job_prompt(job, inputs),
                 )
             else:
                 result = generate_album_variation(
@@ -414,6 +446,7 @@ def process_job(store, job, config):
                     job['source_image_id'],
                     inputs,
                     job['requested_by'],
+                    exact_prompt=job_prompt(job, inputs),
                 )
     except Exception as exc:
         # Provider errors may include credentials, prompts or remote request details.

@@ -36,7 +36,7 @@ class InvalidCredentials(UserError):
 _PASSWORD_ITERATIONS = 600_000
 _USER_COLUMNS = (
     'id, username, normalized_username, display_name, created_at, enabled, can_pair_irc, '
-    'role, can_generate_images, must_change_password, session_version, nsfw'
+    'role, can_generate_images, must_change_password, session_version, nsfw, can_manage_prompt_rules'
 )
 
 
@@ -108,6 +108,7 @@ class User:
     session_version: int = field(default=0, compare=False, repr=False)
 
     nsfw: bool = False
+    can_manage_prompt_rules: bool = False
 
     def has_permission(self, permission):
         """Explicit capabilities remain independent of administrative roles."""
@@ -118,6 +119,7 @@ class User:
                 'generate_images': self.can_generate_images,
                 'pair_irc': self.can_pair_irc,
                 'nsfw': self.nsfw,
+                'manage_prompt_rules': self.can_manage_prompt_rules,
             }.get(permission, False)
         )
 
@@ -191,6 +193,10 @@ class UserStore(SQLiteStorage):
                     'INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))',
                 ),
                 ('session_version', 'INTEGER NOT NULL DEFAULT 0'),
+                (
+                    'can_manage_prompt_rules',
+                    'INTEGER NOT NULL DEFAULT 0 CHECK (can_manage_prompt_rules IN (0, 1))',
+                ),
                 ('nsfw', 'INTEGER NOT NULL DEFAULT 0 CHECK (nsfw IN (0, 1))'),
             ):
                 if name not in columns:
@@ -227,6 +233,7 @@ class UserStore(SQLiteStorage):
             bool(row[9]),
             row[10],
             bool(row[11]),
+            bool(row[12]),
         )
 
     def get_by_id(self, user_id):
@@ -393,6 +400,7 @@ class UserStore(SQLiteStorage):
         can_pair_irc=None,
         role=None,
         can_generate_images=None,
+        can_manage_prompt_rules=None,
     ):
         """Trusted local API; web callers must use admin_update instead."""
         self._validate_fields(
@@ -404,6 +412,11 @@ class UserStore(SQLiteStorage):
             raise UserError('Invalid role.')
         if can_generate_images is not None and type(can_generate_images) is not bool:
             raise UserError('Image-generation permission must be a boolean.')
+        if (
+            can_manage_prompt_rules is not None
+            and type(can_manage_prompt_rules) is not bool
+        ):
+            raise UserError('Prompt-rule permission must be a boolean.')
         with self._transaction():
             self._update(
                 user_id,
@@ -413,6 +426,7 @@ class UserStore(SQLiteStorage):
                     'can_pair_irc': can_pair_irc,
                     'role': role,
                     'can_generate_images': can_generate_images,
+                    'can_manage_prompt_rules': can_manage_prompt_rules,
                 },
             )
         return self.get_by_id(user_id)
@@ -463,13 +477,27 @@ class UserStore(SQLiteStorage):
             )
         return self.get_by_id(user.id)
 
-    def admin_update(self, actor, target_id, *, role, enabled, can_generate_images):
+    def admin_update(
+        self,
+        actor,
+        target_id,
+        *,
+        role,
+        enabled,
+        can_generate_images,
+        can_manage_prompt_rules=None,
+    ):
         if (
             role not in ('user', 'admin')
             or type(enabled) is not bool
             or type(can_generate_images) is not bool
         ):
             raise UserError('Invalid account settings.')
+        if (
+            can_manage_prompt_rules is not None
+            and type(can_manage_prompt_rules) is not bool
+        ):
+            raise UserError('Invalid prompt-rule permission.')
         with self._transaction():
             self._require_admin(actor.id, actor.session_version)
             changes = self._update(
@@ -478,6 +506,7 @@ class UserStore(SQLiteStorage):
                     'role': role,
                     'enabled': enabled,
                     'can_generate_images': can_generate_images,
+                    'can_manage_prompt_rules': can_manage_prompt_rules,
                 },
             )
             self._audit(actor.id, target_id, 'update_user', changes)
