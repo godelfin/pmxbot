@@ -1,0 +1,15 @@
+{% extends "login.html" %}
+{% block title %}404 — Page not found{% endblock %}
+{% block head_extras %}
+{% if login_url %}<meta http-equiv="refresh" content="2;url={{ login_url }}" />{% endif %}
+{% endblock %}
+{% block account_content %}
+<h1 id="login-heading">404 — Page not found</h1>
+{% if login_url %}
+<p>Your session may have expired. Redirecting you to sign in…</p>
+<p><a href="{{ login_url }}">Sign in now</a></p>
+{% else %}
+<p>The page you requested could not be found.</p>
+<p><a href="{{ base }}/">Browse albums</a></p>
+{% endif %}
+{% endblock %}

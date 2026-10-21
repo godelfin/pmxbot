@@ -149,9 +149,16 @@ def require_permission(permission):
 
 
 def require_authenticated_user():
-    """Protected handlers receive an enabled canonical User or an explicit 401."""
+    """Require identity; browser visits to signed-out admin pages show a 404."""
     user = current_user()
     if user is None:
+        request = cherrypy.request
+        if (
+            request.path_info.startswith('/admin/')
+            and request.method in ('GET', 'HEAD')
+            and 'application/json' not in request.headers.get('Accept', '')
+        ):
+            raise cherrypy.HTTPError(404, 'Authentication required.')
         raise cherrypy.HTTPError(401, 'Authentication required.')
     return user
 

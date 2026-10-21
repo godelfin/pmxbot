@@ -3,18 +3,21 @@
 # Imported pytest fixtures intentionally share test argument names.
 # ruff: noqa: F811
 
+import datetime
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from bs4 import BeautifulSoup
+from cherrypy.lib.sessions import RamSession
 
 import pmxbot
 from pmxbot.users import UserError, UserStore, _hash_password
 from pmxbot.users_cli import run
-from tests.unit.test_web_auth import web  # noqa: F401
+from tests.unit.test_web_auth import session_id, web  # noqa: F401
 
 
 @pytest.mark.parametrize('existing_permission', [None, False, True])
@@ -111,7 +114,7 @@ def post(web, user_id, **overrides):
 
 
 def test_admin_access_navigation_and_csrf(web):
-    assert web.request('/admin/users')['status'] == 401
+    assert web.request('/admin/users')['status'] == 404
     assert web.request('/admin/users', 'POST')['status'] == 401
     web.login()
     assert '/admin/users' not in web.request('/')['body']
@@ -127,6 +130,59 @@ def test_admin_access_navigation_and_csrf(web):
     assert post(web, web.user_id, csrf_token='')['status'] == 403
     assert web.request('/admin/users', 'PUT')['status'] == 405
     assert web.request('/admin/users?operation=update', 'POST')['status'] == 400
+
+
+@pytest.mark.parametrize(
+    'path', ['/admin/users', '/admin/tendies', '/admin/prompt_rules']
+)
+def test_expired_admin_page_redirects_after_branded_404(web, path):
+    promote(web)
+    web.login()
+    key = session_id(web.cookie)
+    data, _ = RamSession.cache[key]
+    RamSession.cache[key] = (
+        data,
+        datetime.datetime.now() - datetime.timedelta(minutes=1),
+    )
+    response = web.request(path)
+    assert response['status'] == 404
+    assert response['headers']['Cache-Control'] == 'no-store'
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    assert soup.select_one('h1').text == '404 — Page not found'
+    assert soup.select_one('.site-header .site-brand img')['src'].startswith(
+        web.base + '/'
+    )
+    assert soup.select_one('.site-header nav[aria-label="Site navigation"]')
+    assert 'Hi, Alice.' not in response['body']
+    login_url = soup.select_one('main a')['href']
+    assert (
+        soup.select_one('meta[http-equiv="refresh"]')['content'] == '2;url=' + login_url
+    )
+    assert urlsplit(login_url).path == web.base + '/login'
+    return_to = parse_qs(urlsplit(login_url).query)['return_to'][0]
+    assert return_to == web.base + path
+    assert web.login(return_to=return_to)['headers']['Location'] == return_to
+
+
+def test_regular_not_found_has_header_without_login_redirect(web):
+    for signed_in in (False, True):
+        if signed_in:
+            web.login()
+        response = web.request('/missing-page')
+        assert response['status'] == 404
+        soup = BeautifulSoup(response['body'], 'html.parser')
+        assert soup.select_one('.site-header .site-brand')
+        assert soup.select_one('meta[http-equiv="refresh"]') is None
+        assert ('Hi, Alice.' in response['body']) is signed_in
+
+
+def test_signed_out_admin_json_and_post_still_require_authentication(web):
+    for response in (
+        web.request('/admin/users', accept='application/json'),
+        web.request('/admin/users', 'POST'),
+    ):
+        assert response['status'] == 401
+        assert 'http-equiv="refresh"' not in response['body']
 
 
 def test_independent_roles_permissions_and_last_admin(web):

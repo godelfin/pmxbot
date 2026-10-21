@@ -74,7 +74,8 @@ def test_administrator_required_for_every_endpoint(
         web.login()
     before = metadata()
     response = web.request(path, method, {'csrf_token': 'bad', 'operation': operation})
-    assert response['status'] == (401 if identity == 'anonymous' else 403)
+    expected = (404 if method == 'GET' else 401) if identity == 'anonymous' else 403
+    assert response['status'] == expected
     assert 'ExampleAccount' not in response['body']
     assert metadata() == before
     tendie.requests.get.assert_not_called()
@@ -104,6 +105,8 @@ def test_admin_revocation_and_password_change_block_every_endpoint(
         store.db.execute('UPDATE users SET ' + change + ' WHERE id=?', (web.user_id,))
     before = metadata()
     response = web.request(path, method, {'csrf_token': token, 'operation': operation})
+    if expected == 401 and method == 'GET':
+        expected = 404
     assert response['status'] == expected
     assert metadata() == before
     tendie.requests.get.assert_not_called()

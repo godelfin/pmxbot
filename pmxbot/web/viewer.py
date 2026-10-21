@@ -95,6 +95,27 @@ def get_context():
     return d
 
 
+def not_found_page(status, message, traceback, version):
+    context = get_context()
+    request = cherrypy.request
+    login_url = None
+    if (
+        context['current_user'] is None
+        and (request.path_info == '/admin' or request.path_info.startswith('/admin/'))
+        and request.method in ('GET', 'HEAD')
+        and not wants_json()
+    ):
+        # Return to the page after login, without replaying a stale form submission.
+        return_to = auth.safe_return_to(context['base'] + request.path_info)
+        login_url = (
+            context['base']
+            + '/login?'
+            + urllib.parse.urlencode({'return_to': return_to})
+        )
+    page = jenv.overlay(autoescape=True).get_template('not_found.html')
+    return page.render(**context, login_url=login_url)
+
+
 COLLECTION_SORTS = ('artist', 'album', 'chronology', 'variations', 'genre')
 GALLERY_SORTS = {
     'band': ('artist', 'asc'),
@@ -996,6 +1017,8 @@ class AlbumPage:
 
 
 class PmxbotPages:
+    _cp_config = {'error_page.404': not_found_page}
+
     admin = AdminPages()
 
     # Only the album index, gallery, and album pages are published. Keep the other

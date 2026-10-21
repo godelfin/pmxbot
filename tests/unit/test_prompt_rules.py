@@ -266,7 +266,7 @@ def form(web, operation='create', **values):
 
 
 def test_web_permissions_methods_preview_and_escaping(web, monkeypatch):
-    assert web.request('/admin/prompt_rules')['status'] == 401
+    assert web.request('/admin/prompt_rules')['status'] == 404
     web.login()
     assert web.request('/admin/prompt_rules')['status'] == 403
     with closing(UserStore(pmxbot.config.database)) as store:
@@ -320,7 +320,7 @@ def test_web_permissions_methods_preview_and_escaping(web, monkeypatch):
     old_cookie = web.cookie
     with closing(UserStore(pmxbot.config.database)) as store:
         store.update(web.user_id, can_manage_prompt_rules=False)
-    assert web.request('/admin/prompt_rules', cookie=old_cookie)['status'] == 401
+    assert web.request('/admin/prompt_rules', cookie=old_cookie)['status'] == 404
 
 
 @pytest.mark.parametrize('state', ['disabled', 'temporary', 'stale'])
@@ -336,7 +336,7 @@ def test_denied_session_states(web, state):
         else:
             store.set_password(web.user_id, 'replacement')
     response = web.request('/admin/prompt_rules')
-    assert response['status'] == (303 if state == 'temporary' else 401)
+    assert response['status'] == (303 if state == 'temporary' else 404)
 
 
 def test_admin_permission_grant_audit_and_independence(web):

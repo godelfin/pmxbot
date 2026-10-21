@@ -54,7 +54,7 @@ def web(request, tmp_path, monkeypatch):
         def set_secure(self, value):
             app.config['/']['tools.sessions.secure'] = value
 
-        def request(self, path='/', method='GET', data=None, cookie=None):
+        def request(self, path='/', method='GET', data=None, cookie=None, accept=''):
             path, _, query = path.partition('?')
             body = urlencode(data or {}).encode()
             env = {
@@ -69,6 +69,7 @@ def web(request, tmp_path, monkeypatch):
                 'CONTENT_TYPE': 'application/x-www-form-urlencoded',
                 'CONTENT_LENGTH': str(len(body)),
                 'HTTP_COOKIE': self.cookie if cookie is None else cookie,
+                'HTTP_ACCEPT': accept,
                 'wsgi.version': (1, 0),
                 'wsgi.url_scheme': 'http',
                 'wsgi.input': io.BytesIO(body),
