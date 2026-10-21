@@ -609,12 +609,15 @@ test('Torta Mode is private to signed-in users and submits its CSRF-protected ch
 for (const width of [360, 1400]) test(`manual album form suggests titles, warns about duplicates and submits once at ${width}px`, {timeout: 10000}, async () => {
   const page = await setup({width, fixture: 'create-album'});
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  const titles = await page.locator('#titles option').evaluateAll(options => options.map(option => option.value));
+  assert.ok(titles.length > 1);
   await page.getByLabel('Band', {exact: true}).fill('<band>');
-  assert.ok(await page.locator('#titles option').count() > 1);
+  assert.deepEqual(await page.locator('#titles option').evaluateAll(options => options.map(option => option.value)), titles);
   await page.getByLabel('Album title', {exact: true}).fill('<Album> 00');
   assert.match(await page.locator('#duplicate-warning').innerText(), /already has an album/);
   await page.getByLabel('Band', {exact: true}).fill('Brand new artist');
-  assert.equal(await page.locator('#titles option').count(), 0);
+  assert.deepEqual(await page.locator('#titles option').evaluateAll(options => options.map(option => option.value)), titles);
+  assert.equal(await page.locator('#duplicate-warning').innerText(), '');
   await page.getByLabel('Album title', {exact: true}).fill('Brand new album');
   assert.equal(await page.locator('#duplicate-warning').innerText(), '');
   await page.getByLabel('Style', {exact: true}).selectOption('001');

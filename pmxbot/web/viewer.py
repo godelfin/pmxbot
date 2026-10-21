@@ -1107,13 +1107,9 @@ class PmxbotPages:
         elif params or retry:
             raise cherrypy.HTTPError(400, 'Unexpected creation fields')
         with contextlib.closing(library.connect()) as db:
-            suggestions = [
-                dict(row)
-                for row in db.execute(
-                    'SELECT artists.name AS artist, albums.title FROM artists '
-                    'LEFT JOIN albums ON artists.id = albums.artist_id ORDER BY artists.normalized_name'
-                )
-            ]
+            suggestions = creations.creation_suggestions(
+                db, pmxbot.config.get('quote_libraries', {})
+            )
         return (
             jenv.overlay(autoescape=True)
             .get_template('create_album.html')
@@ -1121,7 +1117,7 @@ class PmxbotPages:
                 **context,
                 values=params,
                 errors=errors,
-                suggestions=suggestions,
+                **suggestions,
                 choices=creations.generation_choices(),
                 submission_token=token,
                 artwork_styles=pmxbot.styles.ALBUM_ART_STYLES,

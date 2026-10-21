@@ -1,6 +1,7 @@
 """Manual creation uses real HTTP sessions, mocked providers and durable jobs."""
 
 import json
+import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -48,6 +49,75 @@ def submit(creation, **overrides):
     )
     assert response['status'] == 202, response['body']
     return JobStore(cache.database), json.loads(response['body'])['id']
+
+
+def test_suggestions_include_artists_and_albums_without_artwork(creation):
+    cache, request, *_ = creation
+    library = MusicLibrary(cache.database)
+    library.create_album('Unillustrated Band', 'Unillustrated Album')
+    library.create_album('Another Band', 'Unillustrated Album')
+    with closing(library.connect()) as db, db:
+        db.execute(
+            'INSERT INTO artists (name, normalized_name) VALUES (?, ?)',
+            ('Band Without Albums', 'band without albums'),
+        )
+    response = request('/create_album')
+    assert response['status'] == 200
+    form = BeautifulSoup(response['body'], 'html.parser')
+    assert {option['value'] for option in form.select('#artists option')} == {
+        '<Band>',
+        'Unillustrated Band',
+        'Another Band',
+        'Band Without Albums',
+    }
+    assert [option['value'] for option in form.select('#titles option')] == [
+        '<Album>',
+        'Unillustrated Album',
+    ]
+
+
+@pytest.mark.parametrize('custom_libraries', [False, True])
+def test_suggestions_merge_quote_libraries_and_deduplicate(creation, custom_libraries):
+    cache, request, *_ = creation
+    band_library = 'custom bands' if custom_libraries else 'band'
+    album_library = 'custom titles' if custom_libraries else 'album'
+    if custom_libraries:
+        pmxbot.config['quote_libraries'] = {
+            'band': band_library,
+            'album': album_library,
+        }
+    with closing(MusicLibrary(cache.database).connect()) as db, db:
+        db.execute(
+            'CREATE TABLE quotes (quoteid INTEGER PRIMARY KEY, library TEXT, quote TEXT)'
+        )
+        db.executemany(
+            'INSERT INTO quotes (library, quote) VALUES (?, ?)',
+            [
+                (band_library, 'Quote Only Band'),
+                (band_library, ' quote  only BAND '),
+                (band_library, '  <ＢＡＮＤ>  '),
+                (album_library, 'Quote Only Title'),
+                (album_library, ' quote  only TITLE '),
+                (album_library, ' <ALBUM> '),
+                (band_library, '  '),
+                (album_library, None),
+                ('unrelated', 'Not a music suggestion'),
+            ],
+        )
+    response = request('/create_album')
+    assert response['status'] == 200
+    form = BeautifulSoup(response['body'], 'html.parser')
+    assert [option['value'] for option in form.select('#artists option')] == [
+        '<Band>',
+        'Quote Only Band',
+    ]
+    assert [option['value'] for option in form.select('#titles option')] == [
+        '<Album>',
+        'Quote Only Title',
+    ]
+    # Only real artist/title pairs may trigger the duplicate warning.
+    pairs = json.loads(re.search(r'const suggestions = (.*);', response['body'])[1])
+    assert pairs == [{'artist': '<Band>', 'title': '<Album>'}]
 
 
 @pytest.mark.parametrize('page', ['', '/bot'], indirect=True)

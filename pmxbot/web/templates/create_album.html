@@ -28,9 +28,9 @@ a { color: #135ba1; }
 <dl>
 <dt><label for="artist">Band</label></dt>
 <dd><input id="artist" name="artist_name" list="artists" required maxlength="255" value="{{ values.get('artist_name', '') }}" autocomplete="off">
-<datalist id="artists">{% for artist in suggestions|map(attribute='artist')|unique %}<option value="{{ artist }}">{% endfor %}</datalist></dd>
+<datalist id="artists">{% for artist in artist_names %}<option value="{{ artist }}">{% endfor %}</datalist></dd>
 <dt><label for="title">Album title</label></dt>
-<dd><input id="title" name="title" list="titles" required maxlength="255" value="{{ values.get('title', '') }}" autocomplete="off"><datalist id="titles"></datalist><p id="duplicate-warning" role="status"></p></dd>
+<dd><input id="title" name="title" list="titles" required maxlength="255" value="{{ values.get('title', '') }}" autocomplete="off"><datalist id="titles">{% for title in album_titles %}<option value="{{ title }}">{% endfor %}</datalist><p id="duplicate-warning" role="status"></p></dd>
 {% set properties = values %}
 {% set genres = choices.genre %}
 {% set formats = choices.format %}
@@ -48,11 +48,7 @@ a { color: #135ba1; }
   const title = document.getElementById('title');
   const normalize = text => text.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
   function update() {
-    const matches = suggestions.filter(row => !artist.value || normalize(row.artist) === normalize(artist.value));
-    document.getElementById('titles').replaceChildren(...matches.filter(row => row.title).map(row => {
-      const option = document.createElement('option'); option.value = row.title; return option;
-    }));
-    document.getElementById('duplicate-warning').textContent = matches.some(row => row.title && normalize(row.title) === normalize(title.value)) ? 'This band already has an album with this title.' : '';
+    document.getElementById('duplicate-warning').textContent = suggestions.some(row => normalize(row.artist) === normalize(artist.value) && row.title && normalize(row.title) === normalize(title.value)) ? 'This band already has an album with this title.' : '';
   }
   artist.addEventListener('input', update); title.addEventListener('input', update); update();
   document.getElementById('creation-form').addEventListener('submit', () => {

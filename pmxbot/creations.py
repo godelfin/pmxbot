@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import asdict, replace
 
@@ -20,6 +21,50 @@ def generation_choices():
         genre=genres,
         artist_genre=genres,
     )
+
+
+def creation_suggestions(db, configured):
+    """Combine saved releases and quote libraries without inventing release pairs."""
+    suggestions = [
+        dict(row)
+        for row in db.execute(
+            'SELECT artists.name AS artist, albums.title FROM artists '
+            'LEFT JOIN albums ON artists.id = albums.artist_id '
+            'ORDER BY artists.normalized_name, albums.normalized_title'
+        )
+    ]
+    libraries = (
+        {
+            name.lower(): library
+            for name, library in configured.items()
+            if isinstance(name, str) and isinstance(library, str) and library.strip()
+        }
+        if isinstance(configured, Mapping)
+        else {}
+    )
+    has_quotes = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'quotes'"
+    ).fetchone()
+    choices = {}
+    for name, field, output in (
+        ('band', 'artist', 'artist_names'),
+        ('album', 'title', 'album_titles'),
+    ):
+        values = [row[field] for row in suggestions]
+        if has_quotes:
+            values.extend(
+                row[0]
+                for row in db.execute(
+                    'SELECT quote FROM quotes WHERE library = ? ORDER BY quoteid',
+                    (libraries.get(name, name),),
+                )
+            )
+        unique = {}
+        for value in values:
+            if value and normalize(value):
+                unique.setdefault(normalize(value), value.strip())
+        choices[output] = sorted(unique.values(), key=normalize)
+    return dict(suggestions=suggestions, **choices)
 
 
 def authorized(config, user_id):
