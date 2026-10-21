@@ -222,25 +222,36 @@ in the navigation without receiving paid generation or user administration
 access. An administrator without this grant cannot manage or preview rules.
 
 At ``/admin/prompt_rules``, create, edit, delete, enable or disable a rule.
-Each rule needs at least one artist or album condition and nonblank clarification
-text. **Save rule and order** saves the priority together with the other fields.
-All enabled matches apply once per rule, sorted by ascending numeric priority,
-then ascending stable rule ID. Identical instruction text in separate rules is
-not deduplicated. Both supplied conditions must match (AND).
+Choose **Where to match**: **Band name**, **Album title**, or **Either name**;
+enter a normal word or phrase in **Text to find**; then choose **Match type**:
+**Whole word/phrase** (the default) or **Contains text**. Each rule also needs
+nonblank clarification text, priority and an enabled state.
+**Save rule and order** saves clarification, priority and state while preserving
+all existing matching conditions. All enabled matches apply once per rule,
+sorted by ascending numeric priority, then ascending stable rule ID. Identical
+instruction text in separate rules is not deduplicated.
 
-Ordinary conditions are literal substrings, compared after Unicode NFKC,
-whitespace collapse and casefold normalization, as used for music identities.
-For example, ``STRASSE`` matches ``Straße``. Percent signs, underscores and regex
-syntax are literal text. Artist-only and album-only rules are supported.
-Patterns are limited to 255 characters each, clarification text to 10000,
-and preview artist/album inputs to 1000 each. NUL and other control characters
+Both match types compare after Unicode NFKC, whitespace collapse and casefold
+normalization, as used for music identities. For example, ``STRASSE`` matches
+``Straße``, and ``blue moon`` matches ``BLUE`` followed by a tab and ``moon``.
+Whole word/phrase requires that neither end touches a Unicode letter, number
+or underscore: ``ass`` matches ``big-ass!`` but does not match ``bass``,
+``classic`` or ``ass_band``. Contains text permits matches inside larger words.
+Punctuation, hyphens and all other supplied characters are literal: ``a+b``
+matches that text; ``blue moon`` does not match ``blue-moon``. Either name tests
+the band and album separately and applies once even if both match; a phrase
+cannot span the names in a new rule.
+
+Text to find is limited to 255 characters, clarification text to 10000,
+and preview band/album inputs to 1000 each. NUL and other control characters
 are rejected except tabs and line breaks. Priorities are integers from
 -2147483648 to 2147483647. Rule IDs are positive integers up to 2147483647.
-Invalid forms retain their entered values and display validation errors.
+Invalid forms retain recognized scalar values and display safe validation
+errors; unknown fields and repeated values are never reflected.
 
 **Preview** uses saved rules and the same evaluator and album prompt builder as
-production. It displays the matching rule IDs in order, appended text and full
-initial album prompt. It calls no image provider, creates no jobs and saves no
+production. It displays the matching rule IDs in order with readable matching
+descriptions, appended text and full initial album prompt. It calls no image provider, creates no jobs and saves no
 albums or artwork. Save a rule before previewing its effect. Management and
 preview submissions require a signed-in active account and session-bound CSRF
 protection; accounts requiring a password change must complete it first.
@@ -249,7 +260,12 @@ On first use, a transactional migration seeds all seven existing name-dependent
 clarifications. These compatibility rules preserve original Unicode normalization,
 whole-word boundaries, Torta plural handling, the two distinct Torta hints,
 Medve's once-only either-field match, and the title-context shared introductory
-and metaphor wording. Each rule describes its compatibility matching. Changing
-conditions converts a legacy rule into an ordinary literal rule; changing only
-its text, priority or enabled state preserves compatibility. Deleted seeds never
-return on restart, and edited seeds are never overwritten.
+and metaphor wording. Each rule describes its compatibility matching without
+displaying internal conditions. Existing ordinary rules retain their original contains-text
+behavior; rules with both band and album conditions still require both (AND),
+and the summary shows both conditions. To change any rule's conditions, open
+**Replace matching conditions**, choose the new structured controls, and press
+its separate button. Replacement uses the selected match behavior and replaces
+all previous conditions, including legacy combined-name and AND conditions.
+Changing only clarification, priority or enabled state preserves compatibility.
+Deleted seeds never return on restart, and edited seeds are never overwritten.

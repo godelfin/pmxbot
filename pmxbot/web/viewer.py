@@ -530,7 +530,7 @@ def image_metadata(image):
 class AdminPages:
     @cherrypy.expose
     def prompt_rules(self, **params):
-        from pmxbot.prompt_rules import PromptRuleStore, evaluate, text
+        from pmxbot.prompt_rules import PromptRuleStore, describe, evaluate, text
         from pmxbot.music import album_prompt
 
         cherrypy.lib.cptools.allow(['GET', 'HEAD', 'POST'])
@@ -538,7 +538,25 @@ class AdminPages:
         if cherrypy.request.query_string:
             raise cherrypy.HTTPError(400, 'Use a form body.')
         error = preview = None
-        values = dict(params)
+        allowed = {
+            'operation',
+            'rule_id',
+            'scope',
+            'match_text',
+            'match_type',
+            'instruction',
+            'priority',
+            'enabled',
+            'artist',
+            'album',
+        }
+        # Never reflect unknown fields (especially old internal conditions), or
+        # repeated parameters, into error pages or form values.
+        values = {
+            key: value
+            for key, value in params.items()
+            if key in allowed and isinstance(value, str)
+        }
         if cherrypy.request.method == 'POST':
             auth.require_csrf(params.pop('csrf_token', ''))
         elif params:
@@ -568,7 +586,9 @@ class AdminPages:
                                 rule_result=result,
                             )
                             preview = dict(
-                                matches=result[0], text=result[1], prompt=prompt
+                                matches=[describe(rule) for rule in result[0]],
+                                text=result[1],
+                                prompt=prompt,
                             )
                         else:
                             identifier = params.pop('rule_id', '')
@@ -582,22 +602,7 @@ class AdminPages:
                 except UserError as exc:
                     cherrypy.response.status = 400
                     error = str(exc)
-                rules = store.list_rules()
-                for rule in rules:
-                    metadata = json.loads(rule['compatibility_json'])
-                    if not isinstance(metadata, dict):
-                        raise ValueError('Invalid rule compatibility metadata.')
-                    rule['compatibility_scope'] = (
-                        {
-                            'either': 'Either artist or album matches, once per prompt.',
-                            'joined': 'Matches combined artist and album names; shares the title-context introduction.',
-                        }.get(
-                            metadata.get('scope'),
-                            'Matches the supplied field using legacy word boundaries and plural handling.',
-                        )
-                        if metadata
-                        else ''
-                    )
+                rules = [describe(rule) for rule in store.list_rules()]
         except (
             sqlite3.Error,
             OSError,

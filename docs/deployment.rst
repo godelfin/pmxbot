@@ -569,15 +569,37 @@ existing administrators must explicitly grant it in user administration.
 ``prompt_rules`` stores stable IDs, conditions, instructions, enabled flags,
 priorities, attribution and SQLite UTC creation/update timestamps. The
 ``seed_key`` is independent of editable content. ``compatibility_json`` contains
-trusted migration-only matching/grouping metadata, never user-supplied regex.
+trusted migration-only matching/grouping metadata. No forms, HTTP endpoints or
+public mutation calls accept executable matching patterns. New matching is
+stored in ``matching_json`` as scoped literal conditions with a whole-word/phrase
+or contains-text mode; multiple conditions are evaluated with AND.
 ``prompt_rule_migrations`` records completion of ``legacy-v1`` atomically with
 its seven seeds and migration audits. Serialized initialization cannot duplicate
 seeds, overwrite edits or resurrect deletions. The system migration actor is
 represented by NULL ``created_by``, ``updated_by`` and audit ``actor_id``.
 
+The additive ``structured-v2`` migration adds ``matching_json`` and converts
+ordinary rules to contains-text conditions without changing their meaning.
+Both existing band and album conditions are retained as AND; blank normalized
+conditions remain unconstrained. Legacy compatibility rules retain their
+original evaluator and metadata. The column addition, conversion and completion
+marker commit together under SQLite's existing immediate write transaction.
+Concurrent starts serialize, interrupted migration rolls back, and subsequent
+starts are idempotent. IDs, attribution, timestamps, prior audits, edited or
+deleted seeds and job snapshots are preserved. No artwork is rewritten.
+
+The public mutation API accepts ``scope`` (``band``, ``album``, ``either``),
+``match_text`` and ``match_type`` (``whole``, ``contains``) with ``instruction``,
+``priority`` and boolean ``enabled`` for ``create``. ``update`` accepts only
+those three detail fields; the explicit ``replace`` operation accepts only the
+three matching fields and retains details. Old pattern fields, compatibility
+metadata, arbitrary serialized conditions and unexpected fields are rejected.
+The UI uses a presentation view containing readable summaries and no internal
+legacy patterns, including on validation failures and previews.
+
 ``prompt_rule_audit`` records actor, timestamp, rule ID, action and complete
 before/after JSON. Deletion audits survive deletion of a rule. All successful
-create/update/delete/enable/disable/reorder actions and their audits commit in a
+create/update/replace/delete/enable/disable/reorder actions and their audits commit in a
 single transaction; canonical permission and session version are rechecked after
 acquiring the write lock. A priority change updates one rule atomically; readers
 always see a committed ordering. Back up rules, migration bookkeeping, audits,

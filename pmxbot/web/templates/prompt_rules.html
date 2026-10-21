@@ -9,29 +9,35 @@ input[type=text], textarea { width: 100%; } textarea { min-height: 6rem; }
 button { margin: .5rem .5rem .5rem 0; padding: .5rem; cursor: pointer; } pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .error { color: #842626; background: #fff2f2; padding: 1rem; } :focus-visible { outline: 3px solid #135ba1; outline-offset: 3px; }
 </style></head><body>{% include "auth_nav.html" %}<main><h1>Prompt rules</h1>
-<p>Ordinary rules match literal substrings using Unicode NFKC, whitespace normalization and casefold. Both supplied conditions must match. All enabled matches apply in ascending priority, then ID order. Patterns: 255 characters; clarification: 10000; preview names: 1000 each. Priority: −2147483648 to 2147483647.</p>
-<p>Legacy compatibility rules retain their original word matching and shared introductions. Changing their conditions converts them to ordinary literal rules. Changing text, order or enabled state preserves compatibility.</p>
-{% if error %}<p class="error" role="alert">{{ error }}</p>
-<details><summary>Submitted values</summary><dl>{% for name, value in values.items() if name != 'csrf_token' %}<dt>{{ name }}</dt><dd><pre>{{ value }}</pre></dd>{% endfor %}</dl></details>{% endif %}
+<p>Choose where to match and enter a normal word or phrase. Whole word/phrase avoids matches inside larger words: “ass” does not match “bass”. Contains text also matches inside words. Both use Unicode NFKC, whitespace normalization and casefold. Punctuation and hyphens are literal: “blue moon” matches spaces, “blue-moon” matches a hyphen. Either name tests each name separately, once per rule.</p>
+<p>All enabled matches apply in ascending priority, then ID order. Text to find: 255 characters; clarification: 10000; preview names: 1000 each. Priority: −2147483648 to 2147483647.</p>
+<p>Saving clarification, priority or state preserves existing matching behavior. Use Replace matching conditions to change it. Replacement uses the selected match behavior and replaces all previous conditions, including combined-name or AND conditions.</p>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% macro matching(rule) %}
+<label>Where to match <select name="scope"><option value="band"{% if rule.get('scope') == 'band' %} selected{% endif %}>Band name</option><option value="album"{% if rule.get('scope') == 'album' %} selected{% endif %}>Album title</option><option value="either"{% if rule.get('scope') == 'either' %} selected{% endif %}>Either name</option></select></label>
+<label>Text to find <input type="text" name="match_text" value="{{ rule.get('match_text', '') }}" maxlength="255" required></label>
+<label>Match type <select name="match_type"><option value="whole">Whole word/phrase</option><option value="contains"{% if rule.get('match_type') == 'contains' %} selected{% endif %}>Contains text</option></select></label>
+{% endmacro %}
 {% macro fields(rule) %}
-<label>Artist condition <input type="text" name="artist_pattern" value="{{ rule.artist_pattern|default('') }}" maxlength="255"></label>
-<label>Album condition <input type="text" name="album_pattern" value="{{ rule.album_pattern|default('') }}" maxlength="255"></label>
 <label>Clarification <textarea name="instruction" maxlength="10000" required>{{ rule.instruction|default('') }}</textarea></label>
 <label>Priority <input name="priority" type="number" min="-2147483648" max="2147483647" value="{{ rule.priority|default(100) }}" required></label>
 <label>State <select name="enabled"><option value="1"{% if rule.enabled|default(1)|string == '1' %} selected{% endif %}>Enabled</option><option value="0"{% if rule.enabled|default(1)|string == '0' %} selected{% endif %}>Disabled</option></select></label>
 {% endmacro %}
 <section><h2>Create rule</h2><form method="post" action="{{ base }}/admin/prompt_rules">
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="operation" value="create">
-{{ fields(values if values.get('operation') == 'create' else {}) }}<button>Create rule</button></form></section>
+{{ matching(values if values.get('operation') == 'create' else {}) }}{{ fields(values if values.get('operation') == 'create' else {}) }}<button>Create rule</button></form></section>
 {% for rule in rules %}
 <section><h2>Rule #{{ rule.id }} · priority {{ rule.priority }} · {{ 'Enabled' if rule.enabled else 'Disabled' }}</h2>
-{% if rule.compatibility_scope %}<p>Legacy word and phrase matching. {{ rule.compatibility_scope }}</p>{% endif %}
+<p>{{ rule.summary }}</p>
 <form method="post" action="{{ base }}/admin/prompt_rules"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="rule_id" value="{{ rule.id }}"><input type="hidden" name="operation" value="update">
 {{ fields(values if values.get('operation') == 'update' and values.get('rule_id') == rule.id|string else rule) }}<button>Save rule and order</button></form>
+<details><summary>Replace matching conditions</summary><p>This replaces all existing conditions with the selected match behavior. Clarification, priority and state are retained.</p>
+<form method="post" action="{{ base }}/admin/prompt_rules"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="rule_id" value="{{ rule.id }}"><input type="hidden" name="operation" value="replace">
+{{ matching(values if values.get('operation') == 'replace' and values.get('rule_id') == rule.id|string else rule) }}<button>Replace matching conditions</button></form></details>
 <form method="post" action="{{ base }}/admin/prompt_rules"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="rule_id" value="{{ rule.id }}"><button name="operation" value="{{ 'disable' if rule.enabled else 'enable' }}">{{ 'Disable' if rule.enabled else 'Enable' }}</button><button name="operation" value="delete">Delete rule</button></form>
 </section>{% endfor %}
 <section><h2>Preview</h2><p>Uses saved rules and the production builder. No artwork or generation job is created.</p>
 <form method="post" action="{{ base }}/admin/prompt_rules"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="operation" value="preview">
 <label>Artist <input type="text" name="artist" maxlength="1000" value="{{ values.get('artist', '') }}"></label><label>Album <input type="text" name="album" maxlength="1000" value="{{ values.get('album', '') }}"></label><button>Preview</button></form>
-{% if preview %}<h3>Matching rules in application order</h3><ol>{% for rule in preview.matches %}<li>#{{ rule.id }} ({{ rule.priority }}): {{ rule.instruction }}</li>{% else %}<li>No matches</li>{% endfor %}</ol><h3>Appended text</h3><pre>{{ preview.text }}</pre><h3>Resulting prompt</h3><pre>{{ preview.prompt }}</pre>{% endif %}
+{% if preview %}<h3>Matching rules in application order</h3><ol>{% for rule in preview.matches %}<li>#{{ rule.id }} ({{ rule.priority }}): {{ rule.instruction }} — {{ rule.summary }}</li>{% else %}<li>No matches</li>{% endfor %}</ol><h3>Appended text</h3><pre>{{ preview.text }}</pre><h3>Resulting prompt</h3><pre>{{ preview.prompt }}</pre>{% endif %}
 </section></main></body></html>

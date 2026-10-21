@@ -653,14 +653,36 @@ for (const width of [360, 1400]) test(`prompt rules and permission forms are usa
   assert.equal(await page.getByRole('heading', {name: /^Rule #/}).count(), 7);
   assert.equal(await page.locator('body').evaluate(body => body.scrollWidth <= window.innerWidth), true);
   const create = page.locator('section').filter({has: page.getByRole('heading', {name: 'Create rule', exact: true})});
-  await create.getByLabel('Artist condition').fill('Straße %_.*');
+  assert.equal(await create.getByLabel('Match type').inputValue(), 'whole');
+  await create.getByLabel('Where to match').selectOption('either');
+  await create.getByLabel('Text to find').fill('Straße %_.*');
+  assert.equal(await page.locator('[name=artist_pattern], [name=album_pattern], [name=compatibility_json], [name=matching_json]').count(), 0);
+  assert.doesNotMatch(await page.locator('body').innerText(), /\\b|\(\?:|tortas\?/);
+  assert.match(await page.locator('body').innerText(), /plural/);
+  assert.match(await page.locator('body').innerText(), /Combined band and album/);
+  assert.match(await page.locator('body').innerText(), /Shared context/);
   await create.getByLabel('Clarification').fill('A literal hint.');
   await create.getByLabel('Priority').fill('-20');
   await create.locator('form').evaluate(form => form.addEventListener('submit', event => {
     event.preventDefault(); window.ruleSubmission = Object.fromEntries(new FormData(form));
   }));
   await create.getByRole('button', {name: 'Create rule', exact: true}).click();
-  assert.deepEqual(await page.evaluate(() => ({artist: window.ruleSubmission.artist_pattern, operation: window.ruleSubmission.operation, priority: window.ruleSubmission.priority})), {artist: 'Straße %_.*', operation: 'create', priority: '-20'});
+  assert.deepEqual(await page.evaluate(() => ({text: window.ruleSubmission.match_text, scope: window.ruleSubmission.scope, mode: window.ruleSubmission.match_type, operation: window.ruleSubmission.operation, priority: window.ruleSubmission.priority})), {text: 'Straße %_.*', scope: 'either', mode: 'whole', operation: 'create', priority: '-20'});
+  const legacy = page.locator('section').filter({has: page.getByRole('heading', {name: /^Rule #1 ·/})});
+  const edit = legacy.locator('form').first();
+  assert.equal(await edit.locator('[name=match_text], [name=scope], [name=match_type]').count(), 0);
+  await legacy.locator('summary').click();
+  const replacement = legacy.locator('details form');
+  await replacement.getByLabel('Where to match').selectOption('album');
+  await replacement.getByLabel('Text to find').fill('torta');
+  await replacement.getByLabel('Match type').selectOption('contains');
+  await replacement.evaluate(form => form.addEventListener('submit', event => {
+    event.preventDefault(); window.replacementSubmission = Object.fromEntries(new FormData(form));
+  }));
+  await replacement.getByRole('button', {name: 'Replace matching conditions', exact: true}).click();
+  assert.deepEqual(await page.evaluate(() => {
+    const {csrf_token, ...values} = window.replacementSubmission; return values;
+  }), {rule_id: '1', operation: 'replace', scope: 'album', match_text: 'torta', match_type: 'contains'});
   assert.equal(await page.getByRole('button', {name: 'Preview', exact: true}).count(), 1);
   if (process.env.BROWSER_SCREENSHOTS_DIR) {
     fs.mkdirSync(process.env.BROWSER_SCREENSHOTS_DIR, {recursive: true});

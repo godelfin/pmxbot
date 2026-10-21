@@ -25,12 +25,16 @@ from tests.unit.test_images import config, post, r2  # noqa: F401
 
 
 FIELDS = dict(
-    artist_pattern='band',
-    album_pattern='',
+    scope='band',
+    match_text='band',
+    match_type='whole',
     instruction='Rule text.',
     enabled=True,
     priority=100,
 )
+
+
+DETAILS = {k: FIELDS[k] for k in ('instruction', 'priority', 'enabled')}
 
 
 @pytest.fixture
@@ -51,33 +55,28 @@ def add_rule(database, **values):
 def test_matching_contract_and_ties(store):
     rules, actor = store
     cases = [
-        dict(artist_pattern='ＳＴＲＡＳＳＥ %_.*', instruction='First', priority=-1),
-        dict(
-            artist_pattern='strasse',
-            album_pattern='ÉTÉ',
-            instruction='Second',
-            priority=-1,
-        ),
-        dict(artist_pattern='', album_pattern='été', instruction='Second', priority=10),
-        dict(artist_pattern='strasse', album_pattern='missing', instruction='Wrong'),
-        dict(artist_pattern='strasse', instruction='Disabled', enabled=False),
+        dict(match_text='ＳＴＲＡＳＳＥ %_.*', instruction='First', priority=-1),
+        dict(match_text='strasse', instruction='Second', priority=-1),
+        dict(scope='album', match_text='été', instruction='Second', priority=10),
+        dict(match_text='missing', instruction='Wrong'),
+        dict(match_text='strasse', instruction='Disabled', enabled=False),
     ]
     ids = [rules.mutate(actor, 'create', **dict(FIELDS, **case)) for case in cases]
     matched, text = evaluate(rules.list_rules(), 'Straße %_.*', 'E\u0301té')
     assert [r['id'] for r in matched] == ids[:3]
     assert text == ' First Second Second'
-    assert not evaluate(rules.list_rules(), 'strasse xxx', 'x')[0]
+    assert not evaluate(rules.list_rules(), 'strassexxx', 'x')[0]
     assert not evaluate(rules.list_rules(), 'Other', 'missing')[0]
 
 
 @pytest.mark.parametrize(
     'values',
     [
-        {'artist_pattern': '', 'album_pattern': ''},
-        {'artist_pattern': ' \t'},
+        {'match_text': ''},
+        {'match_text': ' \t'},
         {'instruction': ' \n'},
-        {'artist_pattern': 'x' * 256},
-        {'album_pattern': 'x' * 256},
+        {'match_text': 'x' * 256},
+        {'scope': 'joined'},
         {'instruction': 'x' * 10001},
         {'instruction': '\x00'},
         {'enabled': '1'},
@@ -108,9 +107,7 @@ def test_seed_identity_survives_edits_deletes_and_concurrent_restarts(store):
         'update',
         first['id'],
         **dict(
-            FIELDS,
-            artist_pattern=first['artist_pattern'],
-            album_pattern=first['album_pattern'],
+            DETAILS,
             instruction='Edited seed.',
             priority=-12,
             enabled=False,
@@ -167,7 +164,8 @@ def test_mutation_and_audit_atomicity_and_current_authority(store):
     rules, actor = store
     identifier = rules.mutate(actor, 'create', **FIELDS)
     for operation, values in [
-        ('update', dict(FIELDS, instruction='Changed')),
+        ('update', dict(DETAILS, instruction='Changed')),
+        ('replace', dict(scope='either', match_text='band', match_type='whole')),
         ('disable', {}),
         ('enable', {}),
         ('reorder', {'priority': -20}),
@@ -188,7 +186,15 @@ def test_mutation_and_audit_atomicity_and_current_authority(store):
             'SELECT action FROM prompt_rule_audit WHERE rule_id = ?', (identifier,)
         )
     ]
-    assert actions == ['create', 'update', 'disable', 'enable', 'reorder', 'delete']
+    assert actions == [
+        'create',
+        'update',
+        'replace',
+        'disable',
+        'enable',
+        'reorder',
+        'delete',
+    ]
     rules.update(actor.id, can_manage_prompt_rules=False)
     with pytest.raises(UserError, match='permission'):
         rules.mutate(actor, 'create', **FIELDS)
@@ -198,7 +204,7 @@ def test_independent_connection_and_process_updates(store):
     rules, actor = store
     identifier = rules.mutate(actor, 'create', **FIELDS)
     assert clarifications('BAND', 'x', rules.filename)[1] == ' Rule text.'
-    rules.mutate(actor, 'update', identifier, **dict(FIELDS, instruction='Fresh'))
+    rules.mutate(actor, 'update', identifier, **dict(DETAILS, instruction='Fresh'))
     code = 'import sys; from pmxbot.prompt_rules import clarifications; print(clarifications("BAND", "x", sys.argv[1])[1])'
     result = subprocess.run(
         [sys.executable, '-c', code, rules.filename],
@@ -226,12 +232,17 @@ def test_compatibility_grouping_and_condition_conversion(store):
     first = rules.list_rules()[0]
     rules.mutate(
         actor,
-        'update',
+        'replace',
         first['id'],
-        **dict(FIELDS, artist_pattern='', album_pattern='torta'),
+        scope='album',
+        match_text='torta',
+        match_type='contains',
     )
     assert rules.get_rule(first['id'])['compatibility_json'] == '{}'
-    assert evaluate(rules.list_rules(), 'Band', 'Retorta')[1] == ' Rule text.'
+    assert (
+        evaluate(rules.list_rules(), 'Band', 'Retorta')[1]
+        == ' Torta is slang for \"thicc Latina\".'
+    )
 
 
 def grant(web):
@@ -243,7 +254,7 @@ def grant(web):
 def form(web, operation='create', **values):
     data = dict(csrf_token=web.token('/admin/prompt_rules'), operation=operation)
     if operation in ('create', 'update'):
-        data.update(dict(FIELDS, enabled='1'))
+        data.update(dict(FIELDS if operation == 'create' else DETAILS, enabled='1'))
     data.update(values)
     return web.request('/admin/prompt_rules', 'POST', data)
 
@@ -272,10 +283,10 @@ def test_web_permissions_methods_preview_and_escaping(web, monkeypatch):
     assert web.request('/admin/prompt_rules?operation=delete', 'POST')['status'] == 400
     assert web.request('/admin/prompt_rules?operation=delete')['status'] == 400
     evil = '<script>alert(1)</script> %_.*\' --'
-    assert form(web, artist_pattern=evil, instruction=evil)['status'] == 200
+    assert form(web, match_text=evil, instruction=evil)['status'] == 200
     assert evil not in web.request('/admin/prompt_rules')['body']
     assert '&lt;script&gt;' in web.request('/admin/prompt_rules')['body']
-    assert form(web, artist_pattern=evil, instruction='')['status'] == 400
+    assert form(web, match_text=evil, instruction='')['status'] == 400
     assert (
         evil.replace('<', '&lt;').split('>')[0]
         in web.request('/admin/prompt_rules')['body']
@@ -360,7 +371,7 @@ def test_admin_permission_grant_audit_and_independence(web):
 
 def test_shared_web_variation_snapshot(variation):
     cache, request, provider, hosting, values, source = variation
-    add_rule(cache.database, artist_pattern='', album_pattern='Album')
+    add_rule(cache.database, scope='album', match_text='Album')
     inputs = GenerationInputs.from_source(*cache.get_album_page(42, 42))
     # A literal from the actual canonical name applies to every builder.
     with closing(PromptRuleStore(str(cache.database))) as rules:
@@ -368,9 +379,7 @@ def test_shared_web_variation_snapshot(variation):
         identifier = rules.mutate(
             actor,
             'create',
-            **dict(
-                FIELDS, artist_pattern=inputs.artist_name, instruction='Frozen hint.'
-            ),
+            **dict(FIELDS, match_text=inputs.artist_name, instruction='Frozen hint.'),
         )
     assert artwork_prompt(inputs, database=cache.database).count('Frozen hint.') == 1
     response = request(method='POST', data=values)
@@ -389,7 +398,7 @@ def test_shared_web_variation_snapshot(variation):
 def test_creation_retry_keeps_exact_prompt(creation):
     cache, request, provider, hosting, values, user = creation
     identifier = add_rule(
-        cache.database, artist_pattern='New Band', instruction='Original hint.'
+        cache.database, match_text='New Band', instruction='Original hint.'
     )
     store, job_id = submit(creation)
     frozen = store.get(job_id)['prompt']
@@ -436,7 +445,7 @@ def test_irc_snapshot_and_safe_storage_failure(config, post, r2, monkeypatch):
 def test_historical_job_uses_legacy_only(variation):
     cache, *_ = variation
     inputs = GenerationInputs.from_source(*cache.get_album_page(42, 42))
-    add_rule(cache.database, artist_pattern=inputs.artist_name)
+    add_rule(cache.database, match_text=inputs.artist_name)
     old = dict(operation='edit', prompt=None)
     assert 'Rule text.' not in job_prompt(old, inputs)
     assert 'Rule text.' in artwork_prompt(inputs, database=cache.database)
@@ -453,9 +462,7 @@ def test_direct_artwork_paths_share_evaluator(variation, monkeypatch, operation)
 
     cache, *_ = variation
     inputs = GenerationInputs.from_source(*cache.get_album_page(42, 42))
-    add_rule(
-        cache.database, artist_pattern=inputs.artist_name, instruction='Shared hint.'
-    )
+    add_rule(cache.database, match_text=inputs.artist_name, instruction='Shared hint.')
     library = MusicLibrary(cache.database)
     operation_mock = Mock(return_value={'id': 101})
     if operation == 'create_new':
@@ -574,3 +581,374 @@ def test_invalid_ids_fields_and_create_audit_rollback(store):
         rules.mutate(actor, 'create', **FIELDS)
     assert rules.list_rules() == before
     assert rules.db.execute('SELECT count(*) FROM prompt_rule_audit').fetchone()[0] == 7
+
+
+@pytest.mark.parametrize(
+    'needle,name,whole,contains',
+    [
+        ('ass', 'bass', False, True),
+        ('ass', 'classic', False, True),
+        ('ass', 'ass!', True, True),
+        ('ass', 'big-ass-band', True, True),
+        ('ass', 'ass_band', False, True),
+        ('blue moon', 'blue moonlight', False, True),
+        ('blue moon', 'the BLUE\t\nmoon!', True, True),
+        ('blue moon', 'blue-moon', False, False),
+        ('blue-moon', '(blue-moon)', True, True),
+        ('blue-moon', 'blue-moonlight', False, True),
+        ('ＳＴＲＡＳＳＥ', 'Straße', True, True),
+        ('ÉTÉ', 'E\u0301té', True, True),
+        ('a+b', 'aab', False, False),
+        ('a+b', '(a+b)', True, True),
+        ('[x].*', '[x].*', True, True),
+        ('[x].*', 'xxx', False, False),
+        (r'\bass\b', 'ass', False, False),
+        (r'\bass\b', r'\bass\b', True, True),
+    ],
+)
+def test_literal_word_phrase_and_substring(store, needle, name, whole, contains):
+    rules, actor = store
+    identifier = rules.mutate(actor, 'create', **dict(FIELDS, match_text=needle))
+    for mode, expected in [('whole', whole), ('contains', contains)]:
+        rules.mutate(
+            actor,
+            'replace',
+            identifier,
+            scope='band',
+            match_text=needle,
+            match_type=mode,
+        )
+        result = evaluate([rules.get_rule(identifier)], name, 'unrelated')
+        assert bool(result[0]) is expected
+
+
+@pytest.mark.parametrize('scope', ['band', 'album', 'either'])
+def test_structured_scope_and_once_only(store, scope):
+    rules, actor = store
+    identifier = rules.mutate(
+        actor, 'create', **dict(FIELDS, scope=scope, match_text='blue moon')
+    )
+    only = [rules.get_rule(identifier)]
+    assert bool(evaluate(only, 'blue moon', 'other')[0]) == (
+        scope in ('band', 'either')
+    )
+    assert bool(evaluate(only, 'other', 'blue moon')[0]) == (
+        scope in ('album', 'either')
+    )
+    assert evaluate(only, 'blue', 'moon')[0] == []
+    assert evaluate(only, 'blue moon', 'blue moon')[1] == ' Rule text.'
+
+
+@pytest.mark.parametrize('seed', range(7))
+def test_legacy_metadata_edits_preserve_matching(store, seed):
+    rules, actor = store
+    rule = rules.list_rules()[seed]
+    before = rule.copy()
+    rules.mutate(
+        actor,
+        'update',
+        rule['id'],
+        **dict(DETAILS, instruction=rule['instruction'], priority=rule['priority']),
+    )
+    after = rules.get_rule(rule['id'])
+    for artist, album in [
+        ('Tortas Medve Sex', 'torta breasts assault nazis'),
+        ('Dick', 'sucking'),
+        ('Bass', 'Retorta'),
+    ]:
+        old_result = evaluate([before], artist, album)
+        new_result = evaluate([after], artist, album)
+        assert [r['id'] for r in old_result[0]] == [r['id'] for r in new_result[0]]
+        assert old_result[1] == new_result[1]
+    assert after['compatibility_json'] == before['compatibility_json']
+    assert after['matching_json'] is None
+
+
+def old_ordinary_database(database):
+    """Build a pre-v2 database, with edited/deleted seeds and ordinary AND."""
+    with closing(PromptRuleStore(str(database))) as store:
+        actor = store.create('manager')
+        actor = store.update(actor.id, can_manage_prompt_rules=True)
+        store.mutate(actor, 'update', 1, **dict(DETAILS, instruction='Edited seed.'))
+        store.mutate(actor, 'delete', 2)
+        store.db.execute(
+            "DELETE FROM prompt_rule_migrations WHERE name = 'structured-v2'"
+        )
+        store.db.execute('ALTER TABLE prompt_rules DROP COLUMN matching_json')
+        for artist, album in [
+            ('ＳＴＲＡＳＳＥ', 'moon'),
+            ('', 'a+b'),
+            ('band', ''),
+            (' \t', 'moon'),
+        ]:
+            cursor = store.db.execute(
+                'INSERT INTO prompt_rules (artist_pattern, album_pattern, instruction, priority, enabled, created_by, updated_by) VALUES (?, ?, ?, 100, 1, ?, ?)',
+                (artist, album, 'Old ordinary.', actor.id, actor.id),
+            )
+            store.audit(
+                actor.id,
+                cursor.lastrowid,
+                'create',
+                None,
+                store.get_rule(cursor.lastrowid),
+            )
+        # A representative historical job snapshot must remain byte-for-byte.
+        store.db.execute('CREATE TABLE generation_jobs (id TEXT, prompt TEXT)')
+        store.db.execute("INSERT INTO generation_jobs VALUES ('old', 'Frozen prompt.')")
+        return store.list_rules(), [
+            tuple(row) for row in store.db.execute('SELECT * FROM prompt_rule_audit')
+        ]
+
+
+def test_structured_migration_restart_concurrency_and_and(tmp_path):
+    database = str(tmp_path / 'old.sqlite')
+    before, audit = old_ordinary_database(database)
+    inputs = [
+        ('Straße extension', 'moonlight'),
+        ('Straße', 'other'),
+        ('other', 'moon'),
+        ('x', 'a+b'),
+        ('bandstand', 'x'),
+    ]
+    expected = [evaluate(before, *names)[1] for names in inputs]
+
+    def reopen(_):
+        with closing(PromptRuleStore(database)) as store:
+            return store.list_rules()
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        snapshots = list(pool.map(reopen, range(10)))
+    assert all(snapshot == snapshots[0] for snapshot in snapshots)
+    after = snapshots[0]
+    assert [evaluate(after, *names)[1] for names in inputs] == expected
+    assert [
+        dict((k, v) for k, v in rule.items() if k != 'matching_json') for rule in after
+    ] == before
+    combined = next(
+        rule for rule in after if rule['artist_pattern'] == 'ＳＴＲＡＳＳＥ'
+    )
+    from pmxbot.prompt_rules import describe
+
+    assert ' AND ' in describe(combined)['summary']
+    assert len(json.loads(combined['matching_json'])) == 2
+    assert not evaluate([combined], 'Straße', 'other')[0]
+    with closing(PromptRuleStore(database)) as store:
+        assert [
+            tuple(row) for row in store.db.execute('SELECT * FROM prompt_rule_audit')
+        ] == audit
+        assert tuple(store.db.execute('SELECT * FROM generation_jobs').fetchone()) == (
+            'old',
+            'Frozen prompt.',
+        )
+        actor = store.get_by_username('manager')
+        store.mutate(
+            actor, 'update', combined['id'], **dict(DETAILS, instruction='Edited AND.')
+        )
+        assert not evaluate([store.get_rule(combined['id'])], 'Straße', 'other')[0]
+        store.mutate(
+            actor,
+            'replace',
+            combined['id'],
+            scope='either',
+            match_text='Straße',
+            match_type='whole',
+        )
+        assert (
+            evaluate([store.get_rule(combined['id'])], 'other', 'Straße')[1]
+            == ' Edited AND.'
+        )
+
+
+def test_structured_migration_failure_rolls_back_schema_and_data(tmp_path):
+    database = str(tmp_path / 'rollback.sqlite')
+    before, audit = old_ordinary_database(database)
+    with sqlite3.connect(database) as db:
+        db.execute(
+            "CREATE TRIGGER stop_v2 BEFORE UPDATE ON prompt_rules BEGIN SELECT RAISE(ABORT, 'migration failed'); END"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match='migration failed'):
+        PromptRuleStore(database)
+    with sqlite3.connect(database) as db:
+        assert 'matching_json' not in [
+            row[1] for row in db.execute('PRAGMA table_info(prompt_rules)')
+        ]
+        assert not db.execute(
+            "SELECT 1 FROM prompt_rule_migrations WHERE name = 'structured-v2'"
+        ).fetchone()
+        db.row_factory = sqlite3.Row
+        assert [
+            dict(row)
+            for row in db.execute('SELECT * FROM prompt_rules ORDER BY priority, id')
+        ] == before
+        assert [
+            tuple(row) for row in db.execute('SELECT * FROM prompt_rule_audit')
+        ] == audit
+        db.execute('DROP TRIGGER stop_v2')
+    with closing(PromptRuleStore(database)) as store:
+        assert len(store.list_rules()) == len(before)
+
+
+@pytest.mark.parametrize('operation', ['create', 'update', 'replace', 'preview'])
+@pytest.mark.parametrize(
+    'hidden',
+    ['artist_pattern', 'album_pattern', 'compatibility_json', 'matching_json', 'regex'],
+)
+def test_http_hidden_conditions_rejected_without_reflection(web, operation, hidden):
+    grant(web)
+    values = {'rule_id': '1'} if operation in ('update', 'replace') else {}
+    if operation == 'replace':
+        values.update(scope='band', match_text='x', match_type='whole')
+    if operation == 'preview':
+        values.update(artist='Band', album='Album')
+    secret = r'INTERNAL(?:secret|pattern)\b'
+    response = form(web, operation, **values, **{hidden: secret})
+    assert response['status'] == 400
+    assert secret not in response['body']
+    assert hidden not in response['body']
+    with closing(PromptRuleStore(pmxbot.config.database)) as store:
+        assert len(store.list_rules()) == 7
+        assert (
+            store.db.execute('SELECT count(*) FROM prompt_rule_audit').fetchone()[0]
+            == 7
+        )
+
+
+def test_regex_free_rendering_preview_and_explicit_replacement(web):
+    grant(web)
+    with closing(PromptRuleStore(pmxbot.config.database)) as store:
+        legacy = store.list_rules()
+    response = web.request('/admin/prompt_rules')
+    for rule in legacy:
+        for field in ('artist_pattern', 'album_pattern'):
+            if rule[field]:
+                assert rule[field] not in response['body']
+    assert 'plural' in response['body']
+    assert 'Either name' in response['body']
+    assert 'Combined band and album' in response['body']
+    assert 'Shared context' in response['body']
+    assert 'name="artist_pattern"' not in response['body']
+    assert 'name="album_pattern"' not in response['body']
+    assert form(web, 'update', rule_id='1', instruction='Changed.')['status'] == 200
+    result = form(web, 'preview', artist='Band', album='Tortas')['body']
+    assert 'Changed.' in result and 'whole word “torta” or “tortas”' in result
+    assert r'\btortas?\b' not in result
+    assert (
+        form(
+            web,
+            'update',
+            rule_id='1',
+            scope='album',
+            match_text='x',
+            match_type='contains',
+        )['status']
+        == 400
+    )
+    assert (
+        form(
+            web,
+            'replace',
+            rule_id='1',
+            scope='album',
+            match_text='torta',
+            match_type='whole',
+        )['status']
+        == 200
+    )
+    result = form(web, 'preview', artist='Band', album='Tortas')['body']
+    assert '<li>No matches</li>' in result
+    assert (
+        form(web, 'preview', artist='Band', album='Torta')['body'].count('Changed.')
+        >= 1
+    )
+
+
+@pytest.mark.parametrize(
+    'values',
+    [
+        {'scope': ['band', 'either']},
+        {'match_type': ['whole', 'contains']},
+        {'match_text': ['x', 'y']},
+        {'instruction': ['x', 'y']},
+        {'enabled': ['0', '1']},
+        {'priority': ['1', '2']},
+        {'scope': 'joined'},
+        {'match_type': 'regex'},
+        {'match_type': 'unknown'},
+    ],
+)
+def test_malformed_structured_fields_rejected(store, values):
+    rules, actor = store
+    before = rules.list_rules()
+    with pytest.raises(UserError):
+        rules.mutate(actor, 'create', **dict(FIELDS, **values))
+    assert rules.list_rules() == before
+
+
+def test_repeated_http_fields_cannot_bypass_validation(web):
+    grant(web)
+    for field in (
+        'scope',
+        'match_text',
+        'match_type',
+        'priority',
+        'enabled',
+        'operation',
+    ):
+        data = list(
+            dict(
+                FIELDS,
+                enabled='1',
+                operation='create',
+                csrf_token=web.token('/admin/prompt_rules'),
+            ).items()
+        )
+        data.append((field, 'duplicate'))
+        assert web.request('/admin/prompt_rules', 'POST', data)['status'] == 400
+
+
+@pytest.mark.parametrize('operation', ['create', 'update', 'replace'])
+@pytest.mark.parametrize(
+    'hidden',
+    ['artist_pattern', 'album_pattern', 'compatibility_json', 'matching_json', 'regex'],
+)
+def test_public_api_cannot_accept_hidden_matching(store, operation, hidden):
+    rules, actor = store
+    fields = {
+        'create': FIELDS,
+        'update': DETAILS,
+        'replace': dict(scope='band', match_text='band', match_type='whole'),
+    }[operation]
+    before = rules.list_rules()
+    with pytest.raises(UserError, match='only the fields'):
+        rules.mutate(
+            actor,
+            operation,
+            '' if operation == 'create' else 1,
+            **dict(fields, **{hidden: r'\b(?:secret)\b'}),
+        )
+    assert rules.list_rules() == before
+    assert rules.db.execute('SELECT count(*) FROM prompt_rule_audit').fetchone()[0] == 7
+
+
+def test_rendered_migrated_and_rule_preserves_conditions_on_detail_save(web):
+    grant(web)
+    with closing(PromptRuleStore(pmxbot.config.database)) as store:
+        store.db.execute(
+            "DELETE FROM prompt_rule_migrations WHERE name = 'structured-v2'"
+        )
+        identifier = store.db.execute(
+            "INSERT INTO prompt_rules (artist_pattern, album_pattern, instruction, priority, enabled) VALUES ('Band', 'moon', 'Both names.', 100, 1)"
+        ).lastrowid
+    body = web.request('/admin/prompt_rules')['body']
+    assert 'Band name contains text “Band” AND Album title contains text “moon”' in body
+    assert (
+        form(web, 'update', rule_id=str(identifier), instruction='Edited both names.')[
+            'status'
+        ]
+        == 200
+    )
+    body = form(web, 'preview', artist='Band', album='Other')['body']
+    assert '<li>No matches</li>' in body
+    body = form(web, 'preview', artist='Bandstand', album='moonlight')['body']
+    assert 'Edited both names.' in body
+    assert 'Band name contains text “Band” AND Album title contains text “moon”' in body
