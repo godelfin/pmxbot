@@ -15,7 +15,13 @@ import pmxbot
 from pmxbot import images
 from pmxbot.jobs import JobStore, job_prompt, process_job
 from pmxbot.music import GenerationInputs, album_prompt, artwork_prompt
-from pmxbot.prompt_rules import PromptRuleStore, clarifications, evaluate, legacy_result
+from pmxbot.prompt_rules import (
+    PromptRuleStore,
+    clarifications,
+    evaluate,
+    legacy_result,
+    legacy_seeds,
+)
 from pmxbot.users import UserError, UserStore
 from tests.unit.test_web_auth import web  # noqa: F401
 from tests.unit.test_album_page import page, variation  # noqa: F401
@@ -666,15 +672,78 @@ def test_legacy_metadata_edits_preserve_matching(store, seed):
 
 def old_ordinary_database(database):
     """Build a pre-v2 database, with edited/deleted seeds and ordinary AND."""
-    with closing(PromptRuleStore(str(database))) as store:
+    # Build the historical schema directly. Besides modeling an actual upgrade,
+    # this works with SQLite 3.27.2 in CI (DROP COLUMN needs SQLite 3.35+).
+    with closing(UserStore(str(database))) as store:
         actor = store.create('manager')
         actor = store.update(actor.id, can_manage_prompt_rules=True)
-        store.mutate(actor, 'update', 1, **dict(DETAILS, instruction='Edited seed.'))
-        store.mutate(actor, 'delete', 2)
-        store.db.execute(
-            "DELETE FROM prompt_rule_migrations WHERE name = 'structured-v2'"
+        store.db.executescript(
+            """CREATE TABLE prompt_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seed_key TEXT UNIQUE,
+                artist_pattern TEXT NOT NULL DEFAULT '',
+                album_pattern TEXT NOT NULL DEFAULT '',
+                instruction TEXT NOT NULL CHECK(length(trim(instruction)) > 0),
+                enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+                priority INTEGER NOT NULL,
+                compatibility_json TEXT NOT NULL DEFAULT '{}',
+                created_by INTEGER REFERENCES users(id),
+                updated_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CHECK(length(trim(artist_pattern)) + length(trim(album_pattern)) > 0)
+            );
+            CREATE TABLE prompt_rule_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_id INTEGER REFERENCES users(id),
+                rule_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                before_json TEXT, after_json TEXT
+            );
+            CREATE TABLE prompt_rule_migrations (name TEXT PRIMARY KEY);
+            INSERT INTO prompt_rule_migrations VALUES ('legacy-v1');
+            """
         )
-        store.db.execute('ALTER TABLE prompt_rules DROP COLUMN matching_json')
+        store.db.row_factory = sqlite3.Row
+
+        def get_rule(identifier):
+            return dict(
+                store.db.execute(
+                    'SELECT * FROM prompt_rules WHERE id = ?', (identifier,)
+                ).fetchone()
+            )
+
+        def audit(actor_id, identifier, action, before, after):
+            store.db.execute(
+                'INSERT INTO prompt_rule_audit (actor_id, rule_id, action, before_json, after_json) VALUES (?, ?, ?, ?, ?)',
+                (actor_id, identifier, action, json.dumps(before), json.dumps(after)),
+            )
+
+        for priority, (key, artist, album, instruction, metadata) in enumerate(
+            legacy_seeds()
+        ):
+            cursor = store.db.execute(
+                'INSERT INTO prompt_rules (seed_key, artist_pattern, album_pattern, instruction, enabled, priority, compatibility_json) VALUES (?, ?, ?, ?, 1, ?, ?)',
+                (
+                    key,
+                    artist,
+                    album,
+                    instruction,
+                    priority,
+                    json.dumps(dict(metadata, mode='regex')),
+                ),
+            )
+            audit(None, cursor.lastrowid, 'migrate', None, get_rule(cursor.lastrowid))
+        before = get_rule(1)
+        store.db.execute(
+            "UPDATE prompt_rules SET instruction = 'Edited seed.', priority = 100, updated_by = ? WHERE id = 1",
+            (actor.id,),
+        )
+        audit(actor.id, 1, 'update', before, get_rule(1))
+        before = get_rule(2)
+        store.db.execute('DELETE FROM prompt_rules WHERE id = 2')
+        audit(actor.id, 2, 'delete', before, None)
         for artist, album in [
             ('ＳＴＲＡＳＳＥ', 'moon'),
             ('', 'a+b'),
@@ -685,17 +754,23 @@ def old_ordinary_database(database):
                 'INSERT INTO prompt_rules (artist_pattern, album_pattern, instruction, priority, enabled, created_by, updated_by) VALUES (?, ?, ?, 100, 1, ?, ?)',
                 (artist, album, 'Old ordinary.', actor.id, actor.id),
             )
-            store.audit(
+            audit(
                 actor.id,
                 cursor.lastrowid,
                 'create',
                 None,
-                store.get_rule(cursor.lastrowid),
+                get_rule(cursor.lastrowid),
             )
         # A representative historical job snapshot must remain byte-for-byte.
         store.db.execute('CREATE TABLE generation_jobs (id TEXT, prompt TEXT)')
         store.db.execute("INSERT INTO generation_jobs VALUES ('old', 'Frozen prompt.')")
-        return store.list_rules(), [
+        rules = [
+            dict(row)
+            for row in store.db.execute(
+                'SELECT * FROM prompt_rules ORDER BY priority, id'
+            )
+        ]
+        return rules, [
             tuple(row) for row in store.db.execute('SELECT * FROM prompt_rule_audit')
         ]
 
