@@ -1244,7 +1244,23 @@ class PmxbotPages:
             # Credentials and tokens must be in the form body, never the URL.
             if cherrypy.request.query_string:
                 raise cherrypy.HTTPError(400, 'Use a form body.')
-            auth.require_csrf(csrf_token)
+            try:
+                auth.require_csrf(csrf_token)
+            except cherrypy.HTTPError:
+                cherrypy.response.status = 403
+                login_url = (
+                    pmxbot.config.web_base
+                    + '/login?'
+                    + urllib.parse.urlencode(
+                        {'return_to': auth.safe_return_to(return_to)}
+                    )
+                )
+                return (
+                    jenv.overlay(autoescape=True)
+                    .get_template('login_expired.html')
+                    .render(login_url=login_url, **get_context())
+                    .encode('utf-8')
+                )
             auth.login_throttle.check()
             try:
                 with contextlib.closing(UserStore(pmxbot.config.database)) as store:

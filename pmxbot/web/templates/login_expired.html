@@ -1,0 +1,10 @@
+{% extends "login.html" %}
+{% block title %}Sign in again{% endblock %}
+{% block head_extras %}
+<meta http-equiv="refresh" content="2;url={{ login_url }}" />
+{% endblock %}
+{% block account_content %}
+<h1 id="login-heading">Sign in again</h1>
+<p class="login-error" role="alert">Your sign-in form has expired or is invalid. Redirecting you to a fresh sign-in form…</p>
+<p><a href="{{ login_url }}">Sign in now</a></p>
+{% endblock %}

@@ -224,6 +224,63 @@ def test_csrf_and_method_guards(web):
     assert web.request('/protected')['status'] == 200
 
 
+@pytest.mark.parametrize('state', ['invalid', 'expired', 'restart'])
+@pytest.mark.parametrize('target', ['/gallery?sort=band&q=a%26b', 'https://evil.test'])
+def test_login_csrf_failure_has_styled_recovery(web, monkeypatch, state, target):
+    token = web.token()
+    if state == 'invalid':
+        token = 'bad'
+    elif state == 'expired':
+        RamSession.cache.pop(session_id(web.cookie))
+    else:
+        monkeypatch.setattr(auth, '_CSRF_SECRET', b'new process secret')
+    return_to = web.base + target if target.startswith('/') else target
+    response = web.request(
+        '/login',
+        'POST',
+        {
+            'username': 'Alice',
+            'password': 'correct password',
+            'csrf_token': token,
+            'return_to': return_to,
+        },
+    )
+    assert response['status'] == 403
+    assert response['headers']['Cache-Control'] == 'no-store'
+    soup = BeautifulSoup(response['body'], 'html.parser')
+    assert soup.select_one('style')
+    assert soup.select_one('.site-header .site-brand')
+    assert soup.select_one('.login-card h1').text == 'Sign in again'
+    assert 'expired or is invalid' in soup.select_one('[role=alert]').text
+    assert 'correct password' not in response['body']
+    assert 'Traceback' not in response['body']
+    assert not auth.login_throttle.attempts
+    assert RamSession.cache[session_id(web.cookie)][0] == {}
+    login_url = soup.select_one('main a')['href']
+    assert (
+        soup.select_one('meta[http-equiv="refresh"]')['content'] == '2;url=' + login_url
+    )
+    assert urlsplit(login_url).path == web.base + '/login'
+    destination = return_to if target.startswith('/') else web.base + '/'
+    assert parse_qs(urlsplit(login_url).query)['return_to'] == [destination]
+    # Follow the browser refresh: the new form must allow a normal sign-in.
+    fresh = web.request(login_url[len(web.base) :])
+    assert fresh['status'] == 200
+    form = BeautifulSoup(fresh['body'], 'html.parser')
+    response = web.request(
+        '/login',
+        'POST',
+        {
+            'username': 'Alice',
+            'password': 'correct password',
+            'csrf_token': form.select_one('input[name=csrf_token]')['value'],
+            'return_to': form.select_one('input[name=return_to]')['value'],
+        },
+    )
+    assert response['status'] == 303
+    assert response['headers']['Location'] == destination
+
+
 @pytest.mark.parametrize(
     'target',
     [
