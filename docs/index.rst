@@ -12,6 +12,7 @@ Welcome to |project| documentation!
    deployment
    users
    tendie
+   stocks
 
 
 .. tidelift-referral-banner::
