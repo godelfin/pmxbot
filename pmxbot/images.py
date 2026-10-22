@@ -667,7 +667,7 @@ class ImageCache:
                 'is_torta',
                 1,
                 lambda value: bool(
-                    re.search(r'\b(?:tortas?|nalgas?)\b', value or '', re.IGNORECASE)
+                    re.search(r'\b(?:tortas?|nalgas?|pawg)\b', value or '', re.IGNORECASE)
                 ),
             )
             conditions.append('NOT (is_torta(albums.title) OR is_torta(artists.name))')
