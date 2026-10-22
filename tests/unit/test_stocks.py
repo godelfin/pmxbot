@@ -111,7 +111,7 @@ def test_daily_close(api, now):
     )
     assert api.call_args.args[0].endswith('/time_series')
     assert api.call_args.kwargs['params']['adjust'] == 'none'
-    assert api.call_args.kwargs['params']['end_date'] == '2026-10-21'
+    assert api.call_args.kwargs['params']['end_date'] == '2026-10-22'
 
 
 def test_close_publication_grace(api):
@@ -294,3 +294,51 @@ def test_malformed_daily_bars(api, values):
     api.return_value.json.return_value = payload
     with pytest.raises(stocks.QuoteUnavailable):
         stocks.service.get('secret', CLOSED)
+
+
+@pytest.mark.parametrize(
+    'now,dates',
+    [
+        (
+            '2026-10-21T21:00:00',
+            ('2026-10-22', '2026-10-21', '2026-10-20', '2026-10-19'),
+        ),
+        (
+            '2026-10-22T12:00:00',
+            ('2026-10-22', '2026-10-21', '2026-10-20', '2026-10-19'),
+        ),
+        (
+            '2026-10-24T16:00:00',
+            ('2026-10-26', '2026-10-23', '2026-10-22', '2026-10-21'),
+        ),
+        (
+            '2026-12-25T16:00:00',
+            ('2026-12-28', '2026-12-24', '2026-12-23', '2026-12-22'),
+        ),
+    ],
+)
+def test_daily_history_excludes_end_date(api, now, dates):
+    """Model Twelve Data's exclusive upper bound, including a later partial bar."""
+    history = [
+        {'datetime': date, 'close': price}
+        for date, price in zip(dates, ('99.99', '32.45', '33.30', '34.00'))
+    ]
+
+    def get(url, *, params, **kwargs):
+        assert url.endswith('/time_series')
+        values = [bar for bar in history if bar['datetime'] < params['end_date']]
+        return Mock(
+            json=Mock(
+                return_value={
+                    'meta': daily()['meta'],
+                    'values': values[: params['outputsize']],
+                }
+            )
+        )
+
+    api.side_effect = get
+    quote = stocks.service.get('secret', instant(now))
+    assert quote.session.date.isoformat() == dates[1]
+    assert quote.price == Decimal('32.45')
+    assert quote.previous_close == Decimal('33.30')
+    assert quote.change == Decimal('-0.85')

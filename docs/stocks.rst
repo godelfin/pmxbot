@@ -54,7 +54,10 @@ calendar series because newer releases can fail on import with Python 3.9.
 
 During a regular session, ``/quote`` supplies the price and previous close.
 Outside it, ``/time_series`` supplies the two most recent completed daily
-bars, requested through the target trading date with ``adjust=none``.
+bars, requested with ``adjust=none`` and an exclusive ``end_date`` of the
+calendar day after the target session. This includes the required closing bar
+without including the following session; see the provider's
+`historical-data boundary example <https://support.twelvedata.com/en/articles/5214728-getting-historical-data>`_.
 Both dates must match consecutive calendar sessions. The prior bar's close
 is the previous trading day's close, so premarket, weekends and holidays
 retain the completed day's performance rather than resetting it to zero.

@@ -124,7 +124,8 @@ def fetch_quote(key, session, now):
         key,
         'time_series',
         interval='1day',
-        end_date=session.date.isoformat(),
+        # Daily history excludes end_date: use midnight after the target day.
+        end_date=(session.date + dt.timedelta(days=1)).isoformat(),
         outputsize=2,
         order='desc',
         adjust='none',
