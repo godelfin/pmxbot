@@ -1,4 +1,4 @@
-"""Regular-session FUN prices from Twelve Data, independent of IRC formatting."""
+"""Regular-session FUN prices from Twelve Data with IRC performance colors."""
 
 import datetime as dt
 import os
@@ -198,6 +198,9 @@ def format_quote(quote, now):
     sign = '+' if change > 0 else '-' if change < 0 else ''
     percent_sign = '+' if percent > 0 else '-' if percent < 0 else ''
     performance = f'{sign}${abs(change):.2f} ({percent_sign}{abs(percent):.2f}%)'
+    if change:
+        color = '03' if change > 0 else '04'
+        performance = f'\x03{color}{performance}\x03'
     timestamp = quote.timestamp.astimezone(EASTERN)
     if quote.session.live:
         age = int((now - quote.timestamp).total_seconds() // 60)

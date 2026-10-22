@@ -57,8 +57,8 @@ def test_registration():
 @pytest.mark.parametrize(
     'price,expected',
     [
-        ('32.45', '+$1.20 (+3.84%)'),
-        ('30.00', '-$1.25 (-4.00%)'),
+        ('32.45', '\x0303+$1.20 (+3.84%)\x03'),
+        ('30.00', '\x0304-$1.25 (-4.00%)\x03'),
         ('31.25', '$0.00 (0.00%)'),
     ],
 )
@@ -67,7 +67,7 @@ def test_performance(api, price, expected):
     quote = stocks.service.get('secret', OPEN)
     assert quote.price == Decimal(price)
     message = stocks.format_quote(quote, OPEN)
-    assert expected in message
+    assert f' | {expected} today' in message
     assert 'today | NYSE: as of Oct 21 2026 03:42 PM ET' in message
     assert '\n' not in message
     kwargs = api.call_args.kwargs
@@ -106,7 +106,7 @@ def test_daily_close(api, now):
     quote = stocks.service.get('secret', now)
     assert quote.change == Decimal('-0.85')
     assert stocks.format_quote(quote, now) == (
-        'FUN (Six Flags): $32.45 | -$0.85 (-2.55%) at last close | '
+        'FUN (Six Flags): $32.45 | \x0304-$0.85 (-2.55%)\x03 at last close | '
         'Oct 21 2026 04:00 PM ET'
     )
     assert api.call_args.args[0].endswith('/time_series')
@@ -241,7 +241,9 @@ def test_command_success(api, monkeypatch):
     quote = stocks.service.get('secret', OPEN)
     fake_service = Mock(get=Mock(return_value=quote))
     monkeypatch.setattr(stocks, 'service', fake_service)
-    assert stocks.fun().startswith('FUN (Six Flags): $32.45 | +$1.20 (+3.84%) today')
+    assert stocks.fun().startswith(
+        'FUN (Six Flags): $32.45 | \x0303+$1.20 (+3.84%)\x03 today'
+    )
 
 
 @pytest.mark.parametrize(
