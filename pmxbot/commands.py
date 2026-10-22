@@ -24,6 +24,7 @@ from . import logging
 from . import phrases
 from . import http
 from . import images  # noqa: F401 - register image commands and result delivery
+from . import stocks  # noqa: F401 - register public FUN stock command
 from . import openai_usage  # noqa: F401 - register usage command
 from . import tendie  # noqa: F401 - register stored post command
 

@@ -618,6 +618,7 @@ def initialize(config):
                         "silent_mode_enable_command",
                         "openai_api_key",
                         "openai_admin_key",
+                        "twelve_data_api_key",
                         "x_bearer_token",
                         "imgbb_api_key",
                         "r2_access_key_id",
