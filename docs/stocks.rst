@@ -49,7 +49,8 @@ Session selection and failures
 ``pandas_market_calendars`` supplies the NYSE regular-session schedule,
 including holidays and early closes. Dates use ``America/New_York`` and
 account for daylight saving time. Keep the calendar dependency current for
-newly announced exchange closures.
+newly announced exchange closures. Python versions below 3.10 use the 4.x
+calendar series because newer releases can fail on import with Python 3.9.
 
 During a regular session, ``/quote`` supplies the price and previous close.
 Outside it, ``/time_series`` supplies the two most recent completed daily
